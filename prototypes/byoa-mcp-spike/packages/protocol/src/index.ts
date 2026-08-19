@@ -1,0 +1,126 @@
+/**
+ * 브라우저 · local bridge · MCP server가 공유하는 wire 타입.
+ *
+ * 브라우저 번들이 이 모듈을 import 하므로 Node 내장 모듈을 쓰면 안 된다.
+ * 파일시스템·설정 관련 헬퍼는 `@byoa/protocol/node`에 둔다.
+ */
+
+export const BRIDGE_HOST = "127.0.0.1";
+export const DEFAULT_BRIDGE_PORT = 43120;
+
+/** 사용자의 Codex 설정에 이 MCP server가 등록될 이름. */
+export const MCP_SERVER_NAME = "byoa-spike";
+
+/** `/internal/*` 요청에 loopback 공유 비밀을 실어 보내는 헤더. */
+export const BRIDGE_TOKEN_HEADER = "x-byoa-token";
+
+export type AgentId = "codex" | "claude";
+
+export type SelectedItem = {
+  id: string;
+  label: string;
+};
+
+/**
+ * agent가 `get_app_context` MCP tool을 호출했을 때 보게 되는 값.
+ * docs/BYOA_MCP_INTEGRATION_SPIKE.md §9의 형태를 따른다.
+ */
+export type AppContext = {
+  projectPath: string;
+  prompt: string;
+  selectedItem: SelectedItem | null;
+  metadata: {
+    source: "byoa-mcp-spike";
+    timestamp: string;
+  };
+};
+
+/** agent가 `show_result` MCP tool로 앱에 되돌려 보내는 payload (§10). */
+export type ShowResultInput = {
+  title: string;
+  summary: string;
+  status: "success" | "warning" | "error";
+  filesChanged?: string[];
+  details?: string[];
+};
+
+export type McpToolName = "get_app_context" | "show_result";
+
+/**
+ * provider에 종속되지 않는 이벤트 모델 (§15). Codex 프로토콜 객체는 bridge에서
+ * 이 union으로 정규화되며, raw 상태로 브라우저에 도달하지 않는다.
+ */
+export type AgentEvent =
+  | { type: "task.started"; taskId: string; agent: AgentId; projectPath: string }
+  | { type: "agent.message.delta"; taskId: string; text: string }
+  | { type: "agent.action.started"; taskId: string; name: string; detail?: unknown }
+  | { type: "agent.action.completed"; taskId: string; name: string; detail?: unknown }
+  | { type: "mcp.tool.called"; taskId: string; tool: McpToolName | string; source: "agent-stream" | "bridge-endpoint" }
+  | { type: "app.result"; taskId: string; result: ShowResultInput }
+  | { type: "task.completed"; taskId: string }
+  | { type: "task.interrupted"; taskId: string }
+  | { type: "task.error"; taskId: string; message: string };
+
+/** 전송되는 모든 이벤트는 단조 증가하는 seq와 타임스탬프를 함께 갖는다. */
+export type AgentEventEnvelope = {
+  seq: number;
+  at: string;
+  event: AgentEvent;
+};
+
+export type TaskStatus = "starting" | "running" | "completed" | "interrupted" | "error";
+
+export type TaskState = {
+  taskId: string;
+  agent: AgentId;
+  projectPath: string;
+  prompt: string;
+  selectedItem: SelectedItem | null;
+  threadId?: string;
+  turnId?: string;
+  status: TaskStatus;
+  startedAt: string;
+  endedAt?: string;
+  error?: string;
+  /** 이 task에서 관측된 MCP tool 호출. 두 증거원(agent-stream / bridge-endpoint) 모두 기록한다. */
+  mcpCalls: Array<{ tool: string; at: string; source: "agent-stream" | "bridge-endpoint" }>;
+  result?: ShowResultInput;
+};
+
+export type AgentReadiness = {
+  agent: AgentId;
+  installed: boolean;
+  authenticated: boolean | "unknown";
+  version?: string;
+  /** agent를 쓸 수 없을 때 사람이 읽을 수 있는 사유. */
+  message?: string;
+};
+
+// ---------- 브라우저 <-> Bridge HTTP API ----------
+
+export type StartTaskRequest = {
+  agent: AgentId;
+  projectPath: string;
+  prompt: string;
+  appContext?: {
+    selectedItem?: SelectedItem | null;
+  };
+};
+
+export type StartTaskResponse = { taskId: string };
+
+export type AppContextPatch = {
+  projectPath?: string;
+  prompt?: string;
+  selectedItem?: SelectedItem | null;
+};
+
+export type BridgeStateResponse = {
+  /** `npm run fixture`가 만드는 fixture 경로. 브라우저 입력창의 초기값으로 쓴다. */
+  defaultProjectPath: string;
+  appContext: AppContext;
+  activeTaskId: string | null;
+  tasks: TaskState[];
+};
+
+export type ErrorResponse = { error: string };
