@@ -17,9 +17,21 @@
 
 ## 상태
 
-**설계 단계.** 현재 저장소에는 설계 문서만 있으며 구현 코드는 아직 없다.
+**설계 + 기술 검증 단계.** 제품 구현은 아직 시작하지 않았고, 핵심 아키텍처 가설 하나를
+실제 local coding agent로 검증한 프로토타입이 있다.
 
-- 전체 설계: [`vibe_coding_assistant_design.md`](./vibe_coding_assistant_design.md)
+- 전체 설계: [`docs/vibe_coding_assistant_design.md`](./docs/vibe_coding_assistant_design.md)
+- BYOA + MCP 통합 검증 사양: [`docs/BYOA_MCP_INTEGRATION_SPIKE.md`](./docs/BYOA_MCP_INTEGRATION_SPIKE.md)
+- 그 검증 프로토타입: [`prototype/byoa-mcp-spike` 브랜치](../../tree/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike)
+  — **Phase A(Codex) 검증 성공**
+  ([검증 결과](../../blob/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike/SPIKE_FINDINGS.md))
+
+프로토타입은 제품 코드가 아니라 기술 검증용 spike이므로 `main`에 두지 않고 별도 브랜치로 분리했다.
+
+검증된 것: 브라우저에서 만든 프롬프트가 로컬 Codex agent의 turn으로 전달되고, agent가 지정된
+프로젝트 디렉터리에서 실제로 파일을 수정하며, 진행 상황이 실시간으로 브라우저에 흐르고,
+agent가 MCP를 통해 앱 상태를 읽고(`get_app_context`) 구조화된 결과를 앱에 push(`show_result`)한다.
+즉 `App → Agent`(실행)와 `Agent → MCP`(컨텍스트/도구)를 분리한다는 설계 전제가 실제로 성립한다.
 
 ---
 

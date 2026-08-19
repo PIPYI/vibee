@@ -1,0 +1,8 @@
+CLAUDE.md
+AGENTS.md
+
+# Windows "mark of the web" streams, materialized as files when copying into WSL
+*:Zone.Identifier
+
+node_modules/
+dist/
