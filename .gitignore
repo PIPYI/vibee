@@ -1,4 +1,5 @@
-CLAUDE.md
+# CLAUDE.md는 이 브랜치에서만 추적한다. 개인 설정이 아니라 프로토타입 작업 규칙이므로
+# PC를 옮겨도 따라와야 한다. main에서는 계속 무시된다.
 AGENTS.md
 
 # Windows "mark of the web" streams, materialized as files when copying into WSL
