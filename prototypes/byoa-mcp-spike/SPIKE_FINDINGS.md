@@ -4,19 +4,21 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 실행일 | 2026-08-19 |
-| 회귀 게이트 | `npm run acceptance` — 9개 항목 전부 통과 |
-| OS | Linux 6.6.87.2 (WSL2, Ubuntu) |
-| Node.js | v24.14.1 |
+| 실행일 | Phase A 2026-08-19 / Phase B 2026-08-20 |
+| 회귀 게이트 | `npm run acceptance` — codex·claude 각 9개 항목 전부 통과 |
+| OS | Linux 6.6.87.2 (WSL2, Ubuntu) / Phase B는 6.18.33.2 (WSL2, Ubuntu) |
+| Node.js | v24.14.1 (Phase A) / v18.19.1 (Phase B — bridge·MCP server는 동작, web dev server는 20+ 필요) |
 | Codex CLI | `codex-cli 0.148.0` (0.147.0에서도 검증했으나 동작이 달라졌다 — Finding 4) |
-| 인증 | ChatGPT 계정 로그인 상태 |
+| Claude Code | `2.1.237` + `@anthropic-ai/claude-agent-sdk` 0.3.237 |
+| 인증 | ChatGPT 계정 / Claude 계정 로그인 상태 |
 | Agent 모델 API 직접 호출 | 없음 |
 
 ---
 
 ## 1. 결론
 
-**Phase A(Codex) 가설은 참으로 확인되었다.**
+**Phase A(Codex)와 Phase B(Claude) 가설 모두 참으로 확인되었다.** 아래 §1~§8은 Phase A(Codex)
+검증 기록이고, Phase B(Claude) 결과는 §9에 있다.
 
 브라우저에서 만든 프롬프트가 로컬 Codex agent의 turn으로 전달되고, agent가 지정한 디렉터리에서
 실제로 파일을 수정했으며, 진행 상황이 WebSocket으로 브라우저에 흘렀고, agent가 MCP를 통해
@@ -543,14 +545,293 @@ npm run build && npm run acceptance
 
 ---
 
-## 9. 남은 것 / 하지 않은 것
+## 9. Phase B — Claude adapter (2026-08-20)
 
-- **Phase B (Claude adapter)** — 미착수. Codex acceptance가 통과한 지금이 시작 시점이다.
-  `AgentAdapter` 인터페이스는 이미 provider 중립이며, Bridge/Browser protocol은 그대로 둔 채
-  `ClaudeAdapter`만 추가하면 된다.
-- **다중 동시 task** — Bridge는 의도적으로 한 번에 하나의 task만 허용한다(409). `show_result`에
-  taskId가 없어 active task로 라우팅하기 때문이다. 제품에서는 tool input에 taskId를 넣거나
-  MCP session별 상태 분리가 필요하다.
+**Phase B 가설도 참으로 확인되었다.** Browser/Bridge protocol을 한 줄도 바꾸지 않고 provider만
+바꿔서 동일한 9개 acceptance 항목을 통과했다.
+
+```text
+$ npm run acceptance claude
+  [PASS] task가 오류 없이 완료됨
+  [PASS] 진행 이벤트가 스트리밍됨
+  [PASS] get_app_context — agent 스트림 증거
+  [PASS] get_app_context — bridge 도달 증거
+  [PASS] show_result — agent 스트림 증거
+  [PASS] show_result — bridge 도달 증거
+  [PASS] 구조화된 결과가 UI로 전달됨
+  [PASS] fileChange 이벤트에 README.md가 있음
+  [PASS] 파일시스템에 실제로 반영됨
+```
+
+`AgentAdapter` 인터페이스(`apps/bridge/src/agents/types.ts`)는 실제로 provider 중립이었다.
+`ClaudeAdapter`를 추가하고 `adapters` map에 등록한 것 외에 bridge의 HTTP/WebSocket 계층,
+`packages/protocol`의 `AgentEvent`, MCP server는 **변경하지 않았다.** 브라우저 쪽 변경도
+"agent 선택 select를 실제로 동작시킨 것"뿐이다.
+
+### Codex와 다른 점
+
+| | Codex | Claude |
+| --- | --- | --- |
+| Agent control | `codex app-server` child process + JSON-RPC | Agent SDK `query()` |
+| MCP 등록 | 전역 `codex mcp add` 필요 (`npm run mcp:register`) | **불필요** — `options.mcpServers`로 query마다 직접 전달 |
+| 다른 MCP 서버 격리 | elicitation에서 `serverName`을 보고 거부 | `strictMcpConfig: true`로 애초에 로드 안 됨 |
+| 도구 승인 | `mcpServer/elicitation/request` 응답 | `canUseTool` 콜백 |
+| 세션 재사용 | 프로젝트당 thread 하나 | 프로젝트당 `session_id` 하나 (`options.resume`) |
+| 중단 | `turn/interrupt` | `AbortController` |
+
+MCP 등록이 필요 없다는 점은 제품 관점에서 의미가 크다. Codex는 사용자의 전역 설정을 건드려야
+하고 그래서 register/unregister 스크립트와 "Bridge 재시작 필요" 절차가 따라붙지만, Claude는
+그 절차 전체가 사라진다.
+
+### 세션 재사용은 UI에 드러나야 한다 (Run -> Send / New Session)
+
+두 adapter 모두 **프로젝트 경로당 세션 하나를 만들어 bridge 프로세스가 사는 동안 재사용한다**
+(Codex는 thread, Claude는 `session_id` + `resume`). 즉 버튼을 반복해서 누르면 새 대화가
+시작되는 것이 아니라 **같은 대화가 이어진다.**
+
+실측으로 확인했다.
+
+```text
+Send #1  "숫자 7을 기억해줘"        -> agent.session ba034187 resumed=false
+Send #2  "그 숫자가 뭐였지?"        -> agent.session ba034187 resumed=true   답: "7"
+New Session
+Send #3  "그 숫자가 뭐였지?"        -> agent.session 125cb1f6 resumed=false  답: "모릅니다"
+```
+
+그런데 초기 UI는 이것을 전혀 드러내지 않았다. 버튼 하나("Run")만 있어서 화면만 봐서는 지금이
+새 대화인지 이어지는 대화인지 알 수 없었고, 실제로 사용자가 "Run을 누르면 새 세션이 계속
+시작되는 거냐"고 물었다. **동작이 아니라 UI가 문제였다.**
+
+바꾼 것:
+
+- `Run` -> `Send`. 프롬프트를 보내는 버튼이라는 뜻을 이름에 담았다.
+- `New Session` 버튼 추가. `POST /api/sessions/reset`이 adapter의 프로젝트별 세션 참조를 버린다.
+  **세션 파일을 지우지 않는다** — 이전 세션은 디스크에 남아 CLI에서 이어받을 수 있다.
+- `agent.session` 이벤트 추가(`sessionId`, `resumed`). 브라우저가 "세션 xxx · turn N"을 표시하고,
+  Activity에 `New session` / `Continuing session`을 남긴다.
+
+주의: Codex thread id는 UUIDv7이라 **앞 8자가 타임스탬프**다. 연달아 만든 두 세션이 같은
+prefix를 가져 처음엔 "reset이 동작하지 않는다"고 잘못 판단했다. UI는 13자를 보여준다.
+
+### Finding 6 — Claude에는 Codex의 `writableRoots`에 해당하는 강제가 없다
+
+#### What
+
+Codex adapter는 `sandboxPolicy: { type: "workspaceWrite", writableRoots: [projectPath] }`로
+**OS 레벨에서** 쓰기 범위를 프로젝트 디렉터리로 제한한다. Claude Agent SDK에는 이에 대응하는
+옵션이 없다. SDK 문서가 명시적으로 "파일시스템·네트워크 제한은 `sandbox` 설정이 아니라
+permission 규칙으로 한다"고 안내한다.
+
+#### 현재 대응
+
+`canUseTool` 콜백에서 직접 검사한다.
+
+- `Write` / `Edit` / `NotebookEdit` → 대상 경로가 `projectPath` 하위가 아니면 거부
+- `WebFetch` / `WebSearch` → 거부 (Codex의 `networkAccess: false`에 대응)
+- `mcp__byoa-spike__*` → 허용
+
+#### 남는 격차
+
+**`Bash`로 프로젝트 밖 경로에 쓰는 것은 이 훅 수준에서 막을 수 없다.** 임의의 셸 명령을
+파싱해 쓰기 대상을 알아내는 것은 신뢰할 수 없기 때문이다. Codex는 OS 샌드박스가 이것을 막고,
+Claude는 막지 않는다.
+
+`permissionMode: "bypassPermissions"`를 쓰면 더 편했겠지만 쓰지 않았다 — 그쪽이 격차를 더
+벌린다. 제품에서 이 격차를 메우려면 SDK의 `sandbox: { enabled: true }`(bubblewrap 등 OS 격리)를
+켜는 방향을 검토해야 하며, 이 spike 범위에서는 검증하지 않았다.
+
+#### Is this a prototype bug or provider limitation?
+
+Provider 간 설계 차이다. Codex는 샌드박스를 turn 파라미터로 받고, Claude는 permission 훅과
+별도의 sandbox 설정으로 분리해 둔다. 프로토타입 버그가 아니다.
+
+### Finding 8 — SDK가 만든 Claude 세션은 `--resume` picker에 뜨지 않는다
+
+Claude도 Codex처럼 자기 세션을 디스크에 남긴다.
+
+```text
+~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl
+예: ~/.claude/projects/-home-kimms-...-tmp-fixture/ba034187-....jsonl
+```
+
+그런데 **프로젝트 디렉터리에서 `claude --resume`을 실행해도 목록에 나오지 않는다.**
+
+```text
+Resume session
+  fixture
+  No conversations found in this project.
+```
+
+세션 파일은 그 자리에 있고(3개), `gitBranch`도 현재 브랜치(`main`)와 일치하며,
+`isSidechain: false`, `userType: "external"`로 정상이다. 그런데도 picker는 비어 있다.
+
+#### 무엇이 다른가
+
+우리 세션과 사람이 직접 친 세션의 메시지 필드를 비교했다.
+
+| | SDK가 만든 세션 | 대화형 세션 |
+| --- | --- | --- |
+| `entrypoint` | `sdk-cli` | `cli` |
+| `promptSource` | `sdk` | `typed`, `suggestion_accepted` |
+| `origin` | **필드 자체가 없음** | `{"kind":"human"}` |
+
+picker는 사람이 친 대화만 보여주도록 거르는 것으로 보인다. 우리 세션에는 `origin`이 없다.
+
+#### 그래도 이어받을 수는 있다
+
+picker에 안 뜰 뿐, 세션은 **완전히 살아 있고 이어받을 수 있다.** 둘 다 실제로 확인했다.
+
+| 방법 | SDK 세션 | 결과 |
+| --- | --- | --- |
+| `claude --resume` (picker) | 목록에 없음 | ❌ |
+| `claude -c` (해당 디렉터리에서) | 최근 세션을 찾아 이어받음 | ✅ |
+| `claude -p --resume <session-id>` | 이전 turn 내용을 기억한 채 이어짐 | ✅ |
+
+#### Codex와의 차이, 그리고 제품에 대한 함의
+
+Codex는 `originator: "byoa-mcp-spike-bridge"`가 찍혀 있어도 `codex resume` 목록에 그대로 나온다.
+즉 §7에서 확인한 "앱에서 시작하고 터미널에서 이어받기"는 **Codex에서는 그냥 되지만 Claude에서는
+세션 ID를 알아야만 된다.**
+
+따라서 제품이 Claude를 지원하려면 **앱이 세션 ID를 사용자에게 노출해야 한다.** 이 spike에서는
+`agent.session` 이벤트로 받은 ID를 화면에 표시하고 전체 ID를 복사할 수 있게 해 두었다.
+
+두 CLI 모두 세션을 cwd 기준으로 분류하므로, 어느 쪽이든 그 프로젝트 디렉터리에서 실행해야
+한다. Codex에는 그 필터를 끄는 `codex resume --all`이 있지만 Claude에는 대응 옵션이 없다.
+
+또 하나: Codex는 rollout 파일 첫 줄 `session_meta.payload`에 `cwd`와 `originator`가 함께 들어가
+**어떤 클라이언트가 만든 세션인지 파일만 보고 구분된다.** Claude 세션 파일에는 originator에
+해당하는 값이 없고 `cwd`도 첫 줄이 아니라 뒤쪽 대화 줄에 나온다. `entrypoint: "sdk-cli"`가
+그나마 가장 가까운 단서다.
+
+### Finding 9 — 윈도우 지원: 코드는 고쳤으나 **실기 검증은 하지 못했다**
+
+제품 요구사항상 윈도우 지원은 필수다. 코드를 검토해 윈도우에서 깨질 지점을 찾아 고쳤지만,
+**실제 윈도우에서 돌려보지는 못했다.** 검증 환경(WSL2)의 윈도우 쪽에는 Node.js·npm·Codex·
+Claude Code가 하나도 설치되어 있지 않아 E2E 테스트가 불가능했다.
+
+#### 무엇이 문제였나
+
+1. **`.cmd` 래퍼를 spawn할 수 없다.** 윈도우에서 `codex`, `claude`는 npm 전역 설치가 만든
+   `.cmd` 배치 파일이다. Node는 보안상 `.cmd`/`.bat`을 shell 없이 실행하지 않으므로
+   `spawn("codex", ["app-server"])`가 EINVAL/ENOENT로 실패한다. 해당 호출 4곳이 모두
+   bare 명령 이름을 쓰고 있었고 `process.platform` 분기가 전혀 없었다.
+
+2. **shell을 거치면 프로세스 정리가 깨진다.** shell로 띄우면 우리가 아는 pid는 `cmd.exe`이고
+   실제 agent는 그 자식이다. `child.kill()`은 `cmd.exe`만 죽여서 **agent가 고아로 남는다** —
+   §19의 "prototype 종료 후 child process가 남지 않는다"를 위반한다.
+
+#### 고친 방법
+
+`apps/bridge/src/platform.ts`에 플랫폼 차이를 모았다.
+
+- `cliSpawnOptions` — 윈도우에서만 `shell: true`. 인자가 전부 상수 문자열(`app-server`,
+  `--version`)이고 사용자 입력이 섞이지 않아 안전하다. 프로젝트 경로 같은 값은 argv가 아니라
+  stdio JSON으로 넘어간다.
+- `killTree()` — 윈도우에서는 `taskkill /pid <pid> /T /F`로 트리째 정리하고, POSIX에서는
+  기존 시그널 방식을 유지한다.
+
+적용 지점: `codex/appServerClient.ts`(spawn + dispose), `codex/adapter.ts`(`--version`),
+`claude/adapter.ts`(`--version`), `scripts/_shared.mjs`, `scripts/acceptance.mjs`.
+
+Claude adapter의 turn 실행 자체는 Agent SDK가 담당하며, SDK는 자체 플랫폼별 바이너리
+(`@anthropic-ai/claude-agent-sdk-win32-x64`)를 들고 있으므로 우리가 손댈 필요가 없다.
+MCP server는 `command: "node"`로 띄우는데 `node.exe`는 실제 실행 파일이라 문제되지 않는다.
+
+#### 남은 것 / 알려진 제약
+
+- **실기 검증 필요.** 윈도우에서 `npm run acceptance`가 통과해야 이 Finding을 "해결됨"으로
+  바꿀 수 있다. 리눅스 회귀가 없다는 것만 확인했다(codex·claude 9/9 통과, 자식 프로세스 잔여 없음).
+- **UNC 경로에서는 동작하지 않을 것이다.** `\\wsl.localhost\...`에서 `cmd.exe`를 실행하면
+  "UNC 경로는 지원되지 않습니다"로 작업 디렉터리가 `C:\Windows`로 바뀐다. 실제로 이 환경에서
+  재현했다. 윈도우에서는 반드시 `C:\` 아래에 체크아웃해야 한다.
+- **`SIGTERM`은 윈도우에서 발생하지 않는다.** 창을 X로 닫거나 강제 종료하면 cleanup 핸들러가
+  돌지 않는다. **Ctrl+C**로 종료해야 자식 프로세스가 정리된다.
+
+#### 검증 절차
+
+윈도우 쪽에 따로 설치해야 한다 (WSL에 깐 것은 쓸 수 없다). PowerShell에서:
+
+```powershell
+cd C:\dev                              # UNC 경로 금지
+git clone <repo> && cd <repo>\prototypes\byoa-mcp-spike
+
+winget install OpenJS.NodeJS.LTS       # Node 20+
+npm i -g @openai/codex && codex login  # Codex를 검증할 경우
+npm i -g @anthropic-ai/claude-code && claude   # Claude를 검증할 경우
+
+npm install && npm run build && npm run fixture
+npm run mcp:register                   # Codex를 쓸 때만
+
+npm run bridge                         # 창 1
+npm run acceptance                     # 창 2 — agent마다 9개 항목
+```
+
+확인할 것:
+
+| 항목 | 실패하면 의심할 것 |
+| --- | --- |
+| `/api/health`에 두 agent 버전이 뜨는가 | `.cmd` 실행 실패 → `cliSpawnOptions` |
+| acceptance 9/9 통과 | 항목별로 원인이 다르다. §2 참고 |
+| Ctrl+C 후 `tasklist \| findstr /i "codex claude node"`가 비는가 | `killTree()`의 taskkill 경로 |
+| 브라우저 Stop → `Task interrupted` | Finding 7 |
+| 브라우저 New Session → 새 세션 ID | `resetSession()` |
+- **`SIGTERM`은 윈도우에서 발생하지 않는다.** `index.ts`의 `process.on("SIGTERM")` 핸들러는
+  윈도우에서 호출되지 않는다(Node 문서). `SIGINT`(Ctrl+C)는 동작하므로 터미널에서 정상 종료할
+  수는 있지만, 프로세스를 강제 종료하면 cleanup이 돌지 않는다.
+- 경로 처리는 전부 `node:path`(`join`/`resolve`/`sep`)를 쓰므로 윈도우에서도 동작할 것으로
+  보이지만 이것도 실기 확인 대상이다.
+
+### Finding 7 — abort는 result 메시지가 아니라 예외로 끝난다 (해결됨)
+
+#### What failed
+
+Stop 버튼이 `task.interrupted`가 아니라 `task.error`를 냈다.
+
+```text
+최종 이벤트: task.error  Claude Code process aborted by user
+```
+
+#### Expected
+
+Codex의 `turn/interrupt`와 마찬가지로 `task.interrupted`.
+
+#### Actual
+
+Codex는 중단 결과를 `turn/completed`의 `status: "interrupted"`로 알려주므로 정상 흐름 안에서
+구분된다(Finding 2). Claude Agent SDK는 다르다. `AbortController.abort()`를 호출하면 `query()`의
+async iterator가 **result 메시지를 내지 않고 예외를 던진다.** 그 예외가 bridge의 `runTask`
+catch로 흘러가 `task.error`가 되었다.
+
+#### Resolution
+
+`startTask`의 for-await를 try/catch로 감싸고, `abortController.signal.aborted`가 참이면
+예외를 다시 던지지 않고 `"interrupted"`를 반환한다. 이미 result 메시지 경로에도 같은 검사가
+있었지만, abort 시에는 그 경로에 도달하지 않는다는 것이 함정이었다.
+
+acceptance 9개 항목에는 Stop 시나리오가 없어서 이 버그는 자동 검증으로 잡히지 않았다.
+수동 확인(15초 후 Stop 요청)으로 발견했다.
+
+#### Is this a prototype bug or provider limitation?
+
+프로토타입 버그였다. SDK 동작은 문서화된 abort 시맨틱과 일치한다.
+
+---
+
+## 10. 남은 것 / 하지 않은 것
+
+- **다중 동시 task** — 검토 완료, **현행 유지(필요 없음)**. Bridge는 의도적으로 한 번에 하나의
+  task만 허용한다(409). 제품 설계(루트 `README.md`의 `AgentRuntime`, MVP 시나리오)가 프로젝트당
+  순차적인 대화 하나를 전제하므로 동시 실행 요구사항 자체가 없다. 만약 나중에 필요해지면
+  `show_result`에 taskId가 없다는 점(현재는 active task로 라우팅)부터 풀어야 한다.
+- **윈도우 실기 검증** — Finding 9. 코드는 고쳤으나 실제 윈도우에서 돌려보지 못했다.
+  Node.js + Codex CLI + Claude Code를 윈도우에 설치하고 `npm run acceptance`를 통과시켜야 한다.
+- **Claude의 Bash 쓰기 범위 제한** — Finding 6. OS 샌드박스 검토는 하지 않았다.
+- **acceptance에 Stop 시나리오가 없다** — Finding 7이 자동 검증을 빠져나간 이유다. 두 provider
+  모두 Stop은 수동으로만 확인했다. 회귀 게이트에 넣는 편이 낫다.
+- **Node.js 20+ 확인** — Phase B는 Node v18.19.1에서 검증했다. bridge·MCP server·acceptance는
+  정상 동작하지만 `npm run web`(vite 8)은 20.19+를 요구하므로, 브라우저 UI를 띄우려면
+  Node를 올려야 한다.
 - **MCP tool 승인 UX** — 현재는 Bridge가 정책으로 자동 처리한다. 제품에서는 사용자에게
   노출해야 한다(Finding 1).
 - **Agent가 무관한 파일을 읽는 경우** — 일부 run에서 Codex가 전역 skill 문서를 먼저 읽었다.

@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { realpath, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import express, { type NextFunction, type Request, type Response } from "express";
 import { WebSocketServer } from "ws";
@@ -21,11 +22,13 @@ import {
   BRIDGE_TOKEN_HEADER,
   type AgentEvent,
   type AgentReadiness,
+  type ResetSessionRequest,
   type ShowResultInput,
   type StartTaskRequest,
 } from "@byoa/protocol";
 import { fixturePath, loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
 
+import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter } from "./agents/types.js";
 import { buildSpikePrompt } from "./prompt.js";
@@ -40,7 +43,15 @@ const state = new BridgeState();
 const defaultProjectPath = fixturePath(spikeRoot);
 
 const codex = new CodexAdapter(log);
-const adapters = new Map<string, AgentAdapter>([["codex", codex]]);
+const claude = new ClaudeAdapter(log, {
+  mcpServerEntry: join(spikeRoot, "packages", "mcp-server", "dist", "index.js"),
+  bridgeUrl: config.baseUrl,
+  bridgeToken: config.token,
+});
+const adapters = new Map<string, AgentAdapter>([
+  ["codex", codex],
+  ["claude", claude],
+]);
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -48,15 +59,7 @@ app.use(express.json({ limit: "1mb" }));
 // ---------- 브라우저 API ----------
 
 app.get("/api/health", async (_req: Request, res: Response) => {
-  const readiness: AgentReadiness[] = [
-    await codex.checkReady(),
-    {
-      agent: "claude",
-      installed: false,
-      authenticated: "unknown",
-      message: "Phase B. Not implemented until the Codex acceptance test passes.",
-    },
-  ];
+  const readiness: AgentReadiness[] = [await codex.checkReady(), await claude.checkReady()];
   res.json({ ok: true, agents: readiness });
 });
 
@@ -79,7 +82,8 @@ app.post("/api/tasks", async (req: Request, res: Response) => {
 
   const adapter = adapters.get(body?.agent ?? "");
   if (!adapter) {
-    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Only "codex" is implemented (Phase A).` });
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
     return;
   }
   if (state.getActiveTaskId()) {
@@ -123,6 +127,39 @@ app.post("/api/tasks", async (req: Request, res: Response) => {
   res.json({ taskId });
 
   void runTask(adapter, taskId, projectPath, body.prompt);
+});
+
+/**
+ * 프로젝트에 묶인 세션을 놓아준다 (브라우저의 "New Session").
+ *
+ * 세션 파일을 지우지 않는다 — bridge가 들고 있던 참조만 버리므로, 다음 task는 새 세션에서
+ * 시작하고 이전 세션은 디스크에 남아 CLI에서 이어받을 수 있다.
+ */
+app.post("/api/sessions/reset", async (req: Request, res: Response) => {
+  const body = req.body as ResetSessionRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is running. Stop it before starting a new session." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  adapter.resetSession(projectPath);
+  log(`session reset: ${adapter.id} @ ${projectPath}`);
+  res.json({ ok: true });
 });
 
 app.post("/api/tasks/:taskId/stop", async (req: Request, res: Response) => {

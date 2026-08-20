@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { MCP_SERVER_NAME, type AgentEvent, type AgentReadiness } from "@byoa/protocol";
 
+import { cliSpawnOptions } from "../../platform.js";
 import type { AgentAdapter, StartTaskInput, TaskOutcome } from "../types.js";
 import { CodexAppServerClient, type ServerRequest } from "./appServerClient.js";
 
@@ -68,7 +69,7 @@ export class CodexAdapter implements AgentAdapter {
   async checkReady(): Promise<AgentReadiness> {
     let version: string | undefined;
     try {
-      const { stdout } = await execFileAsync("codex", ["--version"]);
+      const { stdout } = await execFileAsync("codex", ["--version"], cliSpawnOptions);
       version = stdout.trim();
     } catch {
       return {
@@ -141,7 +142,9 @@ export class CodexAdapter implements AgentAdapter {
 
   async startTask(input: StartTaskInput, emit: (event: AgentEvent) => void): Promise<TaskOutcome> {
     const client = await this.ensureClient();
+    const resumed = this.threadsByProject.has(input.projectPath);
     const threadId = await this.ensureThread(client, input.projectPath);
+    emit({ type: "agent.session", taskId: input.taskId, sessionId: threadId, resumed });
 
     const settled = new Promise<TaskOutcome>((resolve, reject) => {
       const task: RunningTask = {
@@ -196,6 +199,13 @@ export class CodexAdapter implements AgentAdapter {
     const entry = [...this.tasksByThread.values()].find((task) => task.taskId === taskId);
     if (!entry?.turnId || !this.client) return;
     await this.client.request("turn/interrupt", { threadId: entry.threadId, turnId: entry.turnId });
+  }
+
+  resetSession(projectPath: string): void {
+    // thread를 놓아주기만 한다. app-server가 들고 있는 thread 자체는 bridge가 살아있는 동안
+    // 계속 열려 있으므로, 그 thread를 CLI에서 resume 하려면 bridge를 종료해야 한다
+    // (SPIKE_FINDINGS.md §7의 writer 잠금).
+    this.threadsByProject.delete(projectPath);
   }
 
   /**

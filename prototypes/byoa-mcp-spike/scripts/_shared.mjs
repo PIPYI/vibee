@@ -21,9 +21,13 @@ export async function fixtureDir() {
   return (await protocolNode()).fixturePath(spikeRoot);
 }
 
+/** 윈도우에서 codex/claude는 .cmd 래퍼라 shell을 거쳐야 실행된다 (apps/bridge/src/platform.ts). */
+export const cliSpawnOptions = { shell: process.platform === "win32" };
+
 export function codex(args, { capture = false } = {}) {
   return execFileSync("codex", args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+    ...cliSpawnOptions,
   });
 }

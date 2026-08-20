@@ -52,6 +52,12 @@ export type McpToolName = "get_app_context" | "show_result";
  */
 export type AgentEvent =
   | { type: "task.started"; taskId: string; agent: AgentId; projectPath: string }
+  /**
+   * 이 task가 어느 세션에서 도는지. `resumed: false`면 새로 만들어진 세션이고,
+   * `true`면 같은 프로젝트에서 이전 turn을 이어받은 것이다. 브라우저가 "새 대화인지
+   * 이어지는 대화인지"를 보여주는 근거가 된다.
+   */
+  | { type: "agent.session"; taskId: string; sessionId: string; resumed: boolean }
   | { type: "agent.message.delta"; taskId: string; text: string }
   | { type: "agent.action.started"; taskId: string; name: string; detail?: unknown }
   | { type: "agent.action.completed"; taskId: string; name: string; detail?: unknown }
@@ -108,6 +114,16 @@ export type StartTaskRequest = {
 };
 
 export type StartTaskResponse = { taskId: string };
+
+/**
+ * 프로젝트에 묶인 세션을 놓아준다. 다음 task는 새 세션에서 시작한다.
+ * 세션 자체를 지우는 것이 아니라 bridge가 들고 있던 참조만 버린다 —
+ * 이전 세션은 디스크에 그대로 남아 CLI에서 이어받을 수 있다.
+ */
+export type ResetSessionRequest = {
+  agent: AgentId;
+  projectPath: string;
+};
 
 export type AppContextPatch = {
   projectPath?: string;

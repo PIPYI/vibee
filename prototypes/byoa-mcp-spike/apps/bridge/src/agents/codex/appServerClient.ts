@@ -10,6 +10,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 
+import { cliSpawnOptions, isWindows, killTree } from "../../platform.js";
+
 type JsonRpcId = number | string;
 
 type JsonRpcMessage = {
@@ -55,7 +57,8 @@ export class CodexAppServerClient {
 
     const command = this.options.command ?? "codex";
     const args = this.options.args ?? ["app-server"];
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    // 윈도우에서는 codex가 .cmd 래퍼라 shell을 거쳐야 한다 (platform.ts 참고).
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], ...cliSpawnOptions });
     this.child = child;
 
     child.on("error", (error) => this.failAllPending(new Error(`codex app-server failed to start: ${error.message}`)));
@@ -158,10 +161,11 @@ export class CodexAppServerClient {
       const done = () => resolve();
       child.once("exit", done);
       child.stdin.end();
-      child.kill("SIGTERM");
-      // SIGTERM이 무시되는 경우에도 app-server가 남지 않도록 한다 (§19 cleanup).
+      // 윈도우에서는 우리가 아는 pid가 cmd.exe라 트리째 정리해야 agent가 고아로 남지 않는다.
+      void killTree(child);
+      // 시그널이 무시되는 경우에도 app-server가 남지 않도록 한다 (§19 cleanup).
       setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
+        if (child.exitCode === null && !isWindows) child.kill("SIGKILL");
         resolve();
       }, 2000).unref();
     });

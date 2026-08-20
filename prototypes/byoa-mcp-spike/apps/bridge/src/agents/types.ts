@@ -19,5 +19,10 @@ export interface AgentAdapter {
   /** turn이 어떻게 끝났는지를 resolve로 알린다. 실제 실패일 때만 throw 한다. */
   startTask(input: StartTaskInput, emit: (event: AgentEvent) => void): Promise<TaskOutcome>;
   stopTask(taskId: string): Promise<void>;
+  /**
+   * 이 프로젝트에 묶어 둔 세션 참조를 버린다. 다음 startTask는 새 세션을 만든다.
+   * 이미 만들어진 세션은 디스크에 그대로 남는다 (CLI에서 이어받을 수 있다).
+   */
+  resetSession(projectPath: string): void;
   dispose(): Promise<void>;
 }

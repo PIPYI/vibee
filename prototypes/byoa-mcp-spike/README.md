@@ -2,16 +2,17 @@
 
 기술 검증용 프로토타입입니다. 제품 기능이 아니라 **아키텍처 가설 하나**를 실제 local coding agent로 증명하는 것이 목적입니다.
 
-> 브라우저 UI에서 만든 프롬프트를 로컬에 설치·로그인된 Codex agent에 전달하고,
+> 브라우저 UI에서 만든 프롬프트를 로컬에 설치·로그인된 coding agent에 전달하고,
 > agent가 지정한 프로젝트 디렉터리에서 실제 작업을 수행하며,
 > 진행 상황을 브라우저에 실시간 표시하고,
 > agent가 MCP를 통해 앱 상태를 읽고 구조화된 결과를 앱에 push할 수 있는가?
 
-**결과: Phase A(Codex) 검증 성공.** 전체 acceptance criteria 통과 기록과 도중에 발견한
-프로토콜 이슈는 [`SPIKE_FINDINGS.md`](./SPIKE_FINDINGS.md)에 있습니다.
+**결과: Phase A(Codex) · Phase B(Claude) 모두 검증 성공.** 두 provider가 동일한 acceptance
+9개 항목을 통과했고, Browser/Bridge protocol은 provider별로 분기하지 않습니다. 통과 기록과
+도중에 발견한 프로토콜 이슈는 [`SPIKE_FINDINGS.md`](./SPIKE_FINDINGS.md)에 있습니다.
 
 이 프로토타입은 **OpenAI/Anthropic 모델 API를 직접 호출하지 않습니다.** 추론은 전적으로
-사용자가 이미 설치·로그인해 둔 Codex CLI가 담당합니다. API key 입력 UI도 없습니다.
+사용자가 이미 설치·로그인해 둔 Codex CLI / Claude Code가 담당합니다. API key 입력 UI도 없습니다.
 
 ---
 
@@ -20,18 +21,18 @@
 이 spike의 핵심은 세 통신 경로를 섞지 않는 것입니다.
 
 ```text
-A. Agent Control    Browser --HTTP--> Bridge --stdio JSON-RPC--> codex app-server
-B. Event Stream     codex notifications --normalize--> Bridge --WebSocket--> Browser
-C. MCP Tool         codex --stdio MCP--> MCP Server --loopback HTTP--> Bridge --WS--> Browser
+A. Agent Control    Browser --HTTP--> Bridge --stdio JSON-RPC / Agent SDK--> agent
+B. Event Stream     agent notifications --normalize--> Bridge --WebSocket--> Browser
+C. MCP Tool         agent --stdio MCP--> MCP Server --loopback HTTP--> Bridge --WS--> Browser
 ```
 
-A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 Codex raw protocol과
-브라우저 protocol 사이의 adapter이며, 브라우저는 Codex 타입을 전혀 보지 않습니다
+A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 provider raw protocol과
+브라우저 protocol 사이의 adapter이며, 브라우저는 Codex/Claude 타입을 전혀 보지 않습니다
 (`packages/protocol`의 `AgentEvent` union만 봅니다).
 
 ```text
 ┌──────────────────────────┐
-│ React Browser UI (:5173) │  Project Path / Prompt / Run / Stop
+│ React Browser UI (:5173) │  Project Path / Prompt / Send / Stop / New Session
 └────────────┬─────────────┘  Activity Log / Structured Result
              │ HTTP + WebSocket
              ▼
@@ -52,20 +53,30 @@ A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 Codex
 
 ## Prerequisites
 
-- Node.js 20+ (검증 환경: v24.14.1)
-- Codex CLI 설치 및 로그인 (검증 환경: `codex-cli 0.148.0`)
+- **Node.js 20+** — 브라우저 UI(Vite 8)에 필수입니다. bridge·MCP server·acceptance는 18에서도
+  돌지만, npm 9로 설치하면 optional dependency 버그로 Vite 네이티브 바이너리가 빠집니다.
+  Node 20+에서 `npm install`을 다시 하면 해결됩니다.
+- 쓰려는 agent 중 **하나 이상**이 설치·로그인되어 있을 것
+
+> agent 앱이나 터미널을 **켜 둘 필요는 없습니다.** Bridge가 자기 자신의 agent 프로세스를
+> 직접 띄우므로, 디스크에 저장된 로그인 자격증명만 있으면 됩니다. 옆에 Codex Desktop이나
+> Claude Code를 열어 두어도 서로 간섭하지 않습니다 (문서 §1.1).
+
+**플랫폼**: Linux / macOS / WSL2에서 검증되었습니다. 윈도우 네이티브는 코드상 대응만 되어 있고
+**실기 검증이 남아 있습니다** — 절차와 알려진 제약은 `SPIKE_FINDINGS.md` Finding 9에 있습니다.
 
 ```bash
-codex --version
-codex login          # 이미 로그인되어 있다면 불필요
+codex --version && codex login     # Codex를 쓸 경우 (검증 환경: codex-cli 0.148.0)
+claude --version                   # Claude를 쓸 경우 (검증 환경: 2.1.237)
 ```
 
-Bridge는 시작 시 Codex 설치 여부와 인증 상태를 확인하고, 준비되지 않았다면 브라우저에
-명확한 에러를 표시합니다. Bridge는 사용자의 Codex credential을 직접 읽거나 복사하지 않고,
-app-server의 `account/read` 응답으로 인증 여부만 확인합니다(이메일 등은 브라우저로 보내지 않음).
+Bridge는 시작 시 두 agent의 설치·인증 상태를 확인하고, 준비되지 않았다면 브라우저에
+명확한 에러를 표시합니다. Bridge는 사용자의 credential을 직접 읽거나 복사하지 않습니다
+(Codex는 app-server의 `account/read` 응답으로 인증 여부만 확인하며, 이메일 등은 브라우저로
+보내지 않습니다).
 
-Codex Desktop이나 Codex CLI를 옆에서 따로 띄워 두어도 무방합니다. 이 프로토타입은 기존
-GUI 세션을 조작하지 않고 **자기 자신의 agent 세션**을 만들며, 같은 프로젝트 디렉터리를
+Codex Desktop이나 Codex CLI, Claude Code를 옆에서 따로 띄워 두어도 무방합니다. 이 프로토타입은
+기존 GUI 세션을 조작하지 않고 **자기 자신의 agent 세션**을 만들며, 같은 프로젝트 디렉터리를
 cwd로 공유할 뿐입니다.
 
 ---
@@ -83,6 +94,9 @@ npm run build          # protocol → mcp-server → bridge → web
 ---
 
 ## Register MCP
+
+**Codex를 쓸 때만 필요합니다.** Claude adapter는 query마다 MCP server를 직접 넘기므로
+등록이 필요 없습니다 (`SPIKE_FINDINGS.md` §9).
 
 MCP server를 Codex에 등록합니다. **전역 Codex 설정을 몰래 수정하지 않습니다.**
 
@@ -148,7 +162,7 @@ fixture는 **자체 git 저장소로 초기화**됩니다. 상위 저장소와 �
 | Mock App Selection | Login Screen |
 | Prompt | `README.md의 마지막에 "Edited by BYOA agent." 를 추가해줘.` |
 
-**Run**을 누릅니다.
+**Send**를 누릅니다.
 
 ### Expected result
 
@@ -187,20 +201,61 @@ Original content.
 Edited by BYOA agent.
 ```
 
-**Stop** 버튼은 진행 중인 turn을 `turn/interrupt`로 중단하고 `task.interrupted`를 표시합니다.
+**Stop** 버튼은 진행 중인 turn을 중단하고 `task.interrupted`를 표시합니다
+(Codex는 `turn/interrupt`, Claude는 `AbortController`).
+
+### 세션은 이어집니다
+
+**Send를 반복해서 눌러도 새 대화가 시작되지 않습니다.** 두 adapter 모두 프로젝트 경로당 세션
+하나를 만들어 Bridge가 사는 동안 재사용하므로, 두 번째 Send는 첫 번째 대화를 이어받습니다.
+화면 하단에 `세션 xxx · turn N`으로 현재 상태가 표시됩니다.
+
+새 대화로 시작하려면 **New Session**을 누릅니다. 세션 파일을 지우는 것이 아니라 Bridge가 들고
+있던 참조만 버리므로, 이전 세션은 그대로 남아 CLI에서 이어받을 수 있습니다.
+
+```bash
+cd <프로젝트 디렉터리>   # 브라우저에서 지정한 Project Path
+
+codex resume            # 목록에 그대로 나옴 (필터를 끄려면 codex resume --all)
+
+claude -c                          # 이 디렉터리의 최근 세션 이어받기
+claude --resume <session-id>       # ID를 지정해서 이어받기
+```
+
+두 CLI 모두 세션을 cwd 기준으로 분류하므로 그 프로젝트 디렉터리에서 실행해야 합니다.
+
+> **Claude 주의**: SDK로 만든 세션은 `claude --resume`의 **목록에 나오지 않습니다**
+> (`entrypoint: "sdk-cli"`로 기록되어 picker가 걸러냅니다). `-c`나 세션 ID를 직접 주면
+> 정상적으로 이어받아집니다. 그래서 UI가 세션 ID를 표시하고 복사 버튼을 제공합니다.
+> 자세한 내용은 `SPIKE_FINDINGS.md` Finding 8.
 
 ### 자동 검증
 
 같은 시나리오를 사람 손 없이 확인하려면 (Bridge가 떠 있는 상태에서):
 
 ```bash
-npm run acceptance
+npm run acceptance          # codex, claude 둘 다
+npm run acceptance codex    # 하나만
+npm run acceptance claude
 ```
 
-acceptance criteria 9개를 검사하고 하나라도 어긋나면 비정상 종료합니다.
-**Codex를 업데이트한 뒤에는 이것부터 돌리세요** — 이 spike는 Codex의 스키마가 아니라
-*동작*에 의존하며, 실제로 0.147 → 0.148 업데이트에서 한 번 깨졌습니다
+agent마다 acceptance criteria 9개를 검사하고 하나라도 어긋나면 비정상 종료합니다.
+**CLI를 업데이트한 뒤에는 이것부터 돌리세요** — 이 spike는 스키마가 아니라 *동작*에
+의존하며, 실제로 Codex 0.147 → 0.148 업데이트에서 한 번 깨졌습니다
 (`SPIKE_FINDINGS.md` Finding 4, §8).
+
+### 테스트 세션 정리
+
+테스트를 반복하면 fixture 디렉터리에서 실행된 세션이 계속 쌓여 `codex resume` /
+`claude --resume` 목록을 채웁니다. 그것만 골라 지우려면 (Bridge를 끈 상태에서):
+
+```bash
+npm run sessions:cleanup
+```
+
+`~/.codex/sessions`와 `~/.claude/projects`를 훑어 **세션의 `cwd`가 이 spike의 fixture 경로와
+정확히 일치하는 것만** 지웁니다. 사용자가 자기 실제 프로젝트에서 만든 세션은 건드리지
+않습니다. Bridge가 떠 있으면 사용 중인 세션을 건드릴 수 있으므로 실행을 거부합니다.
 
 ### MCP 호출을 어떻게 신뢰하는가
 
@@ -268,13 +323,14 @@ Bridge는 SIGINT/SIGTERM에서 `codex app-server` child process를 정리합니�
 prototypes/byoa-mcp-spike/
 ├─ apps/
 │  ├─ bridge/                HTTP API + WebSocket hub + agent adapters
-│  │  └─ src/agents/codex/   app-server JSON-RPC client + event normalizer
+│  │  ├─ src/agents/codex/   app-server JSON-RPC client + event normalizer
+│  │  └─ src/agents/claude/  Agent SDK query() + event normalizer
 │  └─ web/                   React + Vite UI
 ├─ packages/
 │  ├─ protocol/              브라우저·bridge·MCP가 공유하는 타입
 │  └─ mcp-server/            stdio MCP server (get_app_context, show_result)
-├─ scripts/                  register/unregister/status/fixture/acceptance
-├─ SPIKE_FINDINGS.md
+├─ scripts/                  register/unregister/status/fixture/acceptance/cleanup
+├─ SPIKE_FINDINGS.md         검증 결과와 Findings
 └─ README.md
 ```
 
@@ -301,7 +357,7 @@ prototypes/byoa-mcp-spike/
 | `Codex is not ready. Please log in` | `codex login` 실행 후 Bridge 재시작 |
 | `Bridge is not reachable` | `npm run bridge`가 떠 있는지, 43120 포트가 비어 있는지 확인 |
 | MCP 호출이 `[agent-stream]`만 뜨고 `[bridge-endpoint]`가 없음 | MCP server가 Bridge에 못 붙는 상태. `npm run mcp:status`로 `BRIDGE_URL`/`BRIDGE_TOKEN`이 `.byoa-spike/bridge.json`과 맞는지 확인하고, 토큰을 재생성했다면 `npm run mcp:register`를 다시 실행 |
-| MCP 호출이 아예 없음 | `npm run mcp:status`로 등록 확인. 등록 후 Bridge를 재시작해야 Codex가 새 서버를 집어 옵니다 |
+| MCP 호출이 아예 없음 (Codex) | `npm run mcp:status`로 등록 확인. 등록 후 Bridge를 재시작해야 Codex가 새 서버를 집어 옵니다. bridge 로그에 `unknown MCP server 'byoa-spike'`가 보이면 이 경우입니다 |
 | `A task is already running` | 이 spike는 동시에 한 개의 task만 허용합니다. Stop을 누르거나 끝날 때까지 대기 |
 | 포트를 바꾸고 싶음 | `BRIDGE_PORT=... npm run bridge` 후 `npm run mcp:register` 재실행 |
 

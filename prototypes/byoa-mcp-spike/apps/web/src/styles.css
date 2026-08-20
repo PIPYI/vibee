@@ -87,6 +87,16 @@ button {
 button.secondary { background: transparent; color: var(--text); border-color: var(--border); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* 문장 안에 끼워 넣는 보조 동작(세션 ID 복사)용. 버튼이지만 링크처럼 보이게 한다. */
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: underline;
+}
+
 .muted { color: var(--muted); }
 
 .banner { margin: 0; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); }
