@@ -21,21 +21,32 @@
 실제 local coding agent로 검증한 프로토타입이 있다.
 
 - 전체 설계: [`docs/vibe_coding_assistant_design.md`](./docs/vibe_coding_assistant_design.md)
+- 기능 3.1(요구사항·의사결정) 동작 설계: [`docs/requirements_flow.md`](./docs/requirements_flow.md)
 - BYOA + MCP 통합 검증 사양: [`docs/BYOA_MCP_INTEGRATION_SPIKE.md`](./docs/BYOA_MCP_INTEGRATION_SPIKE.md)
 - 그 검증 프로토타입: [`prototype/byoa-mcp-spike` 브랜치](../../tree/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike)
-  — **Phase A(Codex) · Phase B(Claude) 검증 성공**
   ([검증 결과](../../blob/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike/SPIKE_FINDINGS.md))
 
 프로토타입은 제품 코드가 아니라 기술 검증용 spike이므로 `main`에 두지 않고 별도 브랜치로 분리했다.
+스택이 정해지면 새로 만들되 **메커니즘만 가져간다.**
 
-검증된 것: 브라우저에서 만든 프롬프트가 로컬 agent의 turn으로 전달되고, agent가 지정된
-프로젝트 디렉터리에서 실제로 파일을 수정하며, 진행 상황이 실시간으로 브라우저에 흐르고,
-agent가 MCP를 통해 앱 상태를 읽고(`get_app_context`) 구조화된 결과를 앱에 push(`show_result`)한다.
-즉 `App → Agent`(실행)와 `Agent → MCP`(컨텍스트/도구)를 분리한다는 설계 전제가 실제로 성립한다.
+### 지금까지 검증된 것
 
-**Codex와 Claude Code 두 provider가 동일한 검증 항목을 통과**했고, 그 과정에서 Browser/Bridge
-protocol은 한 줄도 provider별로 분기하지 않았다. Agent Adapter 계층으로 provider 종속을
-피한다는 설계(§9 Agent Integration 전략)가 가설이 아니라 실측으로 확인된 셈이다.
+| | 확인한 것 |
+| --- | --- |
+| **Phase A** (Codex) | 브라우저 프롬프트가 로컬 agent의 turn으로 전달되고, agent가 지정된 디렉터리에서 실제로 파일을 수정하며, 진행 상황이 실시간으로 흐르고, MCP로 앱 상태를 읽고(`get_app_context`) 결과를 앱에 push(`show_result`)한다 |
+| **Phase B** (Claude) | 같은 검증 항목을 provider만 바꿔 통과. Browser/Bridge protocol은 **한 줄도 provider별로 분기하지 않았다** |
+| **Phase C** (인터뷰 루프) | agent가 구조화된 질문을 던지고 turn을 끝낸다 → 사용자가 답한다 → **다음 turn이 문맥을 이어받는다**. 두 provider 모두 성립 |
+
+즉 `App → Agent`(실행)와 `Agent → MCP`(컨텍스트/도구)를 분리한다는 설계 전제가 실제로
+성립하고, Agent Adapter 계층으로 provider 종속을 피한다는 설계(§9)도 실측으로 확인되었다.
+
+### 다음
+
+기능 3.1의 남은 검증 항목은 [`docs/requirements_flow.md`](./docs/requirements_flow.md) §8에 있다.
+가장 불확실한 것은 **일곱 단위(ACTOR/REQ/SURFACE/ENTITY/FLOW/RULE/DEC)가 대화에서 실제로
+구조화되어 추출되는가**이다.
+
+시각화 관련 작업은 [`prototype/ontology` 브랜치](../../tree/prototype/ontology)에서 별도로 진행 중이다.
 
 ---
 
