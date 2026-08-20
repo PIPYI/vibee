@@ -5,6 +5,7 @@ import type {
   AgentId,
   AgentReadiness,
   BridgeStateResponse,
+  PendingQuestion,
   SelectedItem,
   ShowResultInput,
   StartTaskResponse,
@@ -40,6 +41,10 @@ export function App() {
   const [session, setSession] = useState<{ id: string; turns: number } | null>(null);
   // 첫 연결 전에는 "connecting" — 아직 실패한 것이 아니므로 경고를 띄우지 않는다.
   const [stream, setStream] = useState<"connecting" | "open" | "closed">("connecting");
+  // 인터뷰: agent가 ask_user로 던진 질문과 사용자가 쓰는 답
+  const [question, setQuestion] = useState<PendingQuestion | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [asked, setAsked] = useState<Array<{ question: string; answer: string }>>([]);
 
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -130,6 +135,14 @@ export function App() {
           setResult(event.result);
           push("Structured result received via show_result", "mcp");
           break;
+        case "app.question":
+          setQuestion(event.question);
+          setAnswer("");
+          push(`질문 도착: ${event.question.question}`, "mcp");
+          break;
+        case "app.answer":
+          push(`답변 전송: ${event.answer}`, "good");
+          break;
         case "task.completed":
           setRunning(false);
           push("Task completed", "good");
@@ -175,6 +188,49 @@ export function App() {
   useEffect(() => {
     setSession(null);
   }, [agent, projectPath]);
+
+  /** 인터뷰 시작. agent가 첫 질문을 던지고 turn을 끝낸다. */
+  const startInterview = useCallback(async () => {
+    setError(null);
+    setLines([]);
+    setQuestion(null);
+    setAsked([]);
+    setResult(null);
+    setMessage("");
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath, prompt: "(interview)", mode: "interview" }),
+    });
+    const data = (await response.json()) as StartTaskResponse & { error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "Failed to start the interview");
+      return;
+    }
+    setTaskId(data.taskId);
+    setRunning(true);
+  }, [agent, projectPath]);
+
+  /** 답변을 보내면 bridge가 다음 turn을 자동으로 시작한다. */
+  const sendAnswer = useCallback(async () => {
+    if (!question || !answer.trim()) return;
+    setError(null);
+    setAsked((prev) => [...prev, { question: question.question, answer }]);
+    setQuestion(null);
+    setMessage("");
+    const response = await fetch("/api/questions/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath, answer }),
+    });
+    const data = (await response.json()) as StartTaskResponse & { error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "Failed to send the answer");
+      return;
+    }
+    setTaskId(data.taskId);
+    setRunning(true);
+  }, [agent, projectPath, question, answer]);
 
   const send = useCallback(async () => {
     setError(null);
@@ -274,6 +330,9 @@ export function App() {
           <button onClick={() => void stop()} disabled={!running} className="secondary">
             Stop
           </button>
+          <button onClick={() => void startInterview()} disabled={running || !projectPath.trim()} className="secondary">
+            인터뷰 시작
+          </button>
           <button onClick={() => void newSession()} disabled={running || !session} className="secondary">
             New Session
           </button>
@@ -293,9 +352,51 @@ export function App() {
 
         <div className="row checks">
           <Check label="get_app_context" done={mcpSeen.has("get_app_context")} />
+          <Check label="ask_user" done={mcpSeen.has("ask_user")} />
           <Check label="show_result" done={mcpSeen.has("show_result")} />
         </div>
       </section>
+
+      {(question || asked.length > 0) && (
+        <section className="panel">
+          <h2>인터뷰</h2>
+
+          {asked.map((exchange, index) => (
+            <div key={index} className="exchange">
+              <p className="asked">{exchange.question}</p>
+              <p className="answered">{exchange.answer}</p>
+            </div>
+          ))}
+
+          {question ? (
+            <div className="question">
+              <h3>{question.question}</h3>
+              {question.why && <p className="muted">{question.why}</p>}
+              {question.hints && question.hints.length > 0 && (
+                <p className="muted">예) {question.hints.join(" / ")}</p>
+              )}
+              {question.progress && (
+                <p className="muted">
+                  {question.progress.total}개 중 {question.progress.step}번째
+                </p>
+              )}
+              <textarea
+                rows={3}
+                value={answer}
+                placeholder="자유롭게 답하거나, 하고 싶은 말을 쓰세요"
+                onChange={(e) => setAnswer(e.target.value)}
+              />
+              <div className="row">
+                <button onClick={() => void sendAnswer()} disabled={running || !answer.trim()}>
+                  답변 보내기
+                </button>
+              </div>
+            </div>
+          ) : (
+            running && <p className="muted">에이전트가 생각하는 중…</p>
+          )}
+        </section>
+      )}
 
       <section className="panel">
         <h2>Agent Activity</h2>

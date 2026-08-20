@@ -87,6 +87,17 @@ button {
 button.secondary { background: transparent; color: var(--text); border-color: var(--border); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* ---------- 인터뷰 ---------- */
+
+.exchange { border-left: 3px solid var(--border); padding-left: 12px; margin-bottom: 12px; }
+.exchange .asked { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+.exchange .answered { margin: 0; font-weight: 500; }
+
+.question { border: 1px solid var(--accent); border-radius: 8px; padding: 14px; }
+.question h3 { margin: 0 0 6px; }
+.question p { margin: 0 0 6px; font-size: 14px; }
+.question textarea { width: 100%; margin-top: 8px; }
+
 /* 문장 안에 끼워 넣는 보조 동작(세션 ID 복사)용. 버튼이지만 링크처럼 보이게 한다. */
 button.link {
   background: none;

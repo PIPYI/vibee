@@ -20,6 +20,7 @@ import { z } from "zod";
 import {
   BRIDGE_TOKEN_HEADER,
   type AppContext,
+  type AskUserInput,
   type ShowResultInput,
 } from "@byoa/protocol";
 import { loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
@@ -122,6 +123,55 @@ server.registerTool(
         {
           type: "text",
           text: `Result delivered to the BYOA app UI${ack.taskId ? ` for task ${ack.taskId}` : ""}.`,
+        },
+      ],
+    };
+  },
+);
+
+/**
+ * 인터뷰용 tool (docs/requirements_flow.md §4.3).
+ *
+ * **블로킹하지 않는다.** 질문을 앱에 등록만 하고 즉시 반환한다. MCP tool 호출에는 하드
+ * 월클럭 타임아웃이 있어(progress 알림으로도 연장되지 않는다) 사람의 답을 기다릴 수 없기
+ * 때문이다. agent는 이 tool을 부른 뒤 곧바로 turn을 끝내야 하고, 답변은 다음 turn에서
+ * `get_app_context`로 읽는다.
+ */
+server.registerTool(
+  "ask_user",
+  {
+    title: "Ask the user a question",
+    description:
+      "Register ONE question for the user and return immediately. This does NOT wait for an " +
+      "answer -- end your turn right after calling it. The user's answer arrives in the next " +
+      "turn, readable via get_app_context. Never call this more than once per turn.",
+    inputSchema: {
+      question: z.string().describe("The question, in plain language a non-programmer understands"),
+      why: z.string().optional().describe("Why you are asking, so the user is not left guessing"),
+      hints: z
+        .array(z.string())
+        .optional()
+        .describe("Example answers. These are hints, NOT choices -- the user types freely"),
+      progress: z
+        .object({ step: z.number(), total: z.number() })
+        .optional()
+        .describe("Rough progress so the user knows the interview is bounded"),
+    },
+  },
+  async (input) => {
+    const question = input as AskUserInput;
+    const ack = await bridgeFetch<{ questionId: string }>("/internal/questions", {
+      method: "POST",
+      body: JSON.stringify(question),
+    });
+    log("ask_user ->", question.question);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Question ${ack.questionId} delivered to the user. ` +
+            `End your turn now -- the answer will be in get_app_context next turn.`,
         },
       ],
     };

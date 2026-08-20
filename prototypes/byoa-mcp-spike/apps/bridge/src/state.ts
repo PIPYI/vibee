@@ -10,6 +10,10 @@ import type {
   AgentEventEnvelope,
   AppContext,
   AppContextPatch,
+  AskUserInput,
+  InterviewExchange,
+  InterviewState,
+  PendingQuestion,
   SelectedItem,
   ShowResultInput,
   TaskState,
@@ -29,13 +33,49 @@ export class BridgeState {
   private readonly buffer: AgentEventEnvelope[] = [];
   private readonly subscribers = new Set<(envelope: AgentEventEnvelope) => void>();
 
+  private pendingQuestion: PendingQuestion | null = null;
+  private readonly exchanges: InterviewExchange[] = [];
+  private questionSeq = 0;
+
   getAppContext(): AppContext {
     return {
       projectPath: this.projectPath,
       prompt: this.prompt,
       selectedItem: this.selectedItem,
+      interview: this.getInterview(),
       metadata: { source: "byoa-mcp-spike", timestamp: new Date().toISOString() },
     };
+  }
+
+  // ---------- 인터뷰 ----------
+
+  getInterview(): InterviewState {
+    return { pending: this.pendingQuestion, exchanges: [...this.exchanges] };
+  }
+
+  /** agent가 `ask_user`로 던진 질문을 등록한다. 이미 대기 중인 질문은 덮어쓴다. */
+  askQuestion(input: AskUserInput): PendingQuestion {
+    this.pendingQuestion = {
+      ...input,
+      id: `q${++this.questionSeq}`,
+      askedAt: new Date().toISOString(),
+    };
+    return this.pendingQuestion;
+  }
+
+  /** 대기 중인 질문에 답한다. 답할 질문이 없으면 null. */
+  answerQuestion(answer: string): { question: PendingQuestion; answer: string } | null {
+    const question = this.pendingQuestion;
+    if (!question) return null;
+    this.pendingQuestion = null;
+    this.exchanges.push({ question: question.question, answer, answeredAt: new Date().toISOString() });
+    return { question, answer };
+  }
+
+  resetInterview(): void {
+    this.pendingQuestion = null;
+    this.exchanges.length = 0;
+    this.questionSeq = 0;
   }
 
   patchAppContext(patch: AppContextPatch): AppContext {

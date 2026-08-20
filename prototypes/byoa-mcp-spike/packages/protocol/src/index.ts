@@ -29,6 +29,8 @@ export type AppContext = {
   projectPath: string;
   prompt: string;
   selectedItem: SelectedItem | null;
+  /** 인터뷰 spike용. agent가 지금까지의 문답을 여기서 읽는다. */
+  interview: InterviewState;
   metadata: {
     source: "byoa-mcp-spike";
     timestamp: string;
@@ -44,7 +46,40 @@ export type ShowResultInput = {
   details?: string[];
 };
 
-export type McpToolName = "get_app_context" | "show_result";
+export type McpToolName = "get_app_context" | "show_result" | "ask_user";
+
+/**
+ * agent가 `ask_user` MCP tool로 던지는 질문 (docs/requirements_flow.md §4.3).
+ *
+ * 이 tool은 **블로킹하지 않는다.** 질문을 등록만 하고 즉시 반환하며, agent는 곧바로 turn을
+ * 끝낸다. MCP tool 호출에는 하드 월클럭 타임아웃이 있어 사람의 답을 기다릴 수 없기 때문이다.
+ * 답변은 다음 turn에서 `get_app_context`로 읽는다.
+ */
+export type AskUserInput = {
+  question: string;
+  /** 왜 묻는지. 비전공자가 불안해하지 않도록. */
+  why?: string;
+  /** 선택지가 아니라 **예시**. 백지를 마주하는 부담만 덜어준다. */
+  hints?: string[];
+  progress?: { step: number; total: number };
+};
+
+export type PendingQuestion = AskUserInput & {
+  id: string;
+  askedAt: string;
+};
+
+export type InterviewExchange = {
+  question: string;
+  answer: string;
+  answeredAt: string;
+};
+
+/** 인터뷰 진행 상태. `get_app_context`에 실려 agent가 앞선 문답을 확인한다. */
+export type InterviewState = {
+  pending: PendingQuestion | null;
+  exchanges: InterviewExchange[];
+};
 
 /**
  * provider에 종속되지 않는 이벤트 모델 (§15). Codex 프로토콜 객체는 bridge에서
@@ -63,6 +98,8 @@ export type AgentEvent =
   | { type: "agent.action.completed"; taskId: string; name: string; detail?: unknown }
   | { type: "mcp.tool.called"; taskId: string; tool: McpToolName | string; source: "agent-stream" | "bridge-endpoint" }
   | { type: "app.result"; taskId: string; result: ShowResultInput }
+  | { type: "app.question"; taskId: string; question: PendingQuestion }
+  | { type: "app.answer"; taskId: string; questionId: string; answer: string }
   | { type: "task.completed"; taskId: string }
   | { type: "task.interrupted"; taskId: string }
   | { type: "task.error"; taskId: string; message: string };
@@ -111,6 +148,15 @@ export type StartTaskRequest = {
   appContext?: {
     selectedItem?: SelectedItem | null;
   };
+  /** 인터뷰 모드로 시작한다. 프롬프트가 ask_user 사용을 지시하는 형태로 감싸진다. */
+  mode?: "task" | "interview";
+};
+
+/** 브라우저가 대기 중인 질문에 답한다. 답변이 기록되고 다음 turn이 자동으로 시작된다. */
+export type AnswerQuestionRequest = {
+  agent: AgentId;
+  projectPath: string;
+  answer: string;
 };
 
 export type StartTaskResponse = { taskId: string };

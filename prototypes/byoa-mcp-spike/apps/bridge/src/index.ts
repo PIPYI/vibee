@@ -22,6 +22,8 @@ import {
   BRIDGE_TOKEN_HEADER,
   type AgentEvent,
   type AgentReadiness,
+  type AnswerQuestionRequest,
+  type AskUserInput,
   type ResetSessionRequest,
   type ShowResultInput,
   type StartTaskRequest,
@@ -31,7 +33,7 @@ import { fixturePath, loadBridgeConfig, spikeRootFromModule } from "@byoa/protoc
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter } from "./agents/types.js";
-import { buildSpikePrompt } from "./prompt.js";
+import { buildInterviewPrompt, buildSpikePrompt } from "./prompt.js";
 import { BridgeState } from "./state.js";
 
 const log = (...args: unknown[]): void => console.log("[bridge]", ...args);
@@ -109,6 +111,10 @@ app.post("/api/tasks", async (req: Request, res: Response) => {
     return;
   }
 
+  const interview = body.mode === "interview";
+  // 인터뷰를 새로 시작하면 이전 문답은 지운다. 같은 세션이라도 처음부터 묻게 하기 위함이다.
+  if (interview) state.resetInterview();
+
   const taskId = randomUUID();
   const selectedItem = body.appContext?.selectedItem ?? null;
 
@@ -126,7 +132,61 @@ app.post("/api/tasks", async (req: Request, res: Response) => {
 
   res.json({ taskId });
 
-  void runTask(adapter, taskId, projectPath, body.prompt);
+  void runTask(adapter, taskId, projectPath, interview ? buildInterviewPrompt(null) : buildSpikePrompt(body.prompt));
+});
+
+/**
+ * 대기 중인 질문에 답한다. 답변을 기록하고 **다음 turn을 자동으로 시작한다** —
+ * 이것이 인터뷰 루프의 핵심이다 (docs/requirements_flow.md §4.2).
+ */
+app.post("/api/questions/answer", async (req: Request, res: Response) => {
+  const body = req.body as AnswerQuestionRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+  if (!body?.answer?.trim()) {
+    res.status(400).json({ error: "answer is required" });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const recorded = state.answerQuestion(body.answer);
+  if (!recorded) {
+    res.status(409).json({ error: "There is no question waiting for an answer." });
+    return;
+  }
+
+  const taskId = randomUUID();
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: body.answer,
+    selectedItem: null,
+    status: "starting",
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  emit({ type: "app.answer", taskId, questionId: recorded.question.id, answer: body.answer });
+  res.json({ taskId });
+
+  void runTask(adapter, taskId, projectPath, buildInterviewPrompt(body.answer));
 });
 
 /**
@@ -210,6 +270,22 @@ app.post("/internal/results", requireToken, (req: Request, res: Response) => {
   res.json({ taskId });
 });
 
+/** agent가 `ask_user`로 던진 질문. 등록만 하고 즉시 응답한다 — 답을 기다리지 않는다. */
+app.post("/internal/questions", requireToken, (req: Request, res: Response) => {
+  const input = req.body as AskUserInput;
+  if (!input?.question?.trim()) {
+    res.status(400).json({ error: "question is required" });
+    return;
+  }
+
+  const question = state.askQuestion(input);
+  const taskId = noteMcpEndpointHit("ask_user");
+  if (taskId) emit({ type: "app.question", taskId, question });
+  else log("ask_user arrived with no active task; question stored but not routed to the UI");
+
+  res.json({ questionId: question.id });
+});
+
 // ---------- 연결 ----------
 
 function emit(event: AgentEvent): void {
@@ -228,12 +304,13 @@ function noteMcpEndpointHit(tool: string): string | null {
   return taskId;
 }
 
+/** `prompt`는 이미 감싸진 최종 프롬프트다. 어떤 래퍼를 쓸지는 호출자가 정한다. */
 async function runTask(adapter: AgentAdapter, taskId: string, projectPath: string, prompt: string): Promise<void> {
   state.updateTask(taskId, { status: "running" });
   emit({ type: "task.started", taskId, agent: adapter.id, projectPath });
 
   try {
-    const outcome = await adapter.startTask({ taskId, projectPath, prompt: buildSpikePrompt(prompt) }, (event) => {
+    const outcome = await adapter.startTask({ taskId, projectPath, prompt }, (event) => {
       if (event.type === "mcp.tool.called") state.recordMcpCall(taskId, event.tool, event.source);
       emit(event);
     });
