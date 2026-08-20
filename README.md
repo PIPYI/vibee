@@ -23,15 +23,19 @@
 - 전체 설계: [`docs/vibe_coding_assistant_design.md`](./docs/vibe_coding_assistant_design.md)
 - BYOA + MCP 통합 검증 사양: [`docs/BYOA_MCP_INTEGRATION_SPIKE.md`](./docs/BYOA_MCP_INTEGRATION_SPIKE.md)
 - 그 검증 프로토타입: [`prototype/byoa-mcp-spike` 브랜치](../../tree/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike)
-  — **Phase A(Codex) 검증 성공**
+  — **Phase A(Codex) · Phase B(Claude) 검증 성공**
   ([검증 결과](../../blob/prototype/byoa-mcp-spike/prototypes/byoa-mcp-spike/SPIKE_FINDINGS.md))
 
 프로토타입은 제품 코드가 아니라 기술 검증용 spike이므로 `main`에 두지 않고 별도 브랜치로 분리했다.
 
-검증된 것: 브라우저에서 만든 프롬프트가 로컬 Codex agent의 turn으로 전달되고, agent가 지정된
+검증된 것: 브라우저에서 만든 프롬프트가 로컬 agent의 turn으로 전달되고, agent가 지정된
 프로젝트 디렉터리에서 실제로 파일을 수정하며, 진행 상황이 실시간으로 브라우저에 흐르고,
 agent가 MCP를 통해 앱 상태를 읽고(`get_app_context`) 구조화된 결과를 앱에 push(`show_result`)한다.
 즉 `App → Agent`(실행)와 `Agent → MCP`(컨텍스트/도구)를 분리한다는 설계 전제가 실제로 성립한다.
+
+**Codex와 Claude Code 두 provider가 동일한 검증 항목을 통과**했고, 그 과정에서 Browser/Bridge
+protocol은 한 줄도 provider별로 분기하지 않았다. Agent Adapter 계층으로 provider 종속을
+피한다는 설계(§9 Agent Integration 전략)가 가설이 아니라 실측으로 확인된 셈이다.
 
 ---
 
@@ -65,6 +69,10 @@ DEC-008
 - MVP 단계에서는 Redis를 사용하지 않는다.
 - 이유: 운영 복잡도 최소화
 ```
+
+프로젝트 시작 시점에 동작하며, 인터뷰 결과로 **설계도(`app_design.md`)와 에이전트 harness
+(`AGENTS.md` / `CLAUDE.md`)를 만들어 사용자의 도구로 넘긴다.**
+동작 설계는 [`docs/requirements_flow.md`](./docs/requirements_flow.md)에 있다.
 
 ### 2. Use Case 중심 코드베이스 시각화
 
