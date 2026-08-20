@@ -22,26 +22,42 @@ Semantic Project Graph
 ```
 
 ```
-Implementation Evidence
-코드 / AST / import / call / DB 등
-            │
-            │ 분석 및 추상화
-            ▼
-     Semantic Project Graph
-            │
-     Node + Relation
-            │
-      ┌─────┼─────┐
-      ▼     ▼     ▼
-    서비스  사용자  정보
-     지도    흐름   흐름
+             실제 Repository
+                    │
+                    ▼
+        Implementation Analysis
+     AST / imports / calls / DB / routes
+                    │
+                    ▼
+             Semantic Lifting
+                    │
+                    ▼
+           Semantic Candidates
+                    │
+           의미 압축 / 병합
+                    │
+                    ▼
+       ┌────────────────────────┐
+       │ Semantic Project Graph │
+       │                        │
+       │ Node + Relation        │
+       │ + Group                │
+       │ + implementation refs  │
+       │ + confidence           │
+       └───────────┬────────────┘
+                   │
+       ┌───────────┴────────────┐
+       ▼                        ▼
+ localhost Viewer             MCP
+       │                        │
+       ▼                        ▼
+   비전공자                  Claude/Codex
 ```
 
 Project Graph : 내부의 구조화된 데이터
 Graph View : 사용자가 실제로 보는 시각화 화면
 
 ## 작동 핵심 구조
-
 semantic project graph를 생성하기 위한 
 3단계
 
@@ -85,9 +101,12 @@ Semantic Project Graph
 동사 => Action
 Rule = 서비스 동작을 이해하는 데 중요한 사용자/제품 수준의 조건이나 정책
 
+**Implementation Grounding**.
 이렇게 Semantic node (의미론적 노드)를 만들었으면 그 노드가 실제 코드 어디에서 나온건지는 내부적으로 가지고 있어야한다. 
-사용자에게는 보여주지 않음.
-이게 있어야지 나중에 뭐를 수정했을때 코드 어디가 영향받는지 분석할 수 있고 codex/claude에게 실제 파일들을 전달할 수 있음
+	- 사용자에게는 보여주지 않음.
+	- 이게 있어야지 나중에 뭐를 수정했을때 코드 어디가 영향받는지 분석할 수 있고 codex/claude에게 실제 파일들을 전달할 수 있음. 
+	- feature <-> file/function 가 되어서 코드단에서 상위 구조를 탐색할 수 있음
+=> 즉 사람에게는 Semantic Graph, Agent에게는 Semantic Graph + Implementation Grounding. 을 준다.
 
 ### a.기준
 - 1. **비전공자가 이름을 보고 무엇인지 이해할 수 있는가?**
@@ -154,7 +173,7 @@ ex)
 ```
 
 
-Relation에는 source/target 조건을 걸기.
+Relation에는 source/target 조건을 걸기. 무분별한 관계생성을 방지하기 위함.
 
 ex)
 실행한다
@@ -163,6 +182,38 @@ Actor → Action 만 허용.
 사용한다
 Action → Information
 Action → External 만 허용.
+
+### 구분
+코드 의존성도 함께 관리해야한다. 그래야지 에이전트가 특정 노드에서 의존성을 따라가거나 영향 범위를 탐색할 수 있음.
+
+내부에 둘 Implementation Relation 과 사용자에게 보여줄 Semantic Relation을 구분한다.
+영향도 판단할떄는 Implementation Relation을 확인해서 하고 사람한테 보여줄때는 저걸 사람언어로 번역해서 보여주기.
+
+실제:
+```
+LikeButton
+  calls
+likeService
+  writes
+likes table
+  calls
+NotificationService
+```
+사용자:
+```
+[좋아요 누르기]
+      │
+   변경한다
+      ▼
+[좋아요 정보]
+
+[좋아요 누르기]
+      │
+  발생시킨다
+      ▼
+[알림 만들기]
+```
+
 
 # C. 내부 비핵심 구성 요소
 ## MAP구성 (화면구성 기능)
