@@ -1,0 +1,19 @@
+{
+  "name": "ontology-proto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "기능2 (코드 시각화) 프로토타입 — Evidence Engine · Semantic Memory · View-specific IR · MCP/Codex 연동",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core",
+    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core",
+    "test": "node --test packages/*/test/*.test.mjs"
+  }
+}
