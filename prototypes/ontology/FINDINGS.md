@@ -82,3 +82,43 @@ implementation_plan.md의 절 번호를 그대로 인용한다.
 하는지는 M2에서 config/문서 adapter를 붙일 때 실제로 시험된다.
 
 아직 Finding 없음 — 계획과 충돌한 것이 없다.
+
+---
+
+## M2 — Evidence Engine P2~P3 + entity/link schema + projectTrace (완료)
+
+계획 §8이 M2에 요구한 것: acceptance 12·13·13b·14.
+
+- [x] P2 adapters — `next-app-router` · `next-pages-api` · `express` · `react-jsx-events` ·
+      `prisma-schema` · `prisma-calls` · `project-config`. 각각 throw하지 않고 실패는
+      `adapterReport`에 남는다 (C1)
+- [x] P3 `git_change` + `changedFilesSince` / `dirtyFiles` — git이 modified라 해도
+      contentHash가 같으면 dirty가 아니다 (C2)
+- [x] entity/link schema (T2) — `EntityRef` 4종(file/symbol/route/model), evidence kind별
+      entity/link 역할 확정. `graph`가 없는 evidence(config, git_change)는 grounding은 되지만
+      Trace에 나오지 않는다
+- [x] `projectTrace` — BFS(경계·hop) / SCC(cycle) / hop 비교(nonForward) 분리 (S4 · U2)
+- [x] acceptance 12 · 13 · 13b · 14
+
+### 13b가 제대로 걸려 있는지 확인한 방법
+
+M1의 18c와 같은 방식으로 mutation check를 돌렸다. `cycle` 판정을 SCC에서
+`hop(to) <= hop(from)`으로 되돌리자 **13과 13b만 실패**했고 나머지 8개는 통과했다.
+두 방향 모두 잡힌다 — 13b는 DAG를 cycle로 오판하는 것을, 13은 진짜 cycle을 놓치는 것을.
+
+### 구현 중 고친 것 (계획과 무관한 자체 결함)
+
+- `commit()`이 돌려주는 `generation`이 한 세대 뒤처졌다 (M0). `LoadedState.generation`이
+  스냅샷 클론에 섞여 들어가 반환값 spread에서 새 값을 덮어썼다. 디스크 상태는 정확했다.
+- `normalize.ts`의 토큰 구분자가 소스에 **raw 제어문자**로 들어가 있었다. 동작은 했지만
+  편집기·도구가 다루기 어려우므로 `"\u0001"` 이스케이프로 바꿨다.
+- adapter가 `route`/`model` entity id를 만들 때 쓰는 sha1 헬퍼가 지저분하게 들어갔다가
+  `node:crypto` top-level import로 정리했다.
+
+### fixture가 실제로 P0~P2를 덮는지 확인한다
+
+`packages/evidence/test/adapters.test.mjs`의 마지막 시험이 `file · symbol · contains ·
+call · route · api_handler · ui_event · db_entity · db_read · db_write · config` 각각이
+0보다 큰지 검사한다. 덮지 않으면 그 위의 시험들이 헛도는 것이므로 명시적으로 건다.
+
+Finding 없음 — 계획과 충돌한 것이 없다.

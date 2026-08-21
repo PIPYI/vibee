@@ -54,7 +54,11 @@ export function toPosix(path: string): string {
  * 프로젝트의 소스 파일을 수집한다. 반환 순서는 **정렬되어 있다** — 인덱스 결과의
  * 결정론이 여기서 시작된다.
  */
-export function collectSourceFiles(projectRoot: string): string[] {
+export function collectSourceFiles(
+  projectRoot: string,
+  options: { predicate?: (relPath: string) => boolean } = {},
+): string[] {
+  const accept = options.predicate ?? isSourceFile;
   const found: string[] = [];
 
   const walk = (dir: string): void => {
@@ -77,7 +81,7 @@ export function collectSourceFiles(projectRoot: string): string[] {
         walk(absolute);
       } else if (stats.isFile()) {
         const relPath = toPosix(relative(projectRoot, absolute));
-        if (isSourceFile(relPath)) found.push(relPath);
+        if (accept(relPath)) found.push(relPath);
       }
     }
   };

@@ -21,7 +21,7 @@ import ts from "typescript";
 import type { NormalizationProfile } from "@onto/protocol";
 
 /** 토큰 구분자. 소스에 나타날 수 없는 문자여야 `a b`와 `ab`가 구별된다. */
-const SEP = "";
+const SEP = "\u0001";
 
 /** 세미콜론은 ASI 때문에 순수한 스타일이다. 항상 버린다. */
 function isDroppedPunctuation(kind: ts.SyntaxKind): boolean {

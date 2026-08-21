@@ -1,8 +1,8 @@
 /**
- * Evidence Engine — P0 (file / symbol) + P1 (contains / call / reference).
+ * Evidence Engine — P0 (file / symbol) · P1 (contains / call / reference) · P2 (adapters) · P3 (git).
  *
  * **AST는 Semantic Classifier가 아니라 Evidence Indexer다** (ontology_schema §11, I4).
- * 여기서 하는 일은 "이 Symbol은 어디에 있는가 / 무엇을 reference하는가"뿐이고,
+ * 여기서 하는 일은 "이 Symbol은 어디에 있는가 / 무엇을 reference하는가 / 어떤 Route인가"뿐이고,
  * 의미 분류는 하지 않는다. 완전한 runtime call graph 복원도 목표가 아니다.
  *
  * 모델을 부르지 않는다. 전부 결정론이고, 출력은 id로 정렬된다.
@@ -14,9 +14,10 @@ import type {
   EntityRef,
   Evidence,
   EvidenceIndex,
-  SourceRange,
 } from "@onto/protocol";
 
+import { runAdapters, isConfigFile, type PendingLinkSpec } from "./adapters.js";
+import { changedFilesSince } from "./git.js";
 import {
   fileEvidenceId,
   fingerprintOf,
@@ -25,26 +26,34 @@ import {
   resolveLinkIds,
   sha256,
   symbolEvidenceId,
-  symbolIdOf,
   type LinkIdCandidate,
 } from "./ids.js";
-import { collectSourceFiles, isTestFile, readSource, toPosix } from "./lang.js";
+import { collectSourceFiles, isTestFile, readSource } from "./lang.js";
 import { defaultProfileFor } from "./normalize.js";
+import {
+  collectSymbolSites,
+  enclosingStatement,
+  enclosingSymbol,
+  firstLine,
+  isCalleeOf,
+  isDeclarationName,
+  rangeOf,
+  resolveTargetSymbolId,
+  shortName,
+  startColumnOf,
+  type SymbolSite,
+} from "./sites.js";
 
 export type IndexOptions = {
   /** 이 인덱스 실행이 만드는 analysisVersion. 호출자가 정한다 */
   analysisVersion: number;
   /** 테스트 파일도 인덱싱할지. 기본은 포함한다 — 테스트는 도메인 용어의 좋은 출처다 (§50.1) */
   includeTests?: boolean;
-};
-
-type SymbolSite = {
-  symbolId: string;
-  qualifiedName: string;
-  relPath: string;
-  node: ts.Node;
-  /** 이름 노드. 참조 해석의 앵커다 */
-  nameNode: ts.Node;
+  /**
+   * 주면 P3 git_change evidence를 만든다. 없으면 만들지 않는다.
+   * 실패는 `adapterReport`에 남는다 — 조용히 "변경 없음"으로 넘어가지 않는다.
+   */
+  gitBase?: string;
 };
 
 const COMPILER_OPTIONS: ts.CompilerOptions = {
@@ -57,24 +66,29 @@ const COMPILER_OPTIONS: ts.CompilerOptions = {
   noEmit: true,
   skipLibCheck: true,
   allowNonTsExtensions: true,
-  noResolve: false,
 };
 
-/**
- * 프로젝트 전체를 인덱싱한다.
- *
- * 증분 갱신(`updateFiles`)은 M5에서 붙인다. 그때까지는 두 번 전체 인덱싱하고
- * `diffEvidence`로 비교하면 EvidenceDiff가 그대로 나온다.
- */
+/** TS 파서를 태우지 않지만 evidence는 만들어야 하는 파일들. */
+const EXTRA_FILE_PATTERNS = [/(?:^|\/)schema\.prisma$/u, /(?:^|\/)\.env\.example$/u];
+
+function isExtraFile(relPath: string): boolean {
+  return isConfigFile(relPath) || EXTRA_FILE_PATTERNS.some((pattern) => pattern.test(relPath));
+}
+
 export function indexProject(projectRoot: string, options: IndexOptions): EvidenceIndex {
   const report: AdapterReportEntry[] = [];
-  const relPaths = collectSourceFiles(projectRoot).filter(
+  const version = options.analysisVersion;
+
+  // ---- 파일 수집 ---------------------------------------------------------
+  const sourcePaths = collectSourceFiles(projectRoot).filter(
     (relPath) => options.includeTests !== false || !isTestFile(relPath),
   );
+  const extraPaths = collectSourceFiles(projectRoot, { predicate: isExtraFile });
+  const allPaths = [...new Set([...sourcePaths, ...extraPaths])].sort();
 
   const fileHashes: Record<string, string> = {};
   const sources = new Map<string, string>();
-  for (const relPath of relPaths) {
+  for (const relPath of allPaths) {
     try {
       const text = readSource(projectRoot, relPath);
       sources.set(relPath, text);
@@ -91,21 +105,43 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   }
 
   const indexed = [...sources.keys()].sort();
+  const parsed = indexed.filter((relPath) => sourcePaths.includes(relPath));
+
   const program = ts.createProgram({
-    rootNames: indexed.map((relPath) => `${projectRoot}/${relPath}`),
+    rootNames: parsed.map((relPath) => `${projectRoot}/${relPath}`),
     options: COMPILER_OPTIONS,
   });
   const checker = program.getTypeChecker();
+  const inScope = new Set(parsed);
 
   const evidence: Evidence[] = [];
-  const push = (item: Evidence): void => {
-    evidence.push(item);
-  };
-
-  // 이 실행에서 인덱싱한 파일만 대상으로 삼는다. lib.d.ts와 node_modules는 제외된다.
-  const inScope = new Set(indexed);
+  const pending: Array<{ candidate: LinkIdCandidate; build: (id: string) => Evidence }> = [];
   const bySymbolId = new Map<string, SymbolSite>();
   const sitesByFile = new Map<string, SymbolSite[]>();
+
+  const queueLink = (spec: PendingLinkSpec): void => {
+    const localFingerprint = fingerprintOf(spec.extentText, "code");
+    const baseId = linkEvidenceBaseId(spec.linkKind, spec.from, spec.to, localFingerprint);
+    pending.push({
+      candidate: { baseId, startLine: spec.location.startLine, startColumn: spec.startColumn },
+      build: (id) => ({
+        id,
+        kind: spec.linkKind,
+        origin: "engine",
+        filePath: spec.filePath,
+        location: spec.location,
+        rawHash: rawHashOf(spec.extentText),
+        normalizedFingerprint: localFingerprint,
+        normalizationProfile: "code",
+        excerpt: firstLine(spec.extentText),
+        graph: { role: "link", from: spec.from, to: spec.to, linkKind: spec.linkKind },
+        summary: spec.summary,
+        fileContentHash: spec.fileContentHash,
+        observedAtVersion: version,
+        status: "present",
+      }),
+    });
+  };
 
   // ---- P0: file / symbol -------------------------------------------------
 
@@ -113,9 +149,9 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
     const text = sources.get(relPath)!;
     const fileHash = fileHashes[relPath]!;
     const profile = defaultProfileFor(relPath);
-    const entity: EntityRef = { kind: "file", filePath: relPath };
+    const fileEntity: EntityRef = { kind: "file", filePath: relPath };
 
-    push({
+    evidence.push({
       id: fileEvidenceId(relPath),
       kind: "file",
       origin: "engine",
@@ -123,12 +159,14 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
       rawHash: rawHashOf(text),
       normalizedFingerprint: fingerprintOf(text, profile),
       normalizationProfile: profile,
-      graph: { role: "entity", entity, label: relPath },
+      graph: { role: "entity", entity: fileEntity, label: relPath },
       summary: `파일 ${relPath}`,
       fileContentHash: fileHash,
-      observedAtVersion: options.analysisVersion,
+      observedAtVersion: version,
       status: "present",
     });
+
+    if (!parsed.includes(relPath)) continue;
 
     const sourceFile = program.getSourceFile(`${projectRoot}/${relPath}`);
     if (!sourceFile) {
@@ -147,14 +185,15 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
     for (const site of sites) {
       bySymbolId.set(site.symbolId, site);
       const extent = site.node.getText(sourceFile);
-      const range = rangeOf(sourceFile, site.node);
-      push({
+      const location = rangeOf(sourceFile, site.node);
+
+      evidence.push({
         id: symbolEvidenceId(site.symbolId),
         kind: "symbol",
         origin: "engine",
         filePath: relPath,
         symbolId: site.symbolId,
-        location: range,
+        location,
         rawHash: rawHashOf(extent),
         normalizedFingerprint: fingerprintOf(extent, "code"),
         normalizationProfile: "code",
@@ -166,45 +205,28 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
         },
         summary: `${site.qualifiedName} (${relPath})`,
         fileContentHash: fileHash,
-        observedAtVersion: options.analysisVersion,
+        observedAtVersion: version,
         status: "present",
       });
 
       // contains: file -> symbol. Trace가 파일에서 심볼로 내려가는 경로다 (T2).
-      const containsExtent = `${relPath}#${site.qualifiedName}`;
-      push({
-        id: `ev:contains:${symbolEvidenceId(site.symbolId).slice("ev:symbol:".length)}`,
-        kind: "contains",
-        origin: "engine",
+      queueLink({
+        linkKind: "contains",
+        from: fileEntity,
+        to: { kind: "symbol", symbolId: site.symbolId },
+        extentText: `${relPath}#${site.qualifiedName}`,
+        location,
+        startColumn: startColumnOf(sourceFile, site.node),
         filePath: relPath,
-        symbolId: site.symbolId,
-        location: range,
-        rawHash: rawHashOf(containsExtent),
-        normalizedFingerprint: fingerprintOf(containsExtent, "prose"),
-        normalizationProfile: "prose",
-        graph: {
-          role: "link",
-          from: entity,
-          to: { kind: "symbol", symbolId: site.symbolId },
-          linkKind: "contains",
-        },
-        summary: `${relPath} 이 ${site.qualifiedName} 를 담고 있다`,
         fileContentHash: fileHash,
-        observedAtVersion: options.analysisVersion,
-        status: "present",
+        summary: `${relPath} 이 ${site.qualifiedName} 를 담고 있다`,
       });
     }
   }
 
   // ---- P1: call / reference ----------------------------------------------
 
-  type PendingLink = {
-    candidate: LinkIdCandidate;
-    build: (id: string) => Evidence;
-  };
-  const pending: PendingLink[] = [];
-
-  for (const relPath of indexed) {
+  for (const relPath of parsed) {
     const sourceFile = program.getSourceFile(`${projectRoot}/${relPath}`);
     if (!sourceFile) continue;
     const fileHash = fileHashes[relPath]!;
@@ -215,45 +237,23 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
         const target = resolveTargetSymbolId(node, checker, projectRoot, inScope);
         if (target && bySymbolId.has(target)) {
           const owner = enclosingSymbol(node, sites);
-          // 자기 자신을 가리키는 참조(선언부의 이름)는 이미 symbol evidence가 덮는다.
+          // 자기 자신을 가리키는 참조는 이미 symbol evidence가 덮는다.
           if (owner && owner.symbolId !== target) {
-            const isCall = isCalleeOf(node);
-            const linkKind = isCall ? "call" : "reference";
+            const linkKind = isCalleeOf(node) ? "call" : "reference";
             const statement = enclosingStatement(node) ?? node;
-            const extent = statement.getText(sourceFile);
-            const localFingerprint = fingerprintOf(extent, "code");
-            const from: EntityRef = { kind: "symbol", symbolId: owner.symbolId };
-            const to: EntityRef = { kind: "symbol", symbolId: target };
-            const range = rangeOf(sourceFile, statement);
-            const baseId = linkEvidenceBaseId(linkKind, from, to, localFingerprint);
-
-            pending.push({
-              candidate: {
-                baseId,
-                startLine: range.startLine,
-                startColumn: sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile))
-                  .character,
-              },
-              build: (id) => ({
-                id,
-                kind: linkKind,
-                origin: "engine",
-                filePath: relPath,
-                symbolId: owner.symbolId,
-                location: range,
-                rawHash: rawHashOf(extent),
-                normalizedFingerprint: localFingerprint,
-                normalizationProfile: "code",
-                excerpt: firstLine(extent),
-                graph: { role: "link", from, to, linkKind },
-                summary:
-                  linkKind === "call"
-                    ? `${owner.qualifiedName} 이 ${shortName(target)} 를 호출한다`
-                    : `${owner.qualifiedName} 이 ${shortName(target)} 를 참조한다`,
-                fileContentHash: fileHash,
-                observedAtVersion: options.analysisVersion,
-                status: "present",
-              }),
+            queueLink({
+              linkKind,
+              from: { kind: "symbol", symbolId: owner.symbolId },
+              to: { kind: "symbol", symbolId: target },
+              extentText: statement.getText(sourceFile),
+              location: rangeOf(sourceFile, statement),
+              startColumn: startColumnOf(sourceFile, statement),
+              filePath: relPath,
+              fileContentHash: fileHash,
+              summary:
+                linkKind === "call"
+                  ? `${owner.qualifiedName} 이 ${shortName(target)} 를 호출한다`
+                  : `${owner.qualifiedName} 이 ${shortName(target)} 를 참조한다`,
             });
           }
         }
@@ -273,219 +273,100 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
     }
   }
 
-  const linkIds = resolveLinkIds(pending.map((item) => item.candidate));
-  pending.forEach((item, index) => push(item.build(linkIds[index]!)));
+  // ---- P2: framework adapters --------------------------------------------
 
-  evidence.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const relPath of indexed) {
+    const sourceFile = parsed.includes(relPath)
+      ? program.getSourceFile(`${projectRoot}/${relPath}`)
+      : undefined;
 
-  return {
-    analysisVersion: options.analysisVersion,
-    fileHashes,
-    evidence,
-    adapterReport: report,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// AST 헬퍼
-// ---------------------------------------------------------------------------
-
-function rangeOf(sourceFile: ts.SourceFile, node: ts.Node): SourceRange {
-  const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-  const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
-  return { startLine: start.line + 1, endLine: end.line + 1 };
-}
-
-function firstLine(text: string): string {
-  const line = text.split(/\r?\n/, 1)[0] ?? "";
-  return line.length > 200 ? `${line.slice(0, 197)}...` : line;
-}
-
-function shortName(symbolId: string): string {
-  return symbolId.split("#")[1] ?? symbolId;
-}
-
-/**
- * 최상위 선언과 클래스 멤버를 모은다.
- *
- * 완전한 심볼 표를 만드는 것이 목적이 아니다 — Concept가 grounding할 수 있는 **주소**를
- * 만드는 것이 목적이다 (I4).
- */
-function collectSymbolSites(sourceFile: ts.SourceFile, relPath: string): SymbolSite[] {
-  const sites: SymbolSite[] = [];
-
-  const add = (qualifiedName: string, node: ts.Node, nameNode: ts.Node): void => {
-    sites.push({
-      symbolId: symbolIdOf(relPath, qualifiedName),
-      qualifiedName,
-      relPath,
-      node,
-      nameNode,
-    });
-  };
-
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name) {
-      add(statement.name.text, statement, statement.name);
-    } else if (ts.isClassDeclaration(statement) && statement.name) {
-      const className = statement.name.text;
-      add(className, statement, statement.name);
-      for (const member of statement.members) {
-        const memberName = member.name && ts.isIdentifier(member.name) ? member.name.text : undefined;
-        if (!memberName) continue;
-        if (
-          ts.isMethodDeclaration(member) ||
-          ts.isGetAccessorDeclaration(member) ||
-          ts.isSetAccessorDeclaration(member) ||
-          ts.isPropertyDeclaration(member)
-        ) {
-          add(`${className}.${memberName}`, member, member.name!);
-        }
-      }
-    } else if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
-      add(statement.name.text, statement, statement.name);
-    } else if (ts.isEnumDeclaration(statement)) {
-      add(statement.name.text, statement, statement.name);
-    } else if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) {
-          add(declaration.name.text, declaration, declaration.name);
-        }
-      }
-    }
-  }
-
-  return sites;
-}
-
-/** 선언부의 이름 노드인가. 그렇다면 참조가 아니라 정의다. */
-function isDeclarationName(node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (!parent) return false;
-  return (
-    ((ts.isFunctionDeclaration(parent) ||
-      ts.isClassDeclaration(parent) ||
-      ts.isInterfaceDeclaration(parent) ||
-      ts.isTypeAliasDeclaration(parent) ||
-      ts.isEnumDeclaration(parent) ||
-      ts.isVariableDeclaration(parent) ||
-      ts.isParameter(parent) ||
-      ts.isMethodDeclaration(parent) ||
-      ts.isPropertyDeclaration(parent) ||
-      ts.isPropertyAssignment(parent) ||
-      ts.isImportSpecifier(parent) ||
-      ts.isImportClause(parent) ||
-      ts.isNamespaceImport(parent) ||
-      ts.isExportSpecifier(parent)) &&
-      (parent as { name?: ts.Node }).name === node) ||
-    (ts.isPropertyAccessExpression(parent) && parent.name === node)
-  );
-}
-
-/** 이 식별자가 호출식의 피호출자인가. `f()`의 `f`, `a.f()`의 `f`. */
-function isCalleeOf(node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (!parent) return false;
-  if (ts.isCallExpression(parent) && parent.expression === node) return true;
-  if (ts.isNewExpression(parent) && parent.expression === node) return true;
-  if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
-    const grand = parent.parent;
-    return (
-      (!!grand && ts.isCallExpression(grand) && grand.expression === parent) ||
-      (!!grand && ts.isNewExpression(grand) && grand.expression === parent)
+    const output = runAdapters(
+      {
+        projectRoot,
+        analysisVersion: version,
+        relPath,
+        text: sources.get(relPath)!,
+        fileHash: fileHashes[relPath]!,
+        ...(sourceFile ? { sourceFile } : {}),
+        sites: sitesByFile.get(relPath) ?? [],
+        resolve: (node) => resolveTargetSymbolId(node, checker, projectRoot, inScope),
+        report: () => undefined,
+      },
+      report,
     );
-  }
-  return false;
-}
 
-/** 이 노드를 감싸는 문장. link의 `localNormalizedFingerprint`가 이 범위로 계산된다 (U3). */
-function enclosingStatement(node: ts.Node): ts.Node | undefined {
-  let current: ts.Node | undefined = node;
-  while (current && !ts.isSourceFile(current)) {
-    if (ts.isStatement(current)) return current;
-    current = current.parent;
+    evidence.push(...output.entities);
+    for (const link of output.links) queueLink(link);
   }
-  return undefined;
-}
 
-/** 이 노드를 담고 있는 심볼 사이트 중 가장 안쪽 것. link의 `from`이 된다. */
-function enclosingSymbol(node: ts.Node, sites: SymbolSite[]): SymbolSite | undefined {
-  const position = node.getStart();
-  let best: SymbolSite | undefined;
-  for (const site of sites) {
-    const start = site.node.getStart();
-    const end = site.node.getEnd();
-    if (position >= start && position < end) {
-      if (!best || start > best.node.getStart()) best = site;
-    }
-  }
-  return best;
-}
+  // ---- P3: git_change ----------------------------------------------------
 
-/**
- * 이 식별자가 가리키는 **우리 프로젝트 안의** 심볼 id.
- *
- * import alias는 풀어서 원래 선언까지 따라간다. lib.d.ts나 node_modules로 나가면
- * `undefined`를 돌려준다 — 우리는 프로젝트 안의 근거만 다룬다.
- */
-function resolveTargetSymbolId(
-  node: ts.Identifier,
-  checker: ts.TypeChecker,
-  projectRoot: string,
-  inScope: Set<string>,
-): string | undefined {
-  let symbol = checker.getSymbolAtLocation(node);
-  if (!symbol) return undefined;
-  if (symbol.flags & ts.SymbolFlags.Alias) {
-    try {
-      symbol = checker.getAliasedSymbol(symbol);
-    } catch {
-      return undefined;
+  if (options.gitBase) {
+    const result = changedFilesSince(projectRoot, options.gitBase);
+    if (!result.ok) {
+      // 조용히 "변경 없음"으로 넘어가지 않는다.
+      report.push({
+        adapterId: "p3-git",
+        level: "warning",
+        message: `git diff 실패 (base ${options.gitBase}): ${result.message}`,
+      });
+    } else {
+      for (const change of result.changes) {
+        const text = sources.get(change.path);
+        const material = `${change.status} ${change.path}`;
+        evidence.push({
+          id: `ev:gitchange:${sha256(`${options.gitBase}|${material}`).slice(0, 40)}`,
+          kind: "git_change",
+          origin: "engine",
+          filePath: change.path,
+          rawHash: rawHashOf(material),
+          normalizedFingerprint: fingerprintOf(material, "prose"),
+          normalizationProfile: "prose",
+          excerpt: material,
+          // graph 없음 — 코드 그래프 상의 위치가 아니라 "변경되었다"는 사실이다 (T2).
+          summary: `${change.path} 이 ${options.gitBase} 이후 변경되었다 (${change.status})`,
+          fileContentHash: text === undefined ? "" : fileHashes[change.path]!,
+          observedAtVersion: version,
+          status: "present",
+        });
+      }
     }
   }
 
-  const declarations = symbol.declarations ?? [];
-  for (const declaration of declarations) {
-    const declFile = declaration.getSourceFile();
-    if (declFile.isDeclarationFile) continue;
-    const relPath = toPosix(relativeTo(projectRoot, declFile.fileName));
-    if (!inScope.has(relPath)) continue;
-    const qualifiedName = qualifiedNameOf(declaration);
-    if (!qualifiedName) continue;
-    return symbolIdOf(relPath, qualifiedName);
-  }
-  return undefined;
-}
+  // ---- 링크 id 해소 + 정렬 -----------------------------------------------
 
-function relativeTo(root: string, absolute: string): string {
-  const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
-  return absolute.startsWith(normalizedRoot) ? absolute.slice(normalizedRoot.length) : absolute;
-}
+  const linkIds = resolveLinkIds(pending.map((item) => item.candidate));
+  pending.forEach((item, index) => evidence.push(item.build(linkIds[index]!)));
 
-/** 선언 노드에서 `collectSymbolSites`가 붙인 것과 **같은** qualified name을 되돌린다. */
-function qualifiedNameOf(declaration: ts.Declaration): string | undefined {
-  if (
-    ts.isFunctionDeclaration(declaration) ||
-    ts.isClassDeclaration(declaration) ||
-    ts.isInterfaceDeclaration(declaration) ||
-    ts.isTypeAliasDeclaration(declaration) ||
-    ts.isEnumDeclaration(declaration)
-  ) {
-    return declaration.name?.text;
-  }
-  if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
-    return declaration.name.text;
-  }
-  if (
-    ts.isMethodDeclaration(declaration) ||
-    ts.isPropertyDeclaration(declaration) ||
-    ts.isGetAccessorDeclaration(declaration) ||
-    ts.isSetAccessorDeclaration(declaration)
-  ) {
-    const owner = declaration.parent;
-    if (owner && ts.isClassDeclaration(owner) && owner.name && ts.isIdentifier(declaration.name)) {
-      return `${owner.name.text}.${declaration.name.text}`;
+  // 같은 id가 두 번 나오지 않아야 한다. 나오면 id 규칙에 결함이 있다는 뜻이다.
+  const seen = new Set<string>();
+  const unique: Evidence[] = [];
+  for (const item of evidence) {
+    if (seen.has(item.id)) {
+      report.push({
+        adapterId: "indexer",
+        filePath: item.filePath ?? "",
+        level: "warning",
+        message: `evidence id 가 중복되었습니다: ${item.id} (${item.kind})`,
+      });
+      continue;
     }
+    seen.add(item.id);
+    unique.push(item);
   }
-  return undefined;
+
+  unique.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  report.sort((a, b) =>
+    a.adapterId < b.adapterId
+      ? -1
+      : a.adapterId > b.adapterId
+        ? 1
+        : (a.filePath ?? "") < (b.filePath ?? "")
+          ? -1
+          : (a.filePath ?? "") > (b.filePath ?? "")
+            ? 1
+            : 0,
+  );
+
+  return { analysisVersion: version, fileHashes, evidence: unique, adapterReport: report };
 }
