@@ -9,7 +9,7 @@
 | OS | Linux 6.6.87.2 (WSL2, Ubuntu) / Phase B는 6.18.33.2 (WSL2, Ubuntu) |
 | Node.js | v24.14.1 (Phase A) / v18.19.1 (Phase B — bridge·MCP server는 동작, web dev server는 20+ 필요) |
 | Codex CLI | `codex-cli 0.148.0` (0.147.0에서도 검증했으나 동작이 달라졌다 — Finding 4) |
-| Claude Code | `2.1.237` + `@anthropic-ai/claude-agent-sdk` 0.3.237 |
+| Claude Code | `2.1.238` + `@anthropic-ai/claude-agent-sdk` 0.3.237 |
 | 인증 | ChatGPT 계정 / Claude 계정 로그인 상태 |
 | Agent 모델 API 직접 호출 | 없음 |
 
@@ -906,7 +906,272 @@ agent가 흡수하고 진행한다"**가 실제로 성립한다는 증거다. �
 
 ---
 
-## 11. 남은 것 / 하지 않은 것
+## 11. 모델 · effort 선택 (2026-08-21)
+
+브라우저에서 어떤 모델로, 어느 reasoning effort로 돌릴지 고를 수 있게 했다.
+
+### 왜 목록을 하드코딩하지 않았는가
+
+**effort 값 집합이 provider마다 다르고, 같은 provider 안에서도 모델마다 다르다.**
+
+| | 모델 | effort |
+| --- | --- | --- |
+| Codex 0.148 | `gpt-5.6-sol`(기본) 외 6개 | `low,medium,high,xhigh,max,ultra` — 단 `gpt-5.5` 이하는 `xhigh`까지 |
+| Claude 2.1.238 | `default`(기본), `sonnet`, `opus`, `haiku`, `claude-fable-5[1m]` | `low,medium,high,xhigh,max` — 단 **`haiku`는 effort 자체가 없다** |
+
+Codex에만 있는 `ultra`, effort를 지원하지 않는 `haiku` 때문에 공용 enum을 두면 곧 틀린다.
+CLI를 업데이트하면 목록도 바뀐다(§8과 같은 종류의 위험이다). 그래서 **provider가 스스로
+신고하는 것을 그대로 받아** 정규화만 한다.
+
+- Codex: `model/list` RPC. 응답은 커서 기반이라 끝까지 따라간다. `Model`에
+  `supportedReasoningEfforts`, `defaultReasoningEffort`, `isDefault`가 들어 있다.
+- Claude: `Query.supportedModels()`. `ModelInfo`에 `supportsEffort`,
+  `supportedEffortLevels`가 들어 있다.
+
+### 함정 — Claude의 모델 목록은 살아있는 query에만 붙어 있다
+
+Codex의 `model/list`는 독립 RPC지만, Claude의 `supportedModels()`는 **`query()` 객체의
+메서드**다. turn을 돌리지 않고 목록만 얻으려면 프롬프트를 하나도 yield 하지 않는 async
+generator로 query를 열어 control 채널만 붙인 뒤 곧바로 abort 해야 한다.
+
+```ts
+async function* noUserInput(): AsyncGenerator<SDKUserMessage> {
+  await new Promise<void>(() => {});   // 아무것도 보내지 않는다
+}
+const probe = query({ prompt: noUserInput(), options: { strictMcpConfig: true, abortController } });
+try { return await probe.supportedModels(); } finally { abortController.abort(); }
+```
+
+이 방식은 turn을 시작하지 않으므로 세션 파일도 남지 않는다. 다만 CLI 프로세스를 하나 띄우므로
+bridge에서 5분간 캐시한다.
+
+### 확인한 것
+
+`/api/models?agent=<id>`가 두 provider의 목록을 돌려주고, 선택값이 **실제 turn에 반영된다.**
+bridge가 기록한 값이 아니라 provider가 남긴 기록으로 확인했다.
+
+Codex — rollout의 `turn_context`:
+
+```json
+{ "model": "gpt-5.4-mini", "effort": "high", "summary": "auto" }
+```
+
+Claude — 세션 jsonl의 `model` 필드. 오버라이드 없이 돈 직전 세션과 대조된다:
+
+```text
+a771d25d-….jsonl  "model":"claude-opus-5"                 (오버라이드 없음)
+5c51136b-….jsonl  "model":"claude-haiku-4-5-20251001"     (model: "haiku" 지정)
+```
+
+`npm run acceptance`는 codex·claude 모두 9/9를 유지한다. 오버라이드는 모두 선택 항목이라
+생략하면 provider 기본값으로 돈다.
+
+### 경계를 지킨 방법
+
+Web UI에는 provider 분기가 없다. 모델 목록도 effort 목록도 bridge가 준 배열을 그대로
+렌더링하며, "이 모델이 effort를 지원하는가"조차 `efforts.length`로만 판단한다.
+`AgentAdapter`에 `listModels()`가 추가됐고 provider별 스키마 해석은 전부 adapter 안에 있다.
+
+### 알아둘 것
+
+- Codex의 `turn/start.model`은 문서상 **"이 turn과 이후 turn"** 에 적용된다. 즉 thread 중간에
+  모델을 바꾸면 그 thread에 계속 남는다. thread 생성 자체는 기본 모델로 이뤄지므로 rollout
+  앞부분에는 기본 모델이 한 번 찍힌다.
+- Claude SDK는 모델별 **기본 effort**를 알려주지 않는다. Codex만 `defaultReasoningEffort`를
+  준다. 그래서 UI의 effort 기본 옵션에는 Codex일 때만 값이 함께 보인다.
+- **adapter에 effort 화이트리스트를 두지 않는다.** 한 번 `["low","medium","high","xhigh","max"]`를
+  박아 검증했다가 걷어냈다 — provider가 새 단계를 추가하면 우리 목록이 먼저 낡고, 걸러진 값은
+  **조용히 무시되어** 원인을 찾기 어렵다. §8의 원칙(조용한 성공보다 시끄러운 실패)대로
+  값은 그대로 넘기고 잘못된 값은 provider가 거부하게 둔다. UI가 제시하는 값은 애초에
+  provider가 신고한 목록에서만 나오고, agent를 바꾸면 모델·effort 선택이 초기화되므로
+  `ultra` 같은 값이 Claude로 넘어가지 않는다.
+
+### 새 모델이 나오면
+
+브라우저가 `/api/models?agent=<id>`를 부를 때마다 provider에게 다시 묻는다. bridge가 5분간
+캐시하므로 CLI를 업데이트한 뒤에는 **최대 5분** 혹은 bridge 재시작 후에 새 모델이 목록에
+나타난다. 코드 수정은 필요 없다.
+
+---
+
+## 12. Phase D — 인터뷰 이후 전체 플로우 (2026-08-21)
+
+`docs/requirements_flow.md` §3의 [1]~[4]를 끝까지 구현했다. Phase C는 [1]의 질문 루프만
+확인한 것이었고, 초안이 나온 뒤가 막다른 길이었다.
+
+### `save_design` — 일곱 단위가 실제로 추출된다 (§4.11)
+
+§8이 "가장 불확실한 것"으로 지목했던 스키마다. **두 provider 모두 통과했다.**
+
+```text
+$ npm run interview
+  codex   ACTOR 2 · REQ 8  · SURFACE 6 · ENTITY 7 · FLOW 3 · RULE 7 · DEC 11
+  claude  ACTOR 3 · REQ 12 · SURFACE 9 · ENTITY 6 · FLOW 3 · RULE 9 · DEC 12
+  [PASS] FLOW에 순서가 있다 (2단계 이상)
+  [PASS] FLOW 단계가 ACTOR/ENTITY를 가리킨다
+  [PASS] ENTITY 관계가 도출되었다
+  [PASS] AI가 채운 항목이 표시되었다        (15개 항목 전부 통과)
+```
+
+특히 §8이 의심했던 두 가지가 성립했다.
+
+**FLOW의 순서**가 시나리오 문장에서 도출된다. 사용자는 "신청하면 주인이 수락하고 채팅으로
+약속을 정한다"고 한 문장으로 말했는데, agent는 10단계로 펼치고 각 단계에 actor · surface ·
+entity · 상태 전이를 붙였다.
+
+```text
+4. 물건 주인이 받은 신청을 확인하고 수락합니다.
+   - 누가: ACTOR1 · 어디서: SURFACE4 · 무엇에: ENTITY4
+   - 결과: 신청 상태 = 수락됨, 대여 상태 = 인계 대기 · 규칙: RULE2
+```
+
+**ENTITY 관계**도 도출된다. 사용자가 말한 적 없는 "사진은 물건 하나에 속함",
+"후기는 완료된 대여 하나에 속함" 같은 관계가 나왔다.
+
+### [2] 정리 — 초안 이후가 이 기능의 본체다
+
+Phase C의 구조에서는 초안이 나오면 **더 할 수 있는 것이 없었다.** 답변 입력은 대기 중인
+질문이 있을 때만 열렸고, `/api/questions/answer`는 질문이 없으면 409를 냈다.
+
+§4.5("자유 채팅은 항상 열려 있다")와 §4.10 3단계("초안을 놓고 대화를 계속한다")가 같은 것을
+말하고 있었다. 두 경로를 하나로 합쳤다 — `POST /api/interview/message`는 질문 대기 여부와
+무관하게 받는다. 질문이 있으면 그 답으로, 없으면 사용자가 먼저 꺼낸 말로 기록한다.
+
+실제로 초안이 나온 뒤 "빌려주기 전에 물건 상태를 사진으로 남기는 기능이 필요하다"고 하자:
+
+```text
+REQ10  전달 직전 물건 상태를 사진으로 기록하기   [user]   새로 생김
+E9     대여 전 상태 기록                                  ENTITY 도출
+RULE7  건네기 직전 상태 사진을 반드시 남겨야 한다
+RULE8  대여 시작 뒤에는 바꾸거나 지울 수 없다              요청하지 않은 제약을 AI가 보강
+FLOW   6번 단계로 순서 안에 삽입 + FLOW 이름도 갱신
+```
+
+`save_design`은 patch가 아니라 **전체 문서를 다시 받는다.** 그래서 새 요구사항이 FLOW의
+올바른 위치에 끼어들 수 있다.
+
+### 렌더는 전부 결정론적이다
+
+사람용 설명 · `app_design.md` · harness가 **모두 하나의 `DesignDoc`에서 렌더된다.**
+여기서 모델을 부르지 않는다.
+
+FLOW의 단계가 이미 순서 있는 문장이므로, 이어 붙이면 §5가 요구한 "목록이 아니라 시나리오"가
+그대로 나온다. 목록은 "빠진 것"을 찾게 하지만 시나리오는 "틀린 것"을 찾게 한다.
+
+렌더에서 두 가지가 깨졌고 고쳤다.
+
+- agent가 쓰는 단계 문장에 마침표가 없어 이어 붙이면 한 덩어리가 됐다 → `asSentence()`
+- REQ 이름이 "사진을 올린다" 같은 서술형이라 "…을(를) 합니다"를 붙이면 문장이 깨졌다 →
+  조사를 붙이지 않고 나열
+
+### [3] harness — 쓰는 도구의 것만 만든다
+
+`AGENTS.md`와 `CLAUDE.md`를 둘 다 깔면 어긋났을 때 무엇이 맞는지 알 수 없다. 그래서
+**선택한 agent의 것만** 만든다. §6의 "하지 말 것은 5개 이내" 제한을 지키며, 넘치는 DEC은
+`app_design.md`로 미룬다는 안내를 남긴다.
+
+### 방향 수정 — 중간 과정을 사용자에게 보이지 않는다
+
+처음 만든 harness는 `docs/requirements_flow.md` §6 초안을 그대로 옮겨 **"되돌릴 수 있게 자주
+커밋하세요"**, **"설계에 없는 것을 만들어야 할 것 같으면 먼저 물어보세요"**라고 지시했다.
+첫 프롬프트 제안도 `"사진과 함께 빌려줄 물건 올리기"부터 만들어줘`였다.
+
+**셋 다 실행을 중간에 세운다.** 그리고 그 자리에서 사용자는 답할 수 없는 질문을 받는다 —
+비전공자는 기능 하나를 보고 "이게 맞나"를 판단하지 못한다. 판단할 수 있었다면 애초에
+인터뷰가 필요 없었을 것이다.
+
+목표를 **한 번 실행하면 동작하는 결과물**로 바꾸고 harness를 반대로 지시하게 고쳤다.
+
+| 이전 | 이후 |
+| --- | --- |
+| 되돌릴 수 있게 자주 커밋하세요 | 시작 전 한 번, 끝나고 한 번이면 충분합니다 |
+| 설계에 없으면 먼저 물어보세요 | 멈추지 말고 판단해서 진행하고 끝나고 한 번에 알려주세요 |
+| `"REQ 이름"부터 만들어줘` | `"앱 이름"을 처음부터 끝까지 만들어줘` |
+| (없음) | 일이 크면 하위 에이전트에 나눠 맡기고 main이 연결·검토 |
+
+커밋을 완전히 없애지는 않았다. §6이 커밋을 넣은 이유는 "사용자는 되돌리는 법을 모른다"이고
+그 이유는 여전히 유효하다. 바뀐 것은 **커밋이 작업의 리듬으로 드러나면 안 된다**는 점이므로,
+시작과 끝 두 번으로 되돌릴 지점만 남긴다.
+
+`app_design.md`의 DEC 안내도 같이 맞췄다. "막히면 되물어도 됩니다"가 남아 있으면 harness와
+정면으로 어긋난다.
+
+### AI 표식은 사람용에만 남긴다
+
+`app_design.md`의 항목마다 `*(제가 정했습니다)*`를 붙였다가 걷어냈다. 항목 59개 중 31개,
+**SURFACE는 6개 중 6개** 전부에 붙었다.
+
+무의미할 수밖에 없었다 — §4.7이 SURFACE를 "묻지 않고 REQ에서 도출한다"고 정했고 §4.1 표가
+ENTITY 상태를 "대부분 AI가 채움"이라고 했다. **설계상 항상 AI가 채우는 자리에 "AI가 채웠음"을
+붙이는 것은 동어반복이다.** §4.8을 다시 읽으면 이 표시는 처음부터 사용자용이다.
+
+토큰이 문제가 아니라 **희석**이 문제다(§6의 "규칙이 많아지면 오히려 무시된다"와 같다).
+더 구체적으로는 모든 화면에 표식이 붙어 있으면 코딩하는 agent가 화면을 잠정적인 것으로
+읽고 빼먹을 수 있다. 설계도는 "이걸 만들어라"로 읽혀야 한다.
+
+**DEC에만 남겼다.** 여기서는 출처가 agent의 행동을 실제로 바꾼다.
+
+```markdown
+`[사용자 결정]`은 사용자가 직접 말한 것입니다. 뒤집지 마세요.
+`[AI 기본값]`은 인터뷰에서 정해지지 않아 대신 채운 것입니다. 더 나은 판단이 있으면
+바꿔도 되지만, 멈춰서 묻지 말고 **바꾼 것을 끝나고 함께 알려주세요.**
+```
+
+나머지 단위의 출처는 `.project-intel/design.json`에 그대로 남는다 — §7이 "이후 기능이
+사용"한다고 정한 자리다. 사람용 서술의 표식은 그대로 유지한다.
+
+### [4] 인계 — 사람이 쓴 파일은 덮어쓰지 않는다
+
+생성물에 `<!-- byoa:generated -->` 표식을 넣고, 이미 있는 파일에 그 표식이 없으면 건너뛴다.
+사용자가 직접 관리하던 `CLAUDE.md`를 말없이 날리는 일이 없어야 한다.
+
+```text
+$ POST /api/design/export   (사람이 쓴 CLAUDE.md가 있는 상태)
+  쓴 파일   : app_design.md, AGENTS.md, .project-intel/design.json
+  건너뛴 것 : CLAUDE.md
+```
+
+### 세션 이어가기 (§7)
+
+bridge를 재시작하면 물고 있던 세션 참조는 사라지지만 **세션 자체는 디스크에 남는다.**
+어제 하던 인터뷰를 오늘 이어받을 수 있어야 한다.
+
+| | 목록 | 이어받기 |
+| --- | --- | --- |
+| Codex | `thread/list` (cwd 필터 지원) | `thread/resume` |
+| Claude | `~/.claude/projects/<경로의 /를 -로>/…jsonl` 직접 읽기 | `query({ resume })` |
+
+Claude에는 `thread/list`에 해당하는 RPC가 없어 디스크를 읽는다. SDK가 만든 세션은
+`claude --resume` picker에 뜨지 않지만(Finding 8) 파일은 있으므로, **이 목록이 CLI보다
+완전하다.**
+
+resume이 실제로 이어붙는지는 rollout으로 확인했다 — 새 파일이 생기지 않고 기존 thread에
+turn이 append 됐다.
+
+```text
+15:16 생성 · 15:37 수정   rollout-…-01a022f6-9701-….jsonl   ← 같은 파일에 append
+```
+
+**함정: 미리보기가 우리 프롬프트였다.** provider가 주는 미리보기는 "첫 사용자 메시지"인데
+우리가 보낸 첫 메시지는 spike 래퍼다. 모든 세션이 `You are interviewing a NON-PROGRAMMER…`로
+똑같아 보여 고를 수가 없었다. 우리가 감쌌으므로 우리가 푼다 — `describeSession()`이
+"요구사항 인터뷰" / "작업: <사용자 프롬프트>"로 바꾼다. CLI에서 만든 대화는 원문이 그대로
+가장 좋은 설명이므로 손대지 않는다.
+
+### 남은 것
+
+- **인터뷰 상태와 설계가 bridge 메모리에만 있다.** bridge를 재시작하면
+  `.project-intel/design.json`이 디스크에 있는데도 설계가 사라진다. 세션을 이어받아도
+  `interview.exchanges`는 복원되지 않는다 — agent 자신의 대화에는 문답이 그대로 있으므로
+  인터뷰는 이어지지만 **화면에는 앞선 문답이 보이지 않는다.** bridge가 뜰 때 프로젝트의
+  `.project-intel/`을 읽어 들이면 둘 다 풀린다.
+- **철회 처리** — "아까 그건 취소"는 여전히 다루지 않는다 (§4.4).
+- **경계 조건 질문 3~5개** (§4.9) — 초안 이후 무엇을 되물을지는 agent에게 맡겨 두었다.
+- **`npm run interview`는 회귀 게이트에 포함되지 않는다.** `npm run acceptance`와 따로 돌린다.
+
+---
+
+## 13. 남은 것 / 하지 않은 것
 
 - **다중 동시 task** — 검토 완료, **현행 유지(필요 없음)**. Bridge는 의도적으로 한 번에 하나의
   task만 허용한다(409). 제품 설계(루트 `README.md`의 `AgentRuntime`, MVP 시나리오)가 프로젝트당
@@ -924,3 +1189,133 @@ agent가 흡수하고 진행한다"**가 실제로 성립한다는 증거다. �
   노출해야 한다(Finding 1).
 - **Agent가 무관한 파일을 읽는 경우** — 일부 run에서 Codex가 전역 skill 문서를 먼저 읽었다.
   동작에는 지장이 없었으나, 제품에서는 turn별 instruction 범위를 좁히는 편이 낫다.
+  인터뷰 turn에 대해서는 §14에서 처리했다 (프로젝트 문서·내장 도구를 끈다). 작업 turn은
+  여전히 범위가 넓다.
+
+---
+
+## 14. 인터뷰 turn 격리 — 하네스가 인터뷰를 오염시키던 문제 (2026-08-21)
+
+### 증상
+
+프로토타입을 돌릴수록 Codex·Claude 세션이 계속 늘어나고 토큰 소모가 컸다. fixture에는
+설명되지 않는 하위 에이전트 세션 파일 4개도 남아 있었다.
+
+### 원인 — 하네스는 [4]의 산출물인데 [1]에서 실행되고 있었다
+
+`AGENTS.md` / `CLAUDE.md`는 **인계 이후 바이브코딩 단계에서 쓰라고 만든 지시서**다.
+그런데 이 파일들은 provider가 turn마다 **자동으로 읽는** 파일이기도 하다. 한 번 내보내고
+나면 같은 프로젝트에서 도는 이후의 모든 turn — 인터뷰 turn 포함 — 이 그것을 먼저 실었다.
+
+하필 그 내용이 이랬다.
+
+> 일이 크면 **하위 에이전트에게 나눠 맡기고**, 돌아온 결과를 직접 연결하고 검토하세요.
+> `app_design.md`를 먼저 읽으세요.
+
+그래서 인터뷰 중인 agent가 설계 문서(9,535자)를 읽고 하위 에이전트를 띄웠다. 세션이 늘어난
+것도, 토큰이 튄 것도 여기다. `npm run fixture`가 `README.md`와 `hello.js`만 덮어쓰고
+인계 산출물은 지우지 않아서 매 실행이 이 상태를 물려받았다.
+
+### 확인한 것 (전부 실측)
+
+| 확인 | 방법 | 결과 |
+| --- | --- | --- |
+| Codex의 AGENTS.md 자동 주입을 끌 수 있는가 | `thread/start`에 `config: { project_doc_max_bytes: 0 }`, rollout에 본문이 남는지 비교 | 대조군 주입됨 / 실험군 차단됨 |
+| Claude의 CLAUDE.md 자동 주입을 끌 수 있는가 | `settingSources: []`, CLAUDE.md에 심은 지시를 따르는지 비교 | 대조군 따름 / 실험군 안 따름 |
+| Claude 내장 도구를 끌 수 있는가 | `tools: []` 후 init 메시지의 도구 목록 | 25개 → 0개 (`Task` 포함) |
+| 그때 MCP tool은 살아남는가 | 같은 init 메시지 | `ask_user` 등 4개 유지 |
+| `listModels()` probe가 세션을 만드는가 | 호출 전후 세션 파일 수 | 8 → 8, **만들지 않는다** |
+
+**`thread/start`의 `config`는 모르는 키도 조용히 통과시킨다.** 존재하지 않는 키를 넣어도
+수락됐다. 그래서 여기서는 rollout으로 효과를 확인한 `project_doc_max_bytes`만 남겼다.
+`multi_agent_mode` 같은 키는 수락되지만 효과를 검증하지 못해 쓰지 않는다.
+
+### 고친 것
+
+- `StartTaskInput.mode`(`"task" | "interview"`)를 adapter까지 내린다. 두 adapter가 이걸로
+  격리 수준을 정한다.
+- **Codex 인터뷰 thread**: `config: { project_doc_max_bytes: 0 }` + `sandbox: "read-only"`.
+- **Claude 인터뷰 query**: `settingSources: []` + `tools: []`.
+- **thread/세션 캐시 키에 mode를 넣는다.** 전에는 프로젝트당 하나여서 인터뷰와 작업이 같은
+  대화를 공유했다 — 격리 수준을 다르게 줄 수 없을 뿐 아니라, 작업 turn이 인터뷰 문답
+  전체를 문맥에 안고 시작하고 있었다.
+- `npm run fixture`가 `byoa:generated` 마커가 붙은 인계 산출물과 `.project-intel/`을 지운다.
+  마커가 없는 파일은 손대지 않는다.
+
+### 언제부터 문제가 되는가 — 그리고 새 인터뷰는 새 프로젝트다
+
+처음 만드는 프로젝트에는 `app_design.md`도 하네스도 없으므로 [1] 인터뷰까지는 아무 문제가
+없다. **문제는 [4] 인계로 산출물이 생긴 뒤부터** 시작된다. 그 시점 이후의 모든 turn이
+같은 디렉터리에서 도는데, 하네스는 자동으로 읽히는 파일이기 때문이다. 위의 격리는 그
+이후를 위한 것이다.
+
+여기서 갈리는 경우가 둘이다.
+
+- **초안을 고치러 돌아온 것**(§4.10 3단계) — 인터뷰를 이어가는 것이므로 설계는 유지하고
+  격리만 걸면 된다. `/api/interview/message`가 이 경로다.
+- **인터뷰를 새로 시작한 것** — 이건 **새 프로젝트**다. 같은 디렉터리에 지난 설계와 하네스가
+  남아 있으면 두 앱의 설계가 한 폴더에 공존하게 되고, 만들려는 것과 다른 앱의 지시가 계속
+  끼어든다. 그래서 `POST /api/tasks`가 `mode: "interview"`로 들어오면 지난 흔적을 세 곳에서
+  모두 지운다 — bridge의 문답·초안, agent 쪽 세션, 디스크의 산출물.
+
+디스크를 지우는 것은 **마커가 있는 파일에 한한다.** 내보낼 때 덮어쓰지 않는 것과 같은
+기준이다. 무엇을 지웠는지는 응답의 `cleared`로 올려 보내 브라우저가 사용자에게 알린다 —
+사용자의 폴더에서 파일이 사라지는 일을 조용히 넘기지 않는다.
+
+```
+POST /api/tasks {"mode":"interview"}
+→ {"taskId":"…","cleared":["app_design.md","AGENTS.md",".project-intel/"]}
+
+  마커 없는 CLAUDE.md(사용자가 직접 쓴 것)는 그대로 남았다.
+```
+
+agent 쪽 세션을 같이 놓아주는 것도 여기 속한다. bridge의 기록만 지우고 thread를 재사용하면
+"처음부터 시작한다"고 말해 놓고 지난 문답을 문맥에 안고 가게 되고, 그 비용을 매 turn 다시
+낸다. 실제로 인터뷰를 두 번 시작해 서로 다른 세션이 열리는 것을 확인했다.
+
+### 같이 고친 것 — `get_app_context`가 초안 전체를 매 turn 돌려주고 있었다
+
+인터뷰 프롬프트는 매 turn 1번 항목이 `get_app_context` 호출이다. 그런데 응답에 설계 초안이
+통째로 실려 있었다. 그 초안을 쓴 것은 같은 대화 안의 agent 자신이므로, 자기가 방금 써낸
+문서를 매 turn 되받아 문맥에 쌓고 있었던 셈이다. turn 수만큼 중복이 곱해진다.
+
+초안 전체는 `includeDesign: true`일 때만 싣고, 기본은 `designDigest`(제목·단위별 개수·id
+목록)만 보낸다. 초안 전체가 정말 필요한 경우는 **다른 곳에서 시작한 세션을 이어받아 초안을
+고칠 때** 하나뿐이고, 그때만 지불하면 된다.
+
+같은 payload로 잰 값:
+
+```
+get_app_context (기본 = digest)  →  1,503 bytes
+get_app_context ?design=full     →  8,205 bytes
+```
+
+fixture에서 나온 더 큰 초안(REQ 12 · ENTITY 11 · RULE 12 · DEC 16)은 21,430 bytes였다.
+
+### 회귀 확인
+
+인계 산출물을 **일부러 프로젝트에 깔아 둔 뒤** 인터뷰 turn을 돌려 확인했다.
+
+```
+export codex : app_design.md, AGENTS.md, .project-intel/design.json
+export claude: app_design.md, CLAUDE.md, .project-intel/design.json
+
+codex  인터뷰 turn — 하네스 실림: 아니오
+claude 인터뷰 turn — 하네스 실림: 아니오 / 하위 에이전트 디렉터리: 0개
+```
+
+이 fixture는 전에 하위 에이전트 세션 파일 4개를 남겼던 그 디렉터리다. 같은 조건에서
+인터뷰 세션 3개를 돌려 하위 에이전트가 하나도 생기지 않았다.
+
+`npm run acceptance` 9/9(codex·claude), `npm run interview` 15/15(codex·claude) 통과.
+
+**작업 turn의 동작은 바꾸지 않았다.** 바이브코딩 단계에서는 하네스가 실려야 맞다 —
+그게 하네스의 목적이다. 격리는 인터뷰 turn에만 건다.
+
+### 남은 격차
+
+인터뷰 turn이 프로젝트 문서를 **아예** 못 읽게 되었다. 지금 설계에서는 인터뷰가 알아야 할
+것이 전부 `get_app_context`로 오므로 문제가 없지만, 나중에 "기존 코드베이스를 보고 인터뷰"를
+하려면 읽기를 다시 열되 **하네스만 골라 빼는** 방법이 필요하다. Codex는
+`project_doc_max_bytes`가 그 역할을 하지만, Claude는 `settingSources: []`가 CLAUDE.md와
+사용자 설정을 함께 끄므로 더 거칠다.

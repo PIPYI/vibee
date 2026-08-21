@@ -3,13 +3,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentEventEnvelope,
   AgentId,
+  AgentModelsResponse,
   AgentReadiness,
+  AgentSessionsResponse,
   BridgeStateResponse,
+  ExportDesignResponse,
+  HealthResponse,
+  ModelOption,
   PendingQuestion,
   SelectedItem,
+  SessionSummary,
   ShowResultInput,
   StartTaskResponse,
+  ToolReadiness,
 } from "@byoa/protocol";
+
+import { Markdown } from "./Markdown";
 
 /** 실제 앱 선택 상태를 대신하는 mock. get_app_context가 돌려줄 값이 있어야 하기 때문이다. */
 const MOCK_ITEMS: SelectedItem[] = [
@@ -29,7 +38,15 @@ export function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [selectedId, setSelectedId] = useState(MOCK_ITEMS[0]!.id);
 
+  // 모델·effort는 provider가 신고한 목록에서 고른다. ""는 "오버라이드 없음"이다.
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [modelsNote, setModelsNote] = useState<string | null>(null);
+
   const [readiness, setReadiness] = useState<AgentReadiness[]>([]);
+  // git은 agent와 같은 급의 전제 조건이다 — 없으면 되돌릴 지점을 남길 수 없다.
+  const [tools, setTools] = useState<ToolReadiness[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,22 +63,76 @@ export function App() {
   const [answer, setAnswer] = useState("");
   const [asked, setAsked] = useState<Array<{ question: string; answer: string }>>([]);
 
+  // 설계 초안: 사람용 서술은 bridge가 렌더한 것을 그대로 보여준다 (§5).
+  const [narrative, setNarrative] = useState<string | null>(null);
+  const [gaps, setGaps] = useState<string[]>([]);
+  const [handover, setHandover] = useState<ExportDesignResponse | null>(null);
+
+  // 이어받을 수 있는 기존 세션들 (§7).
+  const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+
   const logRef = useRef<HTMLDivElement>(null);
 
   // 로드 시 health check를 하고 bridge의 상태로 초기화한다.
   useEffect(() => {
     void fetch("/api/health")
       .then((r) => r.json())
-      .then((data: { agents: AgentReadiness[] }) => setReadiness(data.agents))
+      .then((data: HealthResponse) => {
+        setReadiness(data.agents);
+        setTools(data.tools ?? []);
+      })
       .catch(() => setError("Bridge is not reachable. Start it with `npm run bridge`."));
 
     void fetch("/api/state")
       .then((r) => r.json())
       .then((data: BridgeStateResponse) => {
         setProjectPath(data.appContext.projectPath || data.defaultProjectPath);
+        // bridge가 이미 설계를 들고 있으면(브라우저만 새로고침한 경우) 그대로 되살린다.
+        if (data.design) {
+          setGaps(data.designGaps);
+          void fetch("/api/design/narrative")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d: { markdown: string } | null) => d && setNarrative(d.markdown))
+            .catch(() => undefined);
+        }
       })
       .catch(() => undefined);
   }, []);
+
+  /**
+   * agent가 바뀌면 그 provider의 모델 목록을 다시 받아온다.
+   *
+   * 여기에 provider 이름으로 분기하는 코드가 없다는 점이 중요하다 — 어떤 모델이 있고 어떤
+   * effort를 받는지는 전적으로 bridge가 알려준다. 목록을 못 받아도 task는 provider
+   * 기본값으로 돌 수 있으므로 실패를 치명적으로 다루지 않는다.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    setModels([]);
+    setModel("");
+    setEffort("");
+    setModelsNote("모델 목록을 불러오는 중…");
+
+    void fetch(`/api/models?agent=${encodeURIComponent(agent)}`)
+      .then(async (r) => {
+        const data = (await r.json()) as AgentModelsResponse & { error?: string };
+        if (cancelled) return;
+        if (!r.ok) {
+          setModelsNote(`모델 목록을 불러오지 못했습니다 (${data.error ?? r.status}). 기본값으로 실행됩니다.`);
+          return;
+        }
+        setModels(data.models);
+        setModelsNote(null);
+      })
+      .catch(() => {
+        if (!cancelled) setModelsNote("모델 목록을 불러오지 못했습니다. 기본값으로 실행됩니다.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agent]);
 
   // UI 상태를 bridge에 미러링해서 `get_app_context`가 화면에 보이는 값을 그대로 반영하게 한다.
   useEffect(() => {
@@ -135,6 +206,19 @@ export function App() {
           setResult(event.result);
           push("Structured result received via show_result", "mcp");
           break;
+        case "app.design":
+          push(`설계 초안 저장됨 — ${event.design.title}`, "mcp");
+          // 서술은 bridge가 만든다. 브라우저가 따로 렌더하면 두 벌이 되어 어긋난다.
+          void fetch("/api/design/narrative")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data: { markdown: string; gaps: string[] } | null) => {
+              if (!data) return;
+              setNarrative(data.markdown);
+              setGaps(data.gaps);
+              setHandover(null);
+            })
+            .catch(() => undefined);
+          break;
         case "app.question":
           setQuestion(event.question);
           setAnswer("");
@@ -200,37 +284,109 @@ export function App() {
     const response = await fetch("/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent, projectPath, prompt: "(interview)", mode: "interview" }),
+      body: JSON.stringify({ agent, projectPath, prompt: "(interview)", mode: "interview", model, effort }),
     });
     const data = (await response.json()) as StartTaskResponse & { error?: string };
     if (!response.ok) {
       setError(data.error ?? "Failed to start the interview");
       return;
     }
+    // 새 인터뷰는 새 프로젝트다. 지난 설계와 하네스가 지워졌다면 그대로 알린다.
+    if (data.cleared?.length) {
+      setMessage(`새 인터뷰를 시작하면서 이전 설계를 지웠습니다: ${data.cleared.join(", ")}`);
+    }
     setTaskId(data.taskId);
     setRunning(true);
-  }, [agent, projectPath]);
+  }, [agent, projectPath, model, effort]);
 
-  /** 답변을 보내면 bridge가 다음 turn을 자동으로 시작한다. */
-  const sendAnswer = useCallback(async () => {
-    if (!question || !answer.trim()) return;
+  /**
+   * 인터뷰에 말을 건다. 대기 중인 질문에 답하는 것과, 초안을 보고 고쳐 달라고 하는 것이
+   * 같은 경로다 (§4.5, §4.10 3단계). 나누면 초안 이후가 막다른 길이 된다.
+   */
+  const sendMessage = useCallback(async () => {
+    if (!answer.trim()) return;
     setError(null);
-    setAsked((prev) => [...prev, { question: question.question, answer }]);
+    setAsked((prev) => [...prev, { question: question?.question ?? "", answer }]);
     setQuestion(null);
+    setAnswer("");
     setMessage("");
-    const response = await fetch("/api/questions/answer", {
+    const response = await fetch("/api/interview/message", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent, projectPath, answer }),
+      body: JSON.stringify({ agent, projectPath, message: answer, model, effort }),
     });
     const data = (await response.json()) as StartTaskResponse & { error?: string };
     if (!response.ok) {
-      setError(data.error ?? "Failed to send the answer");
+      setError(data.error ?? "Failed to send the message");
       return;
     }
     setTaskId(data.taskId);
     setRunning(true);
-  }, [agent, projectPath, question, answer]);
+  }, [agent, projectPath, question, answer, model, effort]);
+
+  /** 이어받을 수 있는 기존 세션들을 불러온다 (§7). */
+  const loadSessions = useCallback(async () => {
+    if (!projectPath.trim()) return;
+    setError(null);
+    setLoadingSessions(true);
+    try {
+      const response = await fetch(
+        `/api/sessions?agent=${encodeURIComponent(agent)}&projectPath=${encodeURIComponent(projectPath)}`,
+      );
+      const data = (await response.json()) as AgentSessionsResponse & { error?: string };
+      if (!response.ok) {
+        setError(data.error ?? "기존 대화를 불러오지 못했습니다");
+        return;
+      }
+      setSessions(data.sessions);
+    } finally {
+      setLoadingSessions(false);
+    }
+  }, [agent, projectPath]);
+
+  /** 고른 세션에 붙는다. 다음에 말을 걸면 그 대화가 이어진다. */
+  const resume = useCallback(
+    async (sessionId: string) => {
+      setError(null);
+      const response = await fetch("/api/sessions/resume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent, projectPath, sessionId }),
+      });
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string };
+        setError(data.error ?? "대화를 이어받지 못했습니다");
+        return;
+      }
+      // 이 대화의 문답은 세션 안에 있다. 화면에 남아 있던 이전 대화 흔적은 지운다.
+      setSessions(null);
+      setAsked([]);
+      setQuestion(null);
+      setNarrative(null);
+      setGaps([]);
+      setHandover(null);
+      setLines([]);
+      setMessage("");
+      setSession({ id: sessionId, turns: 0 });
+    },
+    [agent, projectPath],
+  );
+
+  /** 인계 — 설계와 harness를 프로젝트 디렉터리에 쓴다 (§7). */
+  const exportDesign = useCallback(async () => {
+    setError(null);
+    const response = await fetch("/api/design/export", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath }),
+    });
+    const data = (await response.json()) as ExportDesignResponse & { error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "파일을 만들지 못했습니다");
+      return;
+    }
+    setHandover(data);
+  }, [agent, projectPath]);
 
   const send = useCallback(async () => {
     setError(null);
@@ -239,7 +395,7 @@ export function App() {
     const response = await fetch("/api/tasks", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent, projectPath, prompt, appContext: { selectedItem } }),
+      body: JSON.stringify({ agent, projectPath, prompt, appContext: { selectedItem }, model, effort }),
     });
     const data = (await response.json()) as StartTaskResponse & { error?: string };
     if (!response.ok) {
@@ -248,7 +404,7 @@ export function App() {
     }
     setTaskId(data.taskId);
     setRunning(true);
-  }, [agent, projectPath, prompt, selectedId]);
+  }, [agent, projectPath, prompt, selectedId, model, effort]);
 
   const stop = useCallback(async () => {
     if (!taskId) return;
@@ -276,6 +432,10 @@ export function App() {
   }, [agent, projectPath]);
 
   const activeReadiness = readiness.find((entry) => entry.agent === agent);
+  // 모델을 고르지 않았으면 provider 기본 모델의 effort 집합을 보여준다.
+  // effort 값은 모델마다 다르다 (Codex에는 ultra가 있고, Claude haiku는 아예 없다).
+  const activeModel = models.find((entry) => entry.id === model) ?? models.find((entry) => entry.isDefault);
+  const efforts = activeModel?.efforts ?? [];
 
   return (
     <main>
@@ -288,6 +448,13 @@ export function App() {
             : (activeReadiness.message ?? `${agent} is not ready.`)}
         </p>
       )}
+      {tools
+        .filter((tool) => !tool.installed)
+        .map((tool) => (
+          <p key={tool.tool} className="banner bad">
+            {tool.message ?? `${tool.tool}이(가) 설치되어 있지 않습니다.`}
+          </p>
+        ))}
       {stream === "closed" && (
         <p className="banner bad">Bridge 이벤트 연결이 끊겼습니다. 재연결하는 중… (`npm run bridge`가 떠 있는지 확인)</p>
       )}
@@ -299,6 +466,40 @@ export function App() {
           <select value={agent} onChange={(e) => setAgent(e.target.value as AgentId)}>
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
+          </select>
+        </label>
+
+        <label>
+          Model
+          <select
+            value={model}
+            disabled={models.length === 0}
+            onChange={(e) => {
+              setModel(e.target.value);
+              // effort 집합은 모델마다 다르므로 모델을 바꾸면 선택을 놓는다.
+              setEffort("");
+            }}
+          >
+            <option value="">기본값{defaultLabel(models)}</option>
+            {models.map((entry) => (
+              <option key={entry.id} value={entry.id} title={entry.description}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Effort
+          <select value={effort} disabled={efforts.length === 0} onChange={(e) => setEffort(e.target.value)}>
+            <option value="">
+              기본값{activeModel?.defaultEffort ? ` — ${activeModel.defaultEffort}` : ""}
+            </option>
+            {efforts.map((entry) => (
+              <option key={entry.id} value={entry.id} title={entry.description}>
+                {entry.id}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -336,6 +537,13 @@ export function App() {
           <button onClick={() => void newSession()} disabled={running || !session} className="secondary">
             New Session
           </button>
+          <button
+            onClick={() => void (sessions ? setSessions(null) : loadSessions())}
+            disabled={running || !projectPath.trim()}
+            className="secondary"
+          >
+            {sessions ? "닫기" : "기존 대화 이어가기"}
+          </button>
         </div>
 
         {session ? (
@@ -350,6 +558,34 @@ export function App() {
           <p className="muted">세션 없음 — 다음 Send가 새 세션을 시작합니다.</p>
         )}
 
+        {sessions && (
+          <div className="sessions">
+            {loadingSessions && <p className="muted">불러오는 중…</p>}
+            {!loadingSessions && sessions.length === 0 && (
+              <p className="muted">이 프로젝트에서 나눈 대화가 아직 없습니다.</p>
+            )}
+            {sessions.map((entry) => (
+              <button
+                key={entry.id}
+                className="session"
+                disabled={running || entry.active}
+                onClick={() => void resume(entry.id)}
+              >
+                <span className="session-preview">{entry.preview}</span>
+                <span className="muted">
+                  {entry.updatedAt.slice(5, 16).replace("T", " ")}
+                  {entry.active ? " · 지금 이어져 있음" : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {modelsNote && <p className="muted">{modelsNote}</p>}
+        {!modelsNote && activeModel && efforts.length === 0 && (
+          <p className="muted">{activeModel.label}은(는) effort를 지원하지 않습니다.</p>
+        )}
+
         <div className="row checks">
           <Check label="get_app_context" done={mcpSeen.has("get_app_context")} />
           <Check label="ask_user" done={mcpSeen.has("ask_user")} />
@@ -357,18 +593,18 @@ export function App() {
         </div>
       </section>
 
-      {(question || asked.length > 0) && (
+      {(question || asked.length > 0 || narrative) && (
         <section className="panel">
           <h2>인터뷰</h2>
 
           {asked.map((exchange, index) => (
             <div key={index} className="exchange">
-              <p className="asked">{exchange.question}</p>
+              {exchange.question && <p className="asked">{exchange.question}</p>}
               <p className="answered">{exchange.answer}</p>
             </div>
           ))}
 
-          {question ? (
+          {question && (
             <div className="question">
               <h3>{question.question}</h3>
               {question.why && <p className="muted">{question.why}</p>}
@@ -380,20 +616,97 @@ export function App() {
                   {question.progress.total}개 중 {question.progress.step}번째
                 </p>
               )}
-              <textarea
-                rows={3}
-                value={answer}
-                placeholder="자유롭게 답하거나, 하고 싶은 말을 쓰세요"
-                onChange={(e) => setAnswer(e.target.value)}
-              />
-              <div className="row">
-                <button onClick={() => void sendAnswer()} disabled={running || !answer.trim()}>
-                  답변 보내기
-                </button>
-              </div>
+            </div>
+          )}
+
+          {running && !question && <p className="muted">에이전트가 생각하는 중…</p>}
+
+          {/* 입력창은 질문이 없어도 항상 열려 있다 (§4.5). 초안을 보고 고쳐 달라고 하는 것이
+              §4.10의 3단계이며, 이 경로가 막히면 초안이 막다른 길이 된다. */}
+          <textarea
+            rows={3}
+            value={answer}
+            placeholder={
+              question
+                ? "자유롭게 답하거나, 하고 싶은 말을 쓰세요"
+                : "고칠 것이 있으면 말씀하세요 — \"이건 아닌데\", \"이것도 필요해\""
+            }
+            onChange={(e) => setAnswer(e.target.value)}
+          />
+          <div className="row">
+            <button onClick={() => void sendMessage()} disabled={running || !answer.trim()}>
+              {question ? "답변 보내기" : "보내기"}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* [2] 정리 (§5). 여기서 초안을 읽고 고친 뒤에만 [3][4]로 넘어간다 —
+          인계 버튼이 이 패널 안에만 있는 이유다. */}
+      {narrative && (
+        <section className="panel">
+          <h2>설계 초안</h2>
+          <p className="muted">
+            읽어 보시고 <strong>틀린 것</strong>이 있으면 위 입력창에 말씀하세요. 초안은 고쳐 쓰라고 있는 것입니다.
+          </p>
+
+          <Markdown source={narrative} />
+
+          {gaps.length > 0 && (
+            <div className="gaps">
+              <h3>아직 정해지지 않은 것</h3>
+              {/* §4.10 — 막지 않는다. 경고만 하고 보내준다. 정해지지 않은 채 넘어간 것은
+                  DEC으로 남아 나중에 근거가 된다. */}
+              <ul>
+                {gaps.map((gap: string) => (
+                  <li key={gap}>{gap}</li>
+                ))}
+              </ul>
+              <p className="muted">이대로 시작하셔도 됩니다. 나중에 고칠 수 있습니다.</p>
+            </div>
+          )}
+
+          {!handover ? (
+            <div className="row">
+              <button onClick={() => void exportDesign()} disabled={running}>
+                이대로 시작하기
+              </button>
+              <span className="muted">
+                {agent === "claude" ? "app_design.md · CLAUDE.md" : "app_design.md · AGENTS.md"}를 프로젝트에 만듭니다
+              </span>
             </div>
           ) : (
-            running && <p className="muted">에이전트가 생각하는 중…</p>
+            <div className="handover">
+              <h3>준비됐습니다</h3>
+              <p>
+                <code>{handover.projectPath}</code>에 만들었습니다.
+              </p>
+              <ul>
+                {handover.written.map((file: string) => (
+                  <li key={file}>
+                    <code>{file}</code>
+                  </li>
+                ))}
+              </ul>
+              {handover.skipped.length > 0 && (
+                <p className="muted">
+                  이미 있던 파일은 건드리지 않았습니다: {handover.skipped.join(", ")}
+                </p>
+              )}
+              {handover.gitInitialized && (
+                <p className="muted">
+                  되돌릴 수 있도록 이 폴더를 git 저장소로 만들고 지금 상태를 저장해 두었습니다.
+                  잘못되면 이 지점으로 되돌아올 수 있습니다.
+                </p>
+              )}
+              <p>
+                이제 {agent === "claude" ? "Claude Code" : "Codex"}를 열고 이 폴더에서 작업하세요. 이렇게 시작해 보세요:
+              </p>
+              <pre className="message">{handover.firstPrompt}</pre>
+              <button className="link" onClick={() => void navigator.clipboard.writeText(handover.firstPrompt)}>
+                복사
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -447,6 +760,12 @@ export function App() {
       </section>
     </main>
   );
+}
+
+/** provider가 기본으로 고르는 모델 이름을 "기본값" 옵션에 덧붙인다. */
+function defaultLabel(models: ModelOption[]): string {
+  const fallback = models.find((entry) => entry.isDefault);
+  return fallback ? ` — ${fallback.label}` : "";
 }
 
 function Check({ label, done }: { label: string; done: boolean }) {

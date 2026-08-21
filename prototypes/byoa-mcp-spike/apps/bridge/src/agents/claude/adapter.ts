@@ -7,23 +7,41 @@
  * 로그인해 둔 Claude Code가 담당하며, 우리는 query를 시작하고 결과 이벤트 스트림을 읽을 뿐이다.
  */
 import { execFile } from "node:child_process";
-import { resolve, sep } from "node:path";
+import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, join, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
 import {
   query,
   type CanUseTool,
+  type EffortLevel,
   type McpStdioServerConfig,
   type PermissionResult,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { MCP_SERVER_NAME, type AgentEvent, type AgentReadiness } from "@byoa/protocol";
+import {
+  MCP_SERVER_NAME,
+  type AgentEvent,
+  type AgentReadiness,
+  type ModelOption,
+  type SessionSummary,
+} from "@byoa/protocol";
 
 import { cliSpawnOptions } from "../../platform.js";
-import type { AgentAdapter, StartTaskInput, TaskOutcome } from "../types.js";
+import { describeSession } from "../../prompt.js";
+import type { AgentAdapter, StartTaskInput, TaskMode, TaskOutcome } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+
+/** 세션 캐시 키. mode가 다르면 다른 대화다 (Codex adapter의 threadKey와 같은 이유). */
+function sessionKey(projectPath: string, mode: TaskMode): string {
+  return `${mode} ${projectPath}`;
+}
 
 type RunningTask = {
   abortController: AbortController;
@@ -42,7 +60,10 @@ export type ClaudeAdapterConfig = {
 export class ClaudeAdapter implements AgentAdapter {
   readonly id = "claude" as const;
 
-  /** 프로젝트 경로당 마지막 session_id. Codex의 "프로젝트당 thread 하나 재사용"에 대응한다. */
+  /**
+   * 프로젝트 경로 × mode당 마지막 session_id. Codex의 "프로젝트당 thread 하나 재사용"에
+   * 대응한다. mode를 키에 넣는 이유는 Codex adapter의 threadsByProject와 같다.
+   */
   private readonly sessionByProject = new Map<string, string>();
   private readonly running = new Map<string, RunningTask>();
 
@@ -70,6 +91,36 @@ export class ClaudeAdapter implements AgentAdapter {
     return { agent: "claude", installed: true, authenticated: "unknown", version };
   }
 
+  /**
+   * Claude가 스스로 신고하는 모델 목록.
+   *
+   * `supportedModels()`는 Codex의 `model/list`와 달리 **살아있는 query 객체에만** 있다.
+   * 그래서 프롬프트를 하나도 yield 하지 않는 async generator로 query를 열어 control 채널만
+   * 붙이고 목록을 받은 뒤 곧바로 abort 한다 — turn은 시작되지 않고 세션도 남지 않는다.
+   */
+  async listModels(): Promise<ModelOption[]> {
+    const abortController = new AbortController();
+    const probe = query({
+      prompt: noUserInput(),
+      options: { strictMcpConfig: true, abortController },
+    });
+
+    try {
+      const models = await probe.supportedModels();
+      return models.map((model) => ({
+        id: model.value,
+        label: model.displayName || model.value,
+        description: model.description || undefined,
+        // supportsEffort가 false면 effort를 지원하지 않는 모델이다 (예: haiku).
+        efforts: (model.supportsEffort ? (model.supportedEffortLevels ?? []) : []).map((level) => ({ id: level })),
+        // SDK는 모델별 기본 effort를 알려주지 않는다. Codex와 달리 여기서는 비워 둔다.
+        isDefault: model.value === "default",
+      }));
+    } finally {
+      abortController.abort();
+    }
+  }
+
   async startTask(input: StartTaskInput, emit: (event: AgentEvent) => void): Promise<TaskOutcome> {
     const abortController = new AbortController();
     this.running.set(input.taskId, { abortController });
@@ -86,13 +137,30 @@ export class ClaudeAdapter implements AgentAdapter {
     const canUseTool: CanUseTool = (toolName, toolInput) =>
       Promise.resolve(this.evaluateToolUse(toolName, toolInput, input.projectPath, input.taskId, emit));
 
-    const resumeFrom = this.sessionByProject.get(input.projectPath);
+    const interview = input.mode === "interview";
+    const resumeFrom = this.sessionByProject.get(sessionKey(input.projectPath, input.mode));
 
     const stream = query({
       prompt: input.prompt,
       options: {
         cwd: input.projectPath,
         mcpServers,
+        // 인터뷰는 대화지 작업이 아니다. 내장 도구를 전부 끄면 Task(하위 에이전트)·Read·Bash가
+        // 사라지고 MCP tool 네 개만 남는다 — 인터뷰에 필요한 건 그게 전부다.
+        // 이렇게 두지 않으면 프로젝트에 놓인 하네스를 읽고 앱을 만들기 시작한다
+        // (SPIKE_FINDINGS.md §14).
+        ...(interview ? { tools: [] } : {}),
+        // CLAUDE.md는 `settingSources`에 "project"가 있을 때만 로드된다. 생략하면 CLI처럼
+        // 전부 로드하므로, 인터뷰에서는 명시적으로 비운다. 그 CLAUDE.md는 [4] 인계 산출물이지
+        // 인터뷰의 규칙이 아니다.
+        ...(interview ? { settingSources: [] } : {}),
+        // 생략하면 SDK가 사용자의 기본 모델을 쓴다.
+        model: input.model,
+        // 값은 `listModels()`가 신고한 이 모델의 effort 목록에서 온 것이므로 그대로 넘긴다.
+        // 여기서 화이트리스트로 거르지 않는 이유는 §8과 같다 — Claude가 새 effort 단계를
+        // 추가하면 우리 목록이 먼저 낡고, 조용히 무시되면 원인을 찾기 어렵다.
+        // 잘못된 값은 SDK가 거부하게 두고 task.error로 드러낸다.
+        effort: input.effort as EffortLevel | undefined,
         // 사용자의 다른 .mcp.json/전역 설정을 아예 로드하지 않는다 — byoa-spike 외 서버는
         // 존재하지 않으므로 Codex처럼 elicitation을 서버별로 골라 거부할 필요가 없다.
         strictMcpConfig: true,
@@ -107,7 +175,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     try {
       for await (const message of stream) {
-        this.handleMessage(input.taskId, message, emit, pendingTools, input.projectPath, resumeFrom);
+        this.handleMessage(input.taskId, message, emit, pendingTools, input.projectPath, input.mode, resumeFrom);
 
         if (message.type === "result") {
           if (message.subtype === "success" && !message.is_error) return "completed";
@@ -129,6 +197,57 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
+  /**
+   * 이 프로젝트의 기존 세션들.
+   *
+   * Codex의 `thread/list`에 해당하는 RPC가 SDK에 없어서 디스크를 직접 읽는다.
+   * Claude Code는 세션을 `~/.claude/projects/<경로를 -로 바꾼 이름>/<uuid>.jsonl`에 남긴다.
+   * SDK가 만든 세션은 `claude --resume` picker에 뜨지 않지만(Finding 8) 파일은 그대로 있으므로
+   * 여기서는 보인다 — 오히려 이 목록이 CLI보다 완전하다.
+   */
+  async listSessions(projectPath: string): Promise<SessionSummary[]> {
+    const dir = join(homedir(), ".claude", "projects", encodeProjectDir(projectPath));
+    let entries: string[];
+    try {
+      entries = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
+    } catch {
+      return []; // 아직 이 프로젝트에서 대화한 적이 없다
+    }
+
+    // 이 프로젝트에서 우리가 물고 있는 세션은 mode마다 하나씩 있을 수 있다.
+    const held = this.heldSessions(projectPath);
+    const sessions = await Promise.all(
+      entries.map(async (name) => {
+        const path = join(dir, name);
+        const info = await stat(path);
+        return {
+          id: basename(name, ".jsonl"),
+          preview: describeSession(await firstUserMessage(path)),
+          updatedAt: info.mtime.toISOString(),
+          active: held.has(basename(name, ".jsonl")),
+        };
+      }),
+    );
+
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 30);
+  }
+
+  async resumeSession(projectPath: string, sessionId: string): Promise<void> {
+    // Codex와 달리 별도 resume 호출이 없다. 다음 query의 `resume` 옵션이 처리한다.
+    // 이어받기는 인터뷰 패널에서만 노출되므로 인터뷰 쪽에 건다.
+    this.sessionByProject.set(sessionKey(projectPath, "interview"), sessionId);
+  }
+
+  /** 이 프로젝트에서 지금 물고 있는 session id들 (mode별로 하나씩). */
+  private heldSessions(projectPath: string): Set<string> {
+    const held = new Set<string>();
+    for (const mode of ["task", "interview"] as const) {
+      const id = this.sessionByProject.get(sessionKey(projectPath, mode));
+      if (id) held.add(id);
+    }
+    return held;
+  }
+
   async stopTask(taskId: string): Promise<void> {
     this.running.get(taskId)?.abortController.abort();
   }
@@ -136,7 +255,9 @@ export class ClaudeAdapter implements AgentAdapter {
   resetSession(projectPath: string): void {
     // session_id 참조만 버린다. 세션 파일은 ~/.claude/projects에 그대로 남아
     // `claude --resume`으로 이어받을 수 있다.
-    this.sessionByProject.delete(projectPath);
+    for (const mode of ["task", "interview"] as const) {
+      this.sessionByProject.delete(sessionKey(projectPath, mode));
+    }
   }
 
   async dispose(): Promise<void> {
@@ -189,12 +310,13 @@ export class ClaudeAdapter implements AgentAdapter {
     emit: (event: AgentEvent) => void,
     pendingTools: Map<string, ToolDescriptor>,
     projectPath: string,
+    mode: TaskMode,
     resumeFrom: string | undefined,
   ): void {
     switch (message.type) {
       case "system":
         if (message.subtype === "init") {
-          this.sessionByProject.set(projectPath, message.session_id);
+          this.sessionByProject.set(sessionKey(projectPath, mode), message.session_id);
           emit({
             type: "agent.session",
             taskId,
@@ -257,6 +379,49 @@ function describeTool(name: string, input: Record<string, unknown>): ToolDescrip
     return { name: "fileChange", detail: { files: path ? [path] : [] } };
   }
   return null;
+}
+
+/** Claude Code가 세션 디렉터리 이름을 만드는 방식: 경로의 `/`를 `-`로 바꾼다. */
+function encodeProjectDir(projectPath: string): string {
+  return projectPath.replace(/\//g, "-");
+}
+
+/**
+ * 세션 파일에서 첫 사용자 메시지를 뽑는다. 어떤 대화였는지 알아보게 하는 용도다.
+ * 파일이 클 수 있으므로 한 줄씩 읽다가 찾으면 곧바로 멈춘다.
+ */
+async function firstUserMessage(path: string): Promise<string> {
+  const reader = createInterface({ input: createReadStream(path, "utf8"), crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      let entry: { type?: string; message?: { content?: unknown } };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry.type !== "user") continue;
+
+      const content = entry.message?.content;
+      const text =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+                .map((block) => (typeof block === "object" && block && "text" in block ? String(block.text) : ""))
+                .join(" ")
+            : "";
+      if (text.trim()) return text.trim();
+    }
+  } finally {
+    reader.close();
+  }
+  return "(빈 대화)";
+}
+
+/** 프롬프트를 하나도 보내지 않는 입력 스트림. listModels가 turn 없이 control 채널만 열 때 쓴다. */
+async function* noUserInput(): AsyncGenerator<SDKUserMessage> {
+  await new Promise<void>(() => {});
 }
 
 function filePathOf(input: Record<string, unknown>): string | undefined {

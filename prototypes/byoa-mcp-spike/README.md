@@ -32,7 +32,7 @@ A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 provi
 
 ```text
 ┌──────────────────────────┐
-│ React Browser UI (:5173) │  Project Path / Prompt / Send / Stop / New Session
+│ React Browser UI (:5173) │  Agent / Model / Effort / Project Path / Prompt
 └────────────┬─────────────┘  Activity Log / Structured Result
              │ HTTP + WebSocket
              ▼
@@ -56,6 +56,9 @@ A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 provi
 - **Node.js 20+** — 브라우저 UI(Vite 8)에 필수입니다. bridge·MCP server·acceptance는 18에서도
   돌지만, npm 9로 설치하면 optional dependency 버그로 Vite 네이티브 바이너리가 빠집니다.
   Node 20+에서 `npm install`을 다시 하면 해결됩니다.
+- **git** — 인계할 때 프로젝트를 로컬 저장소로 만들고, harness가 agent에게 자주 커밋하도록
+  지시합니다. 사용자는 되돌리는 법을 모르므로 되돌릴 지점이 반드시 있어야 합니다.
+  **원격 저장소는 쓰지 않습니다.**
 - 쓰려는 agent 중 **하나 이상**이 설치·로그인되어 있을 것
 
 > agent 앱이나 터미널을 **켜 둘 필요는 없습니다.** Bridge가 자기 자신의 agent 프로세스를
@@ -67,7 +70,8 @@ A는 MCP가 아니고, C는 agent 실행 수단이 아닙니다. Bridge는 provi
 
 ```bash
 codex --version && codex login     # Codex를 쓸 경우 (검증 환경: codex-cli 0.148.0)
-claude --version                   # Claude를 쓸 경우 (검증 환경: 2.1.237)
+claude --version                   # Claude를 쓸 경우 (검증 환경: 2.1.238)
+git --version                      # 되돌릴 지점을 남기는 데 필요합니다
 ```
 
 Bridge는 시작 시 두 agent의 설치·인증 상태를 확인하고, 준비되지 않았다면 브라우저에
@@ -158,11 +162,19 @@ fixture는 **자체 git 저장소로 초기화**됩니다. 상위 저장소와 �
 | 필드 | 값 |
 | --- | --- |
 | Agent | Codex |
+| Model | 기본값 |
+| Effort | 기본값 |
 | Project Path | `<spike>/tmp/fixture` |
 | Mock App Selection | Login Screen |
 | Prompt | `README.md의 마지막에 "Edited by BYOA agent." 를 추가해줘.` |
 
 **Send**를 누릅니다.
+
+Model·Effort 목록은 선택한 agent에게 직접 물어서 채웁니다(Codex는 `model/list`, Claude는
+`supportedModels()`). 하드코딩이 아니므로 CLI를 업데이트하면 목록도 따라 바뀝니다.
+둘 다 **기본값**으로 두면 아무것도 넘기지 않고 provider 기본 설정으로 돕니다.
+effort를 지원하지 않는 모델(예: Claude `haiku`)을 고르면 Effort 선택이 잠깁니다.
+자세한 내용은 `SPIKE_FINDINGS.md` §11.
 
 ### Expected result
 
@@ -316,6 +328,53 @@ Bridge는 SIGINT/SIGTERM에서 `codex app-server` child process를 정리합니�
 (SIGTERM → 2초 후 SIGKILL). 종료 후 남는 프로세스가 없는 것을 확인했습니다.
 
 ---
+
+## 요구사항 인터뷰 (docs/requirements_flow.md)
+
+빈 프로젝트에서 설계도와 harness를 만들어 내는 플로우입니다. 검증 결과는
+`SPIKE_FINDINGS.md` §12에 있습니다.
+
+```text
+[1] 인터뷰 시작   에이전트가 질문 하나를 던지고 turn을 끝냅니다 (ask_user)
+        ↕         답하면 다음 turn이 자동으로 시작됩니다
+[1] 초안          질문 4개쯤 뒤에 save_design으로 일곱 단위를 채웁니다
+[2] 정리          "설계 초안" 패널에 이야기로 풀어쓴 설명이 나옵니다
+        ↕         틀린 것이 있으면 입력창에 그냥 말하세요 — 초안이 고쳐집니다
+[3][4] 인계       "이대로 시작하기"를 누르면 프로젝트에 파일이 생깁니다
+```
+
+인계하면 이렇게 남습니다. **선택한 agent의 harness만** 만듭니다.
+
+```text
+<프로젝트>/
+├── app_design.md          설계도 (에이전트가 읽습니다)
+├── AGENTS.md              Codex를 골랐을 때
+│   또는 CLAUDE.md         Claude Code를 골랐을 때
+└── .project-intel/
+    └── design.json        일곱 단위 원본
+```
+
+이미 있는 파일에 `<!-- byoa:generated -->` 표식이 없으면 **덮어쓰지 않고 건너뜁니다.**
+직접 쓴 `CLAUDE.md`가 날아가지 않습니다.
+
+### 기존 대화 이어가기
+
+**기존 대화 이어가기** 버튼을 누르면 이 프로젝트에서 나눈 대화 목록이 나옵니다. bridge를
+껐다 켜도 세션은 디스크에 남아 있으므로 어제 하던 인터뷰를 오늘 이어받을 수 있습니다.
+CLI(`codex` / `claude`)에서 시작한 대화도 같은 목록에 보입니다.
+
+> 화면의 문답 기록은 bridge 메모리에만 있어서 이어받아도 되살아나지 않습니다. 에이전트
+> 자신은 기억하고 있으므로 대화는 이어집니다 (`SPIKE_FINDINGS.md` §12 "남은 것").
+
+### 검증
+
+```bash
+npm run interview          # codex, claude 순서로 인터뷰 → save_design 검증
+npm run interview codex    # 하나만
+```
+
+`npm run acceptance`가 "MCP 채널이 살아 있는가"를 보는 것과 달리, 이쪽은 **산출물의 형태**를
+봅니다 — FLOW에 순서가 있는지, ENTITY 관계가 도출됐는지, AI가 채운 항목이 표시됐는지.
 
 ## Layout
 

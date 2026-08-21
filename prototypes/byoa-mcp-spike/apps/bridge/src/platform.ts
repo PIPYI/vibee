@@ -34,3 +34,24 @@ export async function killTree(child: { pid?: number; kill: (signal?: NodeJS.Sig
     execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => resolve());
   });
 }
+
+/**
+ * git이 설치되어 있는지.
+ *
+ * 이 앱은 **원격 저장소를 쓰지 않는다.** git이 필요한 이유는 사용자가 되돌릴 지점을 갖기
+ * 위해서다 — 비전공자는 무언가 잘못됐을 때 되돌리는 법을 모른다
+ * (docs/requirements_flow.md §6). 그래서 agent와 같은 급의 전제 조건으로 확인한다.
+ */
+export async function checkGit(): Promise<{ installed: boolean; version?: string; message?: string }> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  try {
+    const { stdout } = await promisify(execFile)("git", ["--version"], cliSpawnOptions);
+    return { installed: true, version: stdout.trim() };
+  } catch {
+    return {
+      installed: false,
+      message: "git이 없습니다. 되돌릴 지점을 남길 수 없으므로 먼저 설치해 주세요.",
+    };
+  }
+}

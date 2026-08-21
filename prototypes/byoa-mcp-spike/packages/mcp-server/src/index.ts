@@ -21,6 +21,7 @@ import {
   BRIDGE_TOKEN_HEADER,
   type AppContext,
   type AskUserInput,
+  type DesignDoc,
   type ShowResultInput,
 } from "@byoa/protocol";
 import { loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
@@ -73,7 +74,9 @@ const server = new McpServer(
     instructions:
       "Tools for the BYOA + MCP integration spike. Call get_app_context before starting work " +
       "to learn which project and UI selection the user is looking at, and call show_result " +
-      "exactly once when finished to render a structured summary in the app.",
+      "exactly once when finished to render a structured summary in the app. During a " +
+      "requirements interview, ask one question at a time with ask_user and save the draft " +
+      "with save_design instead of show_result.",
   },
 );
 
@@ -83,12 +86,24 @@ server.registerTool(
     title: "Get app context",
     description:
       "Return the context currently set in the BYOA spike browser UI: the selected project " +
-      "path, the prompt the user submitted, and the selected mock app item.",
-    inputSchema: {},
+      "path, the prompt the user submitted, the selected mock app item, and the interview so " +
+      "far. The saved design draft is summarised in `designDigest`; the full document is only " +
+      "included when you ask for it with includeDesign.",
+    inputSchema: {
+      includeDesign: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include the full saved design document, not just the digest. It is large, so ask " +
+            "for it only when you must rewrite the draft and cannot already see it in this " +
+            "conversation — typically when you resumed a session someone else started.",
+        ),
+    },
   },
-  async () => {
-    const context = await bridgeFetch<AppContext>("/internal/app-context");
-    log("get_app_context ->", context.projectPath, context.selectedItem?.id ?? "(no selection)");
+  async ({ includeDesign }) => {
+    const path = includeDesign ? "/internal/app-context?design=full" : "/internal/app-context";
+    const context = await bridgeFetch<AppContext>(path);
+    log("get_app_context ->", context.projectPath, includeDesign ? "(design: full)" : "(design: digest)");
     return {
       content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
       structuredContent: context as unknown as Record<string, unknown>,
@@ -172,6 +187,136 @@ server.registerTool(
           text:
             `Question ${ack.questionId} delivered to the user. ` +
             `End your turn now -- the answer will be in get_app_context next turn.`,
+        },
+      ],
+    };
+  },
+);
+
+/**
+ * 설계 초안을 **구조화된 형태로** 저장한다 (docs/requirements_flow.md §4.11).
+ *
+ * `show_result`가 산문을 돌려주는 것과 대비된다. 산문은 사람이 읽기엔 좋지만 파싱할 수 없어
+ * 일곱 단위를 데이터로 뽑을 수 없고, 그러면 `app_design.md`도 harness도 렌더할 수 없다.
+ * 사람이 읽을 설명은 **이 데이터에서 생성하는 것이지 그 반대가 아니다.**
+ */
+const sourceSchema = z
+  .enum(["user", "ai"])
+  .describe('"user" if the user said it, "ai" if you filled it in on their behalf');
+
+server.registerTool(
+  "save_design",
+  {
+    title: "Save the structured design",
+    description:
+      "Save the app design as structured data. Call this INSTEAD of show_result when you are " +
+      "ready to present a draft, and call it again (with the full document, not a patch) each " +
+      "time the user corrects something. Everything the app produces -- the plain-language " +
+      "explanation, app_design.md, and the agent harness -- is rendered from this data, so " +
+      "prose belongs in the fields, not around them. Derive FLOW step order and ENTITY " +
+      "relations from what the user described; do not leave them empty because they were not " +
+      "stated outright. Mark anything you decided yourself with source: \"ai\".",
+    inputSchema: {
+      title: z.string().describe("Short name for the app, in the user's own words"),
+      summary: z.string().describe("One paragraph: what this app is, for a non-programmer"),
+      actors: z
+        .array(z.object({ id: z.string(), name: z.string(), note: z.string().optional() }))
+        .describe("Who uses it"),
+      reqs: z
+        .array(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            source: sourceSchema,
+            note: z.string().optional(),
+          }),
+        )
+        .describe("What they can do (use cases)"),
+      surfaces: z
+        .array(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            shows: z.array(z.string()).describe("REQ ids reachable from this screen"),
+            source: sourceSchema,
+            note: z.string().optional(),
+          }),
+        )
+        .describe("Screens. Derive these from the reqs -- never ask the user about screens"),
+      entities: z
+        .array(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            relations: z
+              .array(z.string())
+              .describe('Relations to other entities in plain words, e.g. "belongs to E2"'),
+            states: z.array(z.string()).describe("States this can be in"),
+            source: sourceSchema,
+          }),
+        )
+        .describe("What gets stored"),
+      flows: z
+        .array(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            steps: z
+              .array(
+                z.object({
+                  actor: z.string().optional().describe("ACTOR id"),
+                  surface: z.string().optional().describe("SURFACE id"),
+                  action: z.string().describe("What happens in this step"),
+                  entity: z.string().optional().describe("ENTITY id this step touches"),
+                  effect: z.string().optional().describe('e.g. "created", "state = published"'),
+                  rule: z.string().optional().describe("RULE id that applies here"),
+                }),
+              )
+              .describe("ORDERED steps -- the order is the point"),
+            source: sourceSchema,
+          }),
+        )
+        .describe("Ordered sequences of steps"),
+      rules: z
+        .array(
+          z.object({
+            id: z.string(),
+            text: z.string(),
+            constrains: z.array(z.string()).describe("REQ ids this rule constrains"),
+            source: sourceSchema,
+          }),
+        )
+        .describe("Conditions and constraints"),
+      decisions: z
+        .array(
+          z.object({
+            id: z.string(),
+            text: z.string().describe("What was decided, including what NOT to build"),
+            why: z.string().describe("Why -- this is what makes the decision reusable later"),
+            source: sourceSchema,
+          }),
+        )
+        .describe('Decisions. "Not now", "skip that", and defaults you chose all belong here'),
+    },
+  },
+  async (input) => {
+    const design = input as DesignDoc;
+    const ack = await bridgeFetch<{ taskId: string | null; warnings: string[] }>("/internal/design", {
+      method: "POST",
+      body: JSON.stringify(design),
+    });
+    log(
+      "save_design ->",
+      design.title,
+      `(reqs ${design.reqs.length}, flows ${design.flows.length}, decisions ${design.decisions.length})`,
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Design saved and rendered in the app UI.` +
+            (ack.warnings.length ? `\n\nDangling references you should fix:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],
     };

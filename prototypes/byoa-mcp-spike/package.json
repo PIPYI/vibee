@@ -22,6 +22,7 @@
     "mcp:status": "node scripts/mcp-status.mjs",
     "sessions:cleanup": "node scripts/cleanup-sessions.mjs",
     "typecheck": "npm run typecheck -w @byoa/protocol && npm run typecheck -w @byoa/mcp-server && npm run typecheck -w @byoa/bridge && npm run typecheck -w @byoa/web",
-    "acceptance": "node scripts/acceptance.mjs"
+    "acceptance": "node scripts/acceptance.mjs",
+    "interview": "node scripts/interview.mjs"
   }
 }

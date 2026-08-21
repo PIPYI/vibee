@@ -10,12 +10,35 @@
  * agent가 실행하는 `git status` / `git diff`가 상위 저장소를 건드리지 않고 fixture만 본다.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { fixtureDir } from "./_shared.mjs";
 
 const dir = process.argv[2] ?? (await fixtureDir());
+
+/**
+ * 이전 실행이 내보낸 [4] 인계 산출물을 걷어낸다.
+ *
+ * 이것들을 남겨 두면 다음 실행이 **인계가 끝난 프로젝트**에서 시작한다. AGENTS.md와
+ * CLAUDE.md는 agent가 turn마다 자동으로 읽는 파일이라, 인터뷰를 돌려도 "설계 전체를 끝까지
+ * 만들어라 · 하위 에이전트에게 나눠 맡겨라"가 먼저 실린다 (SPIKE_FINDINGS.md §14).
+ *
+ * 손으로 쓴 파일은 건드리지 않는다 — 우리가 만든 것에만 `byoa:generated` 마커가 있다.
+ */
+const HARNESS_MARKER = "<!-- byoa:generated -->";
+const generated = [];
+for (const name of ["AGENTS.md", "CLAUDE.md", "app_design.md"]) {
+  const path = join(dir, name);
+  if (!existsSync(path)) continue;
+  if (!readFileSync(path, "utf8").startsWith(HARNESS_MARKER)) continue;
+  rmSync(path);
+  generated.push(name);
+}
+if (existsSync(join(dir, ".project-intel"))) {
+  rmSync(join(dir, ".project-intel"), { recursive: true, force: true });
+  generated.push(".project-intel/");
+}
 
 /**
  * 디렉터리를 지웠다 다시 만들지 않고 **파일 내용만 덮어쓴다.**
@@ -50,4 +73,5 @@ try {
 console.log(`Fixture ready at ${dir}`);
 console.log("  README.md");
 console.log("  hello.js");
+if (generated.length > 0) console.log(`  (이전 실행의 인계 산출물 제거: ${generated.join(", ")})`);
 console.log(gitReady ? "  (독립 git 저장소로 초기화됨)" : "  (git 초기화 실패 — 상위 저장소와 분리되지 않음)");

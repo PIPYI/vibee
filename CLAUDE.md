@@ -142,13 +142,18 @@ prototypes/byoa-mcp-spike/ BYOA + MCP 통합 검증 프로토타입 (Phase A·B�
 | A | Codex adapter | 2026-08-19 검증 완료 (acceptance 9/9) |
 | B | Claude adapter | 2026-08-20 검증 완료 (acceptance 9/9) |
 | C | 인터뷰 루프 (`ask_user`) | 2026-08-20 검증 완료 (`SPIKE_FINDINGS.md` §10) |
+| D | 인터뷰 이후 전체 플로우 | 2026-08-21 검증 완료 (`SPIKE_FINDINGS.md` §12) |
 
 Phase C는 `docs/requirements_flow.md`가 설계한 요구사항 인터뷰의 핵심 가설을 확인한 것이다 —
 "agent가 질문을 던지고 turn을 끝낸다 → 사용자가 답한다 → 다음 turn이 문맥을 이어받는다".
 Codex·Claude 양쪽에서 성립했다.
 
-**다음에 검증할 것**은 `docs/requirements_flow.md` §8에 있다. 가장 불확실한 것은
-`save_design` 스키마(§4.11) — 일곱 단위가 대화에서 실제로 추출되지 않으면 설계 전제가 흔들린다.
+Phase D는 `docs/requirements_flow.md` §3의 [1]~[4]를 끝까지 구현한 것이다. 가장 불확실했던
+`save_design` 스키마(§4.11)가 두 provider에서 성립했다 — FLOW의 순서와 ENTITY 관계가
+시나리오 문장에서 실제로 도출된다.
+
+**다음에 검증할 것**은 `docs/requirements_flow.md` §8에 있다. 가장 가까운 것은 인터뷰 상태의
+지속성 — 세션을 이어받아도 화면의 문답 기록이 복원되지 않는다.
 
 두 adapter를 손댈 때 지켜야 할 것:
 
@@ -168,6 +173,23 @@ Claude adapter가 Codex와 다른 지점 (`SPIKE_FINDINGS.md` §9에 표로 정�
 - **Codex의 `sandboxPolicy.writableRoots`에 해당하는 강제가 없다.** `canUseTool`에서
   Write/Edit 경로를 직접 검사하지만 **Bash로 프로젝트 밖에 쓰는 것은 막지 못한다**(Finding 6).
   이 격차를 `permissionMode: "bypassPermissions"`로 우회하지 말 것 — 더 벌어진다.
+
+### 인터뷰 turn과 작업 turn은 격리 수준이 다르다
+
+`StartTaskInput.mode`가 이 둘을 가른다 (`SPIKE_FINDINGS.md` §14).
+
+- **인터뷰 turn은 프로젝트 문서를 읽지 않는다.** `AGENTS.md` / `CLAUDE.md`는 인터뷰가 끝난 뒤
+  넘겨주는 **[4] 인계 산출물**이지 인터뷰의 규칙이 아니다. 그대로 실리면 인터뷰 중인 agent가
+  "앱을 끝까지 만들어라 · 하위 에이전트에게 나눠 맡겨라"를 따르기 시작한다.
+  Codex는 `config: { project_doc_max_bytes: 0 }`, Claude는 `settingSources: []`로 끈다.
+- **인터뷰 turn에는 내장 도구가 없다.** 인터뷰는 대화지 작업이다. Claude는 `tools: []`
+  (MCP tool 네 개는 남는다), Codex는 `sandbox: "read-only"`.
+- **thread/세션 캐시 키에 mode가 들어간다.** 두 mode가 대화를 공유하면 작업 turn이 인터뷰
+  문답 전체를 문맥에 안고 시작한다.
+- **작업 turn은 그대로 둔다.** 바이브코딩 단계에서는 하네스가 실려야 맞다.
+
+`thread/start`의 `config`는 **모르는 키도 조용히 통과시킨다.** 수락됐다는 것이 효과가 있다는
+뜻이 아니므로, 새 키를 넣을 때는 rollout이나 동작으로 효과를 확인한 것만 남긴다.
 
 ### Safety / Cleanup 불변조건
 
@@ -220,6 +242,7 @@ npm run typecheck
 npm run fixture          # tmp/fixture 재생성 (독립 git 저장소, gitignore 됨)
 npm run acceptance       # 회귀 게이트(codex+claude). CLI 업데이트 후 필수
 npm run acceptance codex # 하나만 (codex|claude)
+npm run interview        # 인터뷰 → save_design 산출물 검증 (일곱 단위)
 npm run bridge           # 127.0.0.1:43120
 npm run web              # 127.0.0.1:5173 (Node 20+ 필요)
 npm run mcp:register     # codex mcp add byoa-spike — Codex 전용, Claude는 등록 불필요
@@ -231,7 +254,7 @@ MCP 서버를 재등록했거나 포트를 바꿨다면 bridge를 재시작해�
 
 ## 검증 환경
 
-Codex CLI 0.148.0 / Claude Code 2.1.237 (+ agent-sdk 0.3.237) / WSL2(Ubuntu)
+Codex CLI 0.148.0 / Claude Code 2.1.238 (+ agent-sdk 0.3.237) / WSL2(Ubuntu)
 
 Node.js는 Phase A가 v24.14.1, Phase B가 v18.19.1에서 검증되었다. bridge·MCP server·acceptance는
 18에서도 동작하지만 `npm run web`(vite 8)은 20.19+를 요구한다.

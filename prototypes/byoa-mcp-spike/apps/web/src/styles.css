@@ -155,3 +155,97 @@ button.link {
 .result h3 { margin-top: 0; }
 .result .status { text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
 .result ul { margin: 4px 0; padding-left: 18px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* 기존 대화 목록 (§7 세션 이어가기) */
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+.session {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  background: #1b1f27;
+  border: 1px solid #2a3038;
+  padding: 8px 10px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.session:hover:not(:disabled) {
+  border-color: #4a90d9;
+}
+.session:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.session-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 설계 초안 (§5 사람용 설명) */
+.markdown h2 {
+  margin: 4px 0 8px;
+}
+.markdown h3 {
+  margin: 20px 0 6px;
+  font-size: 1rem;
+  color: #cdd6e3;
+}
+.markdown h4 {
+  margin: 14px 0 4px;
+  font-size: 0.94rem;
+  color: #9fb3c8;
+}
+.markdown p {
+  margin: 6px 0;
+  line-height: 1.75;
+}
+.markdown ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+.markdown blockquote {
+  margin: 8px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid #3a424e;
+  color: #9fb3c8;
+}
+.markdown blockquote p {
+  margin: 2px 0;
+}
+.markdown em {
+  color: #d9a441;
+  font-style: normal;
+}
+
+.gaps {
+  margin: 16px 0;
+  padding: 10px 14px;
+  border: 1px solid #6b5a2a;
+  background: #241f14;
+}
+.gaps h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+.gaps ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.handover {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid #2f5d3a;
+  background: #16241a;
+}
+.handover h3 {
+  margin: 0 0 8px;
+}

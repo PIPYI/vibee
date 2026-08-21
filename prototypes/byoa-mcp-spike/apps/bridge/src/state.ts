@@ -11,6 +11,8 @@ import type {
   AppContext,
   AppContextPatch,
   AskUserInput,
+  DesignDigest,
+  DesignDoc,
   InterviewExchange,
   InterviewState,
   PendingQuestion,
@@ -20,6 +22,32 @@ import type {
 } from "@byoa/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
+
+/** 초안 전체 대신 실어 보내는 요약 (AppContext.designDigest). */
+function digestDesign(design: DesignDoc): DesignDigest {
+  return {
+    title: design.title,
+    summary: design.summary,
+    counts: {
+      actors: design.actors.length,
+      reqs: design.reqs.length,
+      surfaces: design.surfaces.length,
+      entities: design.entities.length,
+      flows: design.flows.length,
+      rules: design.rules.length,
+      decisions: design.decisions.length,
+    },
+    ids: [
+      ...design.actors,
+      ...design.reqs,
+      ...design.surfaces,
+      ...design.entities,
+      ...design.flows,
+      ...design.rules,
+      ...design.decisions,
+    ].map((unit) => unit.id),
+  };
+}
 
 export class BridgeState {
   private projectPath = "";
@@ -33,16 +61,24 @@ export class BridgeState {
   private readonly buffer: AgentEventEnvelope[] = [];
   private readonly subscribers = new Set<(envelope: AgentEventEnvelope) => void>();
 
+  private design: DesignDoc | null = null;
+
   private pendingQuestion: PendingQuestion | null = null;
   private readonly exchanges: InterviewExchange[] = [];
   private questionSeq = 0;
 
-  getAppContext(): AppContext {
+  /**
+   * `includeDesign`이 false면 설계 초안은 요약만 싣는다. 이유는 AppContext.design 주석 참고 —
+   * 초안 전체를 매 turn 실어 보내면 agent가 자기가 쓴 문서를 계속 되받는다.
+   */
+  getAppContext(includeDesign = false): AppContext {
     return {
       projectPath: this.projectPath,
       prompt: this.prompt,
       selectedItem: this.selectedItem,
       interview: this.getInterview(),
+      design: includeDesign ? this.design : null,
+      designDigest: this.design ? digestDesign(this.design) : null,
       metadata: { source: "byoa-mcp-spike", timestamp: new Date().toISOString() },
     };
   }
@@ -63,19 +99,42 @@ export class BridgeState {
     return this.pendingQuestion;
   }
 
-  /** 대기 중인 질문에 답한다. 답할 질문이 없으면 null. */
-  answerQuestion(answer: string): { question: PendingQuestion; answer: string } | null {
+  /**
+   * 사용자의 발화를 기록한다.
+   *
+   * 대기 중인 질문이 있으면 그 답으로, 없으면 **사용자가 먼저 꺼낸 말**로 남긴다. 초안이 나온
+   * 뒤 "이건 아닌데"라고 하는 경우가 후자이며, 이것이 인터뷰 3단계다 (§4.10).
+   */
+  recordMessage(message: string): { question: PendingQuestion | null; answer: string } {
     const question = this.pendingQuestion;
-    if (!question) return null;
     this.pendingQuestion = null;
-    this.exchanges.push({ question: question.question, answer, answeredAt: new Date().toISOString() });
-    return { question, answer };
+    this.exchanges.push({
+      question: question?.question ?? "",
+      answer: message,
+      answeredAt: new Date().toISOString(),
+    });
+    return { question, answer: message };
   }
 
   resetInterview(): void {
     this.pendingQuestion = null;
     this.exchanges.length = 0;
     this.questionSeq = 0;
+    this.design = null;
+  }
+
+  // ---------- 설계 산출물 ----------
+
+  getDesign(): DesignDoc | null {
+    return this.design;
+  }
+
+  /**
+   * `save_design`의 결과를 저장한다. **patch가 아니라 전체 문서로 덮어쓴다** — agent가
+   * 수정할 때마다 전체를 다시 보내기 때문이다(§4.10 3단계에서 초안이 계속 고쳐진다).
+   */
+  saveDesign(design: DesignDoc): void {
+    this.design = design;
   }
 
   patchAppContext(patch: AppContextPatch): AppContext {
