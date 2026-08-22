@@ -4,9 +4,14 @@
  * **`nonForward` 엣지를 Scenario back edge와 같은 회귀 호로 그리고, `cycle`은 SCC 묶음
  * 표시로 따로 보여준다.** 링크 방향은 코드에 있는 그대로다 — 역방향으로 도달했다고 뒤집지
  * 않는다.
+ *
+ * 정방향 링크는 schema2 §1.2 A10·M10대로 port spread + elbow routing을 쓴다(edgeRouting.js).
+ * `nonForward` 회귀 호와 self-loop는 이 라우팅 대상이 아니다 — Scenario back edge와 같은
+ * 이유로 별도 arc로 남긴다.
  */
 import type { TraceIR } from "@onto/protocol";
 
+import { type Box, resolveLabelOverlaps, routedPath, routeEdges } from "../layout/edgeRouting.js";
 import { computeTraceLayout } from "../layout/traceLayout.js";
 
 const COL_WIDTH = 260;
@@ -15,6 +20,8 @@ const BOX_WIDTH = 210;
 const BOX_HEIGHT = 48;
 const MARGIN_X = 40;
 const MARGIN_Y = 40;
+const LABEL_CHAR_WIDTH = 7.5;
+const LABEL_HEIGHT = 14;
 
 /** sccId 문자열에서 안정적인 색을 뽑는다 — 실행마다 같은 SCC는 같은 색이어야 한다. */
 function colorForScc(sccId: string): string {
@@ -31,17 +38,40 @@ export function TraceView({
   onSelectEntity?: (entityId: string) => void;
 }): React.JSX.Element {
   const layout = computeTraceLayout(ir.codeEntities);
-  const posByEntity = new Map<string, { left: number; top: number; cx: number; cy: number; right: number }>();
+  const boxes = new Map<string, Box>();
   for (const column of layout.columns) {
     column.entities.forEach((entity, index) => {
       const left = MARGIN_X + column.hop * COL_WIDTH;
       const top = MARGIN_Y + index * ROW_HEIGHT;
-      posByEntity.set(entity.id, { left, top, cx: left + BOX_WIDTH / 2, cy: top + BOX_HEIGHT / 2, right: left + BOX_WIDTH });
+      boxes.set(entity.id, { id: entity.id, left, top, right: left + BOX_WIDTH, bottom: top + BOX_HEIGHT, cy: top + BOX_HEIGHT / 2 });
     });
   }
   const maxRows = Math.max(1, ...layout.columns.map((c) => c.entities.length));
   const width = MARGIN_X + (layout.maxHop + 1) * COL_WIDTH + 40;
   const height = MARGIN_Y + maxRows * ROW_HEIGHT + 40;
+
+  const forwardLinks = ir.links
+    .map((link, index) => ({ link, index }))
+    .filter(({ link }) => !link.selfLoop && !link.nonForward);
+  const routed = new Map(
+    routeEdges(
+      forwardLinks.map(({ link, index }) => ({ key: `l-${index}`, fromId: link.fromId, toId: link.toId })),
+      (id) => boxes.get(id),
+    ).map((edge) => [edge.key, edge] as const),
+  );
+
+  // self-loop 라벨끼리도 세로로 붙어 있으면 밀어낸다.
+  const selfLoopLabels = ir.links
+    .map((link, index) => ({ link, index }))
+    .filter(({ link }) => link.selfLoop)
+    .map(({ link, index }) => {
+      const box = boxes.get(link.fromId);
+      if (!box) return null;
+      const text = "↻ self";
+      return { id: `sl-${index}`, x: box.right + 4, y: box.cy, width: Math.max(24, text.length * LABEL_CHAR_WIDTH), height: LABEL_HEIGHT, text };
+    })
+    .filter((item): item is { id: string; x: number; y: number; width: number; height: number; text: string } => item !== null);
+  const labelOffsets = resolveLabelOverlaps(selfLoopLabels);
 
   return (
     <div className="trace-view">
@@ -66,26 +96,28 @@ export function TraceView({
           ))}
 
           {ir.links.map((link, index) => {
-            const from = posByEntity.get(link.fromId);
-            const to = posByEntity.get(link.toId);
-            if (!from || !to) return null;
             if (link.selfLoop) {
+              const label = selfLoopLabels.find((l) => l.id === `sl-${index}`);
+              if (!label) return null;
               return (
                 <text
                   key={index}
-                  x={from.right + 4}
-                  y={from.cy}
+                  x={label.x}
+                  y={label.y + (labelOffsets.get(label.id) ?? 0)}
                   className="edge-label"
                   fontSize={11}
                   data-edge-from={link.fromId}
                   data-edge-to={link.toId}
                 >
-                  ↻ self
+                  {label.text}
                 </text>
               );
             }
             // nonForward는 Scenario back edge와 같은 회귀 호로 그린다 (§6.6).
             if (link.nonForward) {
+              const from = boxes.get(link.fromId);
+              const to = boxes.get(link.toId);
+              if (!from || !to) return null;
               const archX = Math.max(from.right, to.right) + 50;
               const path = `M ${from.right} ${from.cy} C ${archX} ${from.cy}, ${archX} ${to.cy}, ${to.right} ${to.cy}`;
               return (
@@ -99,13 +131,12 @@ export function TraceView({
                 />
               );
             }
+            const route = routed.get(`l-${index}`);
+            if (!route) return null;
             return (
-              <line
+              <path
                 key={index}
-                x1={from.right}
-                y1={from.cy}
-                x2={to.left}
-                y2={to.cy}
+                d={routedPath(route.fromPort, route.toPort)}
                 className="edge"
                 markerEnd="url(#trace-arrow)"
                 data-edge-from={link.fromId}
@@ -115,11 +146,11 @@ export function TraceView({
           })}
 
           {ir.codeEntities.map((entity) => {
-            const pos = posByEntity.get(entity.id);
-            if (!pos) return null;
+            const box = boxes.get(entity.id);
+            if (!box) return null;
             return (
               <g key={entity.id} data-node-id={entity.id}>
-                <foreignObject x={pos.left} y={pos.top} width={BOX_WIDTH} height={BOX_HEIGHT}>
+                <foreignObject x={box.left} y={box.top} width={BOX_WIDTH} height={BOX_HEIGHT}>
                   <button
                     type="button"
                     className="trace-entity"

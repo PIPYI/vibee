@@ -4,9 +4,15 @@
  * branch는 마름모 대신 **분기 표시가 붙은 step**에서 갈라지는 라벨 달린 선으로 그린다.
  * back edge(§6.8의 loop)는 옆 레일의 회귀 호로, `stateChange`는 원인 step 옆에
  * `팔로우 요청: 없음 → 승인 대기` 형태의 주석으로 붙인다(§34).
+ *
+ * 엣지 라우팅은 schema2 §1.2 A10·M10 — 한 노드의 같은 면에서 만나는 엣지는 세로로 펼치고
+ * (routeEdges), 세로로 어긋난 포트는 직선 대신 둥근 elbow로 잇는다(routedPath). 라벨은
+ * 겹치면 자동으로 밀려난다(resolveLabelOverlaps). 좌표는 이 렌더러가 IR로부터 결정론적으로
+ * 계산할 뿐 IR에도 store에도 쓰지 않는다(A7·I10).
  */
 import type { ScenarioIR, ScenarioStep } from "@onto/protocol";
 
+import { type Box, type LabelBox, resolveLabelOverlaps, routedPath, routeEdges } from "../layout/edgeRouting.js";
 import { computeScenarioLayout, edgeKey, UNASSIGNED_LANE } from "../layout/scenarioLayout.js";
 
 const COL_WIDTH = 240;
@@ -15,6 +21,9 @@ const BOX_WIDTH = 190;
 const BOX_HEIGHT = 60;
 const MARGIN_X = 160;
 const MARGIN_Y = 50;
+/** 라벨 충돌 판정용 대략치 — 한글·영문 혼용 텍스트를 안전 쪽으로 넉넉하게 잡는다. */
+const LABEL_CHAR_WIDTH = 7.5;
+const LABEL_HEIGHT = 14;
 
 function x(rank: number): number {
   return MARGIN_X + rank * COL_WIDTH;
@@ -22,6 +31,13 @@ function x(rank: number): number {
 function y(laneIndex: number): number {
   return MARGIN_Y + laneIndex * ROW_HEIGHT;
 }
+
+function labelBox(id: string, cx: number, cy: number, text: string): LabelBox {
+  const width = Math.max(24, text.length * LABEL_CHAR_WIDTH);
+  return { id, x: cx - width / 2, y: cy - LABEL_HEIGHT, width, height: LABEL_HEIGHT };
+}
+
+type PendingLabel = { id: string; cx: number; baseY: number; text: string; className: string; textAnchor: "start" | "middle" };
 
 export function ScenarioView({
   ir,
@@ -55,6 +71,69 @@ export function ScenarioView({
     return { cx: left + BOX_WIDTH / 2, cy: top + BOX_HEIGHT / 2, left, right: left + BOX_WIDTH };
   };
 
+  // 라우팅 대상 = back edge가 아닌 transition + 모든 branch path. back edge는 별도 arc로 그린다.
+  const boxes = new Map<string, Box>();
+  for (const step of ir.steps) {
+    const pos = layout.positions.get(step.id);
+    const left = x(pos?.rank ?? 0);
+    const top = y(pos?.laneIndex ?? 0);
+    boxes.set(step.id, { id: step.id, left, top, right: left + BOX_WIDTH, bottom: top + BOX_HEIGHT, cy: top + BOX_HEIGHT / 2 });
+  }
+  const forwardTransitions = ir.transitions
+    .map((transition, index) => ({ transition, index }))
+    .filter(({ transition }) => !layout.backEdgeKeys.has(edgeKey(transition.fromStepId, transition.toStepId)));
+  const routableEdges = [
+    ...forwardTransitions.map(({ transition, index }) => ({
+      key: `t-${index}`,
+      fromId: transition.fromStepId,
+      toId: transition.toStepId,
+    })),
+    ...(ir.branches ?? []).flatMap((branch, branchIndex) =>
+      branch.paths.map((path, pathIndex) => ({
+        key: `b-${branchIndex}-${pathIndex}`,
+        fromId: branch.sourceStepId,
+        toId: path.nextStepId,
+      })),
+    ),
+  ];
+  const routed = new Map(routeEdges(routableEdges, (id) => boxes.get(id)).map((edge) => [edge.key, edge] as const));
+
+  // 라벨 충돌 회피 — 모든 edge label(back edge 포함)을 한 번에 모아 계산한다.
+  const pendingLabels: PendingLabel[] = [];
+  for (const { transition, index } of forwardTransitions) {
+    if (!transition.condition) continue;
+    const route = routed.get(`t-${index}`);
+    if (!route) continue;
+    const cx = (route.fromPort.x + route.toPort.x) / 2;
+    const cy = (route.fromPort.y + route.toPort.y) / 2 - 6;
+    pendingLabels.push({ id: `t-${index}`, cx, baseY: cy, text: transition.condition, className: "edge-label", textAnchor: "middle" });
+  }
+  ir.transitions.forEach((transition, index) => {
+    if (!layout.backEdgeKeys.has(edgeKey(transition.fromStepId, transition.toStepId)) || !transition.condition) return;
+    const from = boxCenter(transition.fromStepId);
+    const to = boxCenter(transition.toStepId);
+    const archX = Math.max(from.right, to.right) + 60;
+    pendingLabels.push({
+      id: `tb-${index}`,
+      cx: archX + (transition.condition.length * LABEL_CHAR_WIDTH) / 2,
+      baseY: (from.cy + to.cy) / 2,
+      text: `↺ ${transition.condition}`,
+      className: "edge-label edge-label-back",
+      textAnchor: "start",
+    });
+  });
+  (ir.branches ?? []).forEach((branch, branchIndex) => {
+    branch.paths.forEach((path, pathIndex) => {
+      const key = `b-${branchIndex}-${pathIndex}`;
+      const route = routed.get(key);
+      if (!route) return;
+      const cx = (route.fromPort.x + route.toPort.x) / 2;
+      const cy = (route.fromPort.y + route.toPort.y) / 2 - 6;
+      pendingLabels.push({ id: key, cx, baseY: cy, text: path.label, className: "edge-label", textAnchor: "middle" });
+    });
+  });
+  const labelOffsets = resolveLabelOverlaps(pendingLabels.map((l) => labelBox(l.id, l.cx, l.baseY, l.text)));
+
   return (
     <div className="scenario-view">
       <h2>{ir.name}</h2>
@@ -82,28 +161,44 @@ export function ScenarioView({
           {/* transitions */}
           {ir.transitions.map((transition, index) => {
             const isBack = layout.backEdgeKeys.has(edgeKey(transition.fromStepId, transition.toStepId));
-            const from = boxCenter(transition.fromStepId);
-            const to = boxCenter(transition.toStepId);
             if (isBack) {
+              const from = boxCenter(transition.fromStepId);
+              const to = boxCenter(transition.toStepId);
               const archX = Math.max(from.right, to.right) + 60;
               const path = `M ${from.right} ${from.cy} C ${archX} ${from.cy}, ${archX} ${to.cy}, ${to.right} ${to.cy}`;
+              const label = pendingLabels.find((l) => l.id === `tb-${index}`);
               return (
                 <g key={`t-${index}`} data-edge-from={transition.fromStepId} data-edge-to={transition.toStepId}>
                   <path d={path} className="edge edge-back" markerEnd="url(#arrow)" />
-                  {transition.condition && (
-                    <text x={archX} y={(from.cy + to.cy) / 2} className="edge-label edge-label-back" textAnchor="start" data-detail="context">
-                      ↺ {transition.condition}
+                  {label && (
+                    <text
+                      x={label.cx}
+                      y={label.baseY + (labelOffsets.get(label.id) ?? 0)}
+                      className={label.className}
+                      textAnchor={label.textAnchor}
+                      data-detail="context"
+                    >
+                      {label.text}
                     </text>
                   )}
                 </g>
               );
             }
+            const route = routed.get(`t-${index}`);
+            if (!route) return null;
+            const label = pendingLabels.find((l) => l.id === `t-${index}`);
             return (
               <g key={`t-${index}`} data-edge-from={transition.fromStepId} data-edge-to={transition.toStepId}>
-                <line x1={from.right} y1={from.cy} x2={to.left} y2={to.cy} className="edge" markerEnd="url(#arrow)" />
-                {transition.condition && (
-                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle" data-detail="context">
-                    {transition.condition}
+                <path d={routedPath(route.fromPort, route.toPort)} className="edge" markerEnd="url(#arrow)" />
+                {label && (
+                  <text
+                    x={label.cx}
+                    y={label.baseY + (labelOffsets.get(label.id) ?? 0)}
+                    className={label.className}
+                    textAnchor={label.textAnchor}
+                    data-detail="context"
+                  >
+                    {label.text}
                   </text>
                 )}
               </g>
@@ -113,25 +208,24 @@ export function ScenarioView({
           {/* branch paths */}
           {(ir.branches ?? []).map((branch, branchIndex) =>
             branch.paths.map((path, pathIndex) => {
-              const from = boxCenter(branch.sourceStepId);
-              const to = boxCenter(path.nextStepId);
+              const key = `b-${branchIndex}-${pathIndex}`;
+              const route = routed.get(key);
+              if (!route) return null;
+              const label = pendingLabels.find((l) => l.id === key);
               return (
-                <g
-                  key={`b-${branchIndex}-${pathIndex}`}
-                  data-edge-from={branch.sourceStepId}
-                  data-edge-to={path.nextStepId}
-                >
-                  <line
-                    x1={from.right}
-                    y1={from.cy}
-                    x2={to.left}
-                    y2={to.cy}
-                    className="edge edge-branch"
-                    markerEnd="url(#arrow)"
-                  />
-                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle" data-detail="context">
-                    {path.label}
-                  </text>
+                <g key={key} data-edge-from={branch.sourceStepId} data-edge-to={path.nextStepId}>
+                  <path d={routedPath(route.fromPort, route.toPort)} className="edge edge-branch" markerEnd="url(#arrow)" />
+                  {label && (
+                    <text
+                      x={label.cx}
+                      y={label.baseY + (labelOffsets.get(label.id) ?? 0)}
+                      className={label.className}
+                      textAnchor={label.textAnchor}
+                      data-detail="context"
+                    >
+                      {label.text}
+                    </text>
+                  )}
                 </g>
               );
             }),
