@@ -69,11 +69,11 @@ import {
 } from "./memory-api.js";
 import { onShutdown } from "./platform.js";
 import {
-  buildFullAnalyzePrompt,
-  buildIncrementalAnalyzePrompt,
+  buildEvidenceBundle,
   buildOverviewPrompt,
   buildScenarioPrompt,
   buildVerifyPrompt,
+  selectAnalyzePrompt,
 } from "./prompt.js";
 import { BridgeState } from "./state.js";
 import { hashViewRequest, viewCacheKeyString, VIEW_PLANNER_VERSION } from "./view.js";
@@ -311,7 +311,7 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
   const taskId = randomUUID();
 
   try {
-    const prepared = await reindex(projectPath, taskId, body.gitBase);
+    const prepared = await reindex(projectPath, taskId, body.gitBase, body.mode);
     state.createTask({
       taskId,
       agent: adapter.id,
@@ -323,6 +323,7 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
       ...(body.effort ? { effort: body.effort } : {}),
       startedAt: new Date().toISOString(),
       mcpCalls: [],
+      exploredFiles: [],
     });
     res.json({ taskId, ...prepared.summary });
     void runTask(adapter, taskId, projectPath, prepared.prompt, "analyze", body);
@@ -423,6 +424,7 @@ async function reindex(
   projectPath: string,
   taskId: string,
   gitBase: string | undefined,
+  mode?: AnalyzeRequest["mode"],
 ): Promise<{ prompt: string; summary: Record<string, unknown> }> {
   const store = new SemanticStore(projectPath);
   const before = store.isInitialized() ? store.load() : undefined;
@@ -445,9 +447,7 @@ async function reindex(
   });
 
   const isFirst = (before?.project.semanticVersion ?? 0) === 0 && (before?.memory.concepts.length ?? 0) === 0;
-  const prompt = isFirst
-    ? buildFullAnalyzePrompt(projectPath)
-    : buildIncrementalAnalyzePrompt(projectPath, work);
+  const prompt = selectAnalyzePrompt(mode, isFirst, projectPath, work, buildEvidenceBundle(after.evidence));
 
   return {
     prompt,
@@ -475,6 +475,12 @@ async function runTask(
   const emit = (event: AgentEvent): void => {
     if (event.type === "mcp.tool.called") {
       state.recordMcpCall(taskId, event.tool, event.source);
+    }
+    if (event.type === "agent.file.explored") {
+      state.recordExploredFile(taskId, event.path);
+    }
+    if (event.type === "agent.usage") {
+      state.setTokenUsage(taskId, event.totalTokens);
     }
     state.emit(event);
   };
@@ -560,6 +566,7 @@ app.post("/api/verify", async (req: Request, res: Response) => {
     ...(body.effort ? { effort: body.effort } : {}),
     startedAt: new Date().toISOString(),
     mcpCalls: [],
+    exploredFiles: [],
   });
 
   res.json({ taskId });
@@ -710,6 +717,7 @@ app.post("/api/views", async (req: Request, res: Response) => {
     ...(body.effort ? { effort: body.effort } : {}),
     startedAt: new Date().toISOString(),
     mcpCalls: [],
+    exploredFiles: [],
   });
   res.json({ viewKind: body.viewKind, taskId });
   void runTask(adapter, taskId, projectPath, prompt, "view", body as AnalyzeRequest);

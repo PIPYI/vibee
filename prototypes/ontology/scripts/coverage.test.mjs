@@ -107,6 +107,12 @@ test("structural — 필요한 concept·claim·scenario가 전부 grounding되�
   assert.deepEqual(result.hardFailures, []);
   assert.equal(result.structuralPass, true);
   assert.deepEqual(result.warnings, []);
+  // §7.3 비교 표 — 전부 통과했으면 matched === total이어야 한다.
+  assert.deepEqual(result.counts, {
+    concepts: { matched: 2, total: 2 },
+    claims: { matched: 1, total: 1 },
+    forbiddenPromoted: 0,
+  });
 });
 
 test("structural — 같은 subject/object 사이에 claim이 여럿이면, 그 중 하나만 grounding되어도 통과한다", () => {
@@ -167,6 +173,9 @@ test("structural — concept가 없으면 hard failure다", () => {
   const result = checkCoverage(state, EXPECTATIONS);
   assert.equal(result.structuralPass, false);
   assert.ok(result.hardFailures.some((line) => line.includes("follow-request")));
+  // §7.3 비교 표 — 못 찾은 concept는 matched에 들어가지 않는다 (0/1, hardFailures와 별개 축)
+  assert.equal(result.counts.concepts.matched, 0);
+  assert.equal(result.counts.concepts.total, 2);
 });
 
 test("structural — 이름은 맞지만 mustGroundIn evidence에 grounding되어 있지 않으면 hard failure다 (이름만으로는 통과하지 않는다)", () => {
@@ -191,6 +200,7 @@ test("forbidden concept가 승격되면 hard failure다", () => {
   const result = checkCoverage(state, EXPECTATIONS);
   assert.equal(result.structuralPass, false);
   assert.ok(result.hardFailures.some((line) => line.includes("PrismaClient")));
+  assert.equal(result.counts.forbiddenPromoted, 1);
 });
 
 test("smoke — meaningKeywords가 없어도 warning일 뿐 게이트를 막지 않는다", () => {

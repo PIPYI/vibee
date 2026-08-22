@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { SemanticStore } from "@onto/core";
 
 import { checkCoverage } from "./coverage.mjs";
+import { computeEvidenceOriginStats, computeStabilityMetrics } from "./stability.mjs";
 import { FIXTURE_DIR, fetchJson, requireBridge, waitForTask } from "./_shared.mjs";
 
 const EXPECTATIONS = JSON.parse(
@@ -220,6 +221,9 @@ for (const agent of targets) {
   // turn 3 — 새 기능 파일 추가. acceptance 18b
   // ---------------------------------------------------------------------
   const beforeTurn3 = store.load();
+  if (turn2.outcome.status === "completed") {
+    reportStability(agent, "turn1 → turn2 (심볼 삭제 — §46)", afterTurn1, beforeTurn3);
+  }
   addFeatureFile();
   const turn3 = await analyzeTurn(config.baseUrl, agent, "새 기능 추가 후 증분 분석");
   check(
@@ -246,6 +250,8 @@ for (const agent of targets) {
       groundedNewConcept,
       `새로 나타난 evidence ${newEvidenceIds.size}개, concept 는 ${afterTurn3.memory.concepts.length}개(이전 ${beforeTurn3.memory.concepts.length}개)`,
     );
+    reportStability(agent, "turn2 → turn3 (기능 추가 — §46)", beforeTurn3, afterTurn3);
+    reportEvidenceOrigin(agent, "turn3 커밋 시점", afterTurn3.evidence);
   }
 
   report(agent, results);
@@ -356,6 +362,41 @@ function commit(message) {
   } catch (error) {
     console.error(`git 커밋을 건너뜁니다: ${error.message}`);
   }
+}
+
+/**
+ * §46 · §7.3 — 게이트가 아니라 관측이다. 통과/실패가 없으므로 `check()`가 아니라
+ * `[STABILITY]`로 출력해 사람이 §9 Q4·Q5에 답할 때 그대로 인용할 수 있게 한다.
+ */
+function reportStability(agent, label, before, after) {
+  const result = computeStabilityMetrics(before, after);
+  const pct = (value) => (value === null ? "측정불가(v1 비어있음)" : `${(value * 100).toFixed(0)}%`);
+  console.log(`  [STABILITY:${agent}] ${label}`);
+  console.log(
+    `    Concept identity preservation: ${pct(result.conceptIdentityPreservation)} ` +
+      `(사라짐 ${result.concepts.disappeared} / 새로 생김 ${result.concepts.appeared})`,
+  );
+  console.log(`    Claim identity preservation:   ${pct(result.claimIdentityPreservation)}`);
+  console.log(`    Canonical Scenario id 안정성:  ${pct(result.canonicalScenarioIdentityPreservation)}`);
+  console.log(
+    `    Name-only churn: ${result.concepts.nameOnlyChurn}  ·  ` +
+      `Unnecessary split: ${result.concepts.unnecessarySplit}  ·  ` +
+      `Unnecessary merge: ${result.concepts.unnecessaryMerge}`,
+  );
+}
+
+function reportEvidenceOrigin(agent, label, evidenceIndex) {
+  const stats = computeEvidenceOriginStats(evidenceIndex);
+  console.log(`  [EVIDENCE-ORIGIN:${agent}] ${label}`);
+  console.log(
+    `    engine ${stats.byOrigin.engine} / agent ${stats.byOrigin.agent} ` +
+      `(agent 비율 ${stats.totalPresent > 0 ? ((stats.byOrigin.agent / stats.totalPresent) * 100).toFixed(1) : "0"}%)`,
+  );
+  console.log(
+    `    agent evidence relocation — exact ${stats.agentRelocation.exact} · ` +
+      `degraded ${stats.agentRelocation.degraded} · missing ${stats.agentRelocation.missing} · ` +
+      `재인덱싱 전 ${stats.agentRelocation.notYetRelocated}`,
+  );
 }
 
 function report(agent, results) {

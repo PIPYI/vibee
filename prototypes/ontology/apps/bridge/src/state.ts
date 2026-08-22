@@ -132,6 +132,23 @@ export class BridgeState {
     }
   }
 
+  /** native 도구로 읽은 파일을 기록한다 (§7.3). 중복은 무시한다 — "몇 개의 서로 다른 파일"이 관심사다. */
+  recordExploredFile(taskId: string | null, path: string): void {
+    const target = taskId ?? this.activeTaskId;
+    if (!target) return;
+    const task = this.tasks.get(target);
+    if (!task) return;
+    if (!task.exploredFiles.includes(path)) task.exploredFiles.push(path);
+  }
+
+  /** 이 turn의 누적 토큰 사용량을 갱신한다. provider가 보고할 때마다 최신 값으로 덮어쓴다. */
+  setTokenUsage(taskId: string | null, totalTokens: number): void {
+    const target = taskId ?? this.activeTaskId;
+    if (!target) return;
+    const task = this.tasks.get(target);
+    if (task) task.tokenUsage = totalTokens;
+  }
+
   setAnalyzeSession(taskId: string, session: AnalyzeSession): void {
     this.analyzeSessions.set(taskId, session);
   }

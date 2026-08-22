@@ -284,6 +284,19 @@ export class CodexAdapter implements AgentAdapter {
         });
         return;
       }
+      // **agent-stream 증거원** (§7.3) — codex 가 `commandExecution` 을 `CommandAction[]` 으로
+      // best-effort 파싱해 준다(`codex app-server generate-ts`로 확인, `{ type: "read", path }`
+      // 가 파일을 직접 읽은 shell 명령이다). MCP 를 거치지 않은 저장소 탐색이 이것으로 잡힌다.
+      // item/started 에서만 본다 — mcp.tool.called 와 같은 이유로 완료 시 다시 볼 필요가 없다.
+      if (name === "commandExecution" && notification.method === "item/started") {
+        const actions = (item["commandActions"] ?? []) as Array<Record<string, unknown>>;
+        for (const action of actions) {
+          if (action["type"] === "read") {
+            const path = String(action["path"] ?? "");
+            if (path) emit({ type: "agent.file.explored", taskId, path });
+          }
+        }
+      }
       emit({
         type: notification.method === "item/started" ? "agent.action.started" : "agent.action.completed",
         taskId,
@@ -295,6 +308,15 @@ export class CodexAdapter implements AgentAdapter {
 
     if (notification.method === "item/agentMessageDelta") {
       emit({ type: "agent.message.delta", taskId, text: String(params["delta"] ?? "") });
+      return;
+    }
+
+    // **agent-stream 증거원** (§7.3 turn/token) — `codex app-server generate-ts` 로 확인한
+    // `ThreadTokenUsageUpdatedNotification { threadId, turnId, tokenUsage: { total: { totalTokens } } }`.
+    if (notification.method === "thread/tokenUsage/updated") {
+      const tokenUsage = (params["tokenUsage"] ?? {}) as { total?: { totalTokens?: number } };
+      const totalTokens = tokenUsage.total?.totalTokens;
+      if (typeof totalTokens === "number") emit({ type: "agent.usage", taskId, totalTokens });
       return;
     }
 

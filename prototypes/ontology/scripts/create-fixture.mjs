@@ -7,7 +7,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { FIXTURE_DIR } from "./_shared.mjs";
 
@@ -99,22 +100,33 @@ export function RequestList(props) {
 `,
 };
 
-rmSync(FIXTURE_DIR, { recursive: true, force: true });
-for (const [relPath, content] of Object.entries(FILES)) {
-  const absolute = join(FIXTURE_DIR, relPath);
-  mkdirSync(join(absolute, ".."), { recursive: true });
-  writeFileSync(absolute, content, "utf8");
+/**
+ * 같은 fixture 내용을 임의 디렉터리에 써넣는다 (§7.3 — agent-first/index-only 두 arm이
+ * **같은 fixture**를 각자 독립된 프로젝트로 받아야 하므로 `FIXTURE_DIR` 하나로는 부족하다).
+ */
+export function writeFixtureTo(dir) {
+  rmSync(dir, { recursive: true, force: true });
+  for (const [relPath, content] of Object.entries(FILES)) {
+    const absolute = join(dir, relPath);
+    mkdirSync(join(absolute, ".."), { recursive: true });
+    writeFileSync(absolute, content, "utf8");
+  }
+  try {
+    execFileSync("git", ["-C", dir, "init", "-q"], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "config", "user.email", "fixture@example.com"], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "config", "user.name", "onto fixture"], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "add", "-A"], { stdio: "pipe" });
+    execFileSync("git", ["-C", dir, "commit", "-q", "-m", "fixture"], { stdio: "pipe" });
+  } catch (error) {
+    console.error(`git 초기화를 건너뜁니다: ${error.message}`);
+  }
 }
 
-// git 저장소로 만들어 둔다 — P3(git_change)와 증분 경로를 시험할 수 있어야 한다.
-try {
-  execFileSync("git", ["-C", FIXTURE_DIR, "init", "-q"], { stdio: "pipe" });
-  execFileSync("git", ["-C", FIXTURE_DIR, "config", "user.email", "fixture@example.com"], { stdio: "pipe" });
-  execFileSync("git", ["-C", FIXTURE_DIR, "config", "user.name", "onto fixture"], { stdio: "pipe" });
-  execFileSync("git", ["-C", FIXTURE_DIR, "add", "-A"], { stdio: "pipe" });
-  execFileSync("git", ["-C", FIXTURE_DIR, "commit", "-q", "-m", "fixture"], { stdio: "pipe" });
-} catch (error) {
-  console.error(`git 초기화를 건너뜁니다: ${error.message}`);
+// 이 파일이 스크립트로 직접 실행될 때만 FIXTURE_DIR 에 쓴다 — writeFixtureTo 를 import 만
+// 하는 다른 스크립트(§7.3 비교 arm)가 side effect 로 FIXTURE_DIR 을 건드리면 안 된다.
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isMainModule) {
+  writeFixtureTo(FIXTURE_DIR);
+  console.log(FIXTURE_DIR);
 }
-
-console.log(FIXTURE_DIR);

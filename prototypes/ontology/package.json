@@ -23,6 +23,7 @@
     "mcp:status": "node scripts/mcp-status.mjs",
     "acceptance": "node scripts/acceptance.mjs",
     "codex:probe": "node scripts/codex-probe.mjs",
-    "eval": "node scripts/eval.mjs"
+    "eval": "node scripts/eval.mjs",
+    "eval:index-only": "node scripts/eval-index-only.mjs"
   }
 }

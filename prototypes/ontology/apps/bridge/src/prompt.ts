@@ -7,7 +7,7 @@
  * C9의 evidence-first 제약을 넣되 한 줄을 바꾼다 — CoderMind의 "실재하는 노드만"을 그대로
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
-import type { SemanticWorkSet, ViewRequest } from "@onto/protocol";
+import type { EvidenceIndex, SemanticWorkSet, ViewRequest } from "@onto/protocol";
 
 const EVIDENCE_RULES = [
   "규칙:",
@@ -83,6 +83,38 @@ export function buildIncrementalAnalyzePrompt(projectPath: string, work: Semanti
 }
 
 /**
+ * §7.3 index-only arm이 받는 유일한 입력 — evidence.json에서 뽑은 **file/symbol 요약**뿐이다.
+ *
+ * excerpt·summary·call/reference 그래프·route/db 세부는 넣지 않는다. 그것들을 못 받았을 때
+ * agent-first 대비 의미 품질이 얼마나 떨어지는가가 §7.3이 측정하려는 격차 그 자체이므로,
+ * 여기서 미리 메워 주면 비교가 무의미해진다.
+ */
+export function buildEvidenceBundle(evidence: EvidenceIndex): string {
+  const symbolsByFile = new Map<string, Set<string>>();
+  for (const item of evidence.evidence) {
+    if (item.status !== "present" || !item.filePath) continue;
+    if (item.kind !== "file" && item.kind !== "symbol") continue;
+    if (!symbolsByFile.has(item.filePath)) symbolsByFile.set(item.filePath, new Set());
+    if (item.kind === "symbol" && item.symbolId) {
+      symbolsByFile.get(item.filePath)!.add(item.symbolId.slice(item.symbolId.indexOf("#") + 1));
+    }
+  }
+  const files = [...symbolsByFile.keys()].sort();
+  const symbolCount = files.reduce((sum, file) => sum + symbolsByFile.get(file)!.size, 0);
+  const lines = [`${files.length}개 파일, ${symbolCount}개 심볼.`, ""];
+  for (const file of files) {
+    lines.push(file);
+    const names = [...symbolsByFile.get(file)!].sort();
+    if (names.length === 0) {
+      lines.push("  (심볼 없음)");
+    } else {
+      for (const name of names) lines.push(`  - ${name}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
  * §7.3의 비교 arm — 저장소를 직접 탐색하지 않고 미리 만든 Evidence 요약만 준다.
  *
  * **탐색을 금지하지 않는다.** Codex 에 파일 도구를 확실히 끊을 방법이 없으므로,
@@ -99,6 +131,24 @@ export function buildIndexOnlyPrompt(projectPath: string, bundle: string): strin
     "",
     EVIDENCE_RULES,
   ].join("\n");
+}
+
+/**
+ * `/api/analyze`가 매 turn 어떤 프롬프트를 쓸지 고르는 단 하나의 결정점.
+ *
+ * §6.9의 isFirst 분기와 §7.3의 index-only arm 분기를 한 곳에 모은다 — `reindex()` 안에
+ * 인라인 삼항으로 두면 조용히 틀려도(§8 "조용한 성공") 실제 agent turn을 끝까지 태워야만
+ * 드러난다. 순수 함수로 빼면 agent 없이 바로 검증할 수 있다.
+ */
+export function selectAnalyzePrompt(
+  mode: "full" | "incremental" | "index-only" | undefined,
+  isFirst: boolean,
+  projectPath: string,
+  work: SemanticWorkSet,
+  bundle: string,
+): string {
+  if (mode === "index-only") return buildIndexOnlyPrompt(projectPath, bundle);
+  return isFirst ? buildFullAnalyzePrompt(projectPath) : buildIncrementalAnalyzePrompt(projectPath, work);
 }
 
 const VIEW_RULES = [

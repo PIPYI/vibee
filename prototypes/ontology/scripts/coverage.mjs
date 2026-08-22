@@ -59,6 +59,11 @@ export function checkCoverage(state, expectations) {
   const semanticQueue = [];
   /** key → 실제로 찾은 concept. requiredClaims/requiredScenarios가 재사용한다 */
   const resolvedConcepts = new Map();
+  /** §7.3 비교 표(concept/claim coverage)를 위한 항목별 pass 집계. hardFailures는 사람이 읽는
+   * 문장이라 "몇 개 중 몇 개 통과"를 그대로 세지 못한다 — 그래서 따로 센다. */
+  let conceptsMatched = 0;
+  let claimsMatched = 0;
+  let forbiddenPromoted = 0;
 
   for (const required of expectations.requiredConcepts ?? []) {
     const concept = findConceptByAcceptableNames(concepts, required.acceptableNames);
@@ -70,16 +75,20 @@ export function checkCoverage(state, expectations) {
     }
     resolvedConcepts.set(required.key, concept);
 
+    let conceptOk = true;
     for (const ref of required.mustGroundIn ?? []) {
       const candidateIds = resolveEvidenceIds(ref, evidenceList);
       if (candidateIds.length === 0) {
         hardFailures.push(`expectations.json 오류 — "${ref}"에 해당하는 evidence를 이 인덱스에서 찾지 못했다`);
+        conceptOk = false;
         continue;
       }
       if (!candidateIds.some((id) => concept.evidenceRefs.includes(id))) {
         hardFailures.push(`concept "${required.key}"(${concept.name})가 "${ref}"에 grounding되어 있지 않다`);
+        conceptOk = false;
       }
     }
+    if (conceptOk) conceptsMatched += 1;
   }
 
   for (const forbidden of expectations.forbiddenConcepts ?? []) {
@@ -90,6 +99,7 @@ export function checkCoverage(state, expectations) {
     );
     if (promoted) {
       hardFailures.push(`금지된 concept가 승격되었다 — "${forbidden}" (§29 abstraction level)`);
+      forbiddenPromoted += 1;
     }
   }
 
@@ -136,6 +146,7 @@ export function checkCoverage(state, expectations) {
       );
       continue;
     }
+    claimsMatched += 1;
 
     // smoke — warning일 뿐이다. 없다고 게이트를 막지 않는다.
     const keywords = required.meaningKeywords ?? [];
@@ -166,5 +177,16 @@ export function checkCoverage(state, expectations) {
     }
   }
 
-  return { structuralPass: hardFailures.length === 0, hardFailures, warnings, semanticQueue };
+  return {
+    structuralPass: hardFailures.length === 0,
+    hardFailures,
+    warnings,
+    semanticQueue,
+    // §7.3 비교 표 전용 — pass/fail이 아니라 "몇 개 중 몇 개"가 필요하다.
+    counts: {
+      concepts: { matched: conceptsMatched, total: (expectations.requiredConcepts ?? []).length },
+      claims: { matched: claimsMatched, total: (expectations.requiredClaims ?? []).length },
+      forbiddenPromoted,
+    },
+  };
 }

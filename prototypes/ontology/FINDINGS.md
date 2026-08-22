@@ -797,3 +797,244 @@ Finding 없음 — 계획과 충돌한 것이 없다.
 
 Finding 없음 — 계획과 충돌한 것이 없다. "시험이 잡아낸 것"의 결함은 프론트엔드 자체
 설계 가정의 오류였고, 실제 실행으로만 드러났다.
+
+---
+
+## M8 — index-only arm + eval (완료)
+
+계획 §8이 M8에 요구한 것: "§7.3 표가 채워지고 §9의 질문에 답이 붙는다."
+
+### 시작할 때 이미 있었던 것 (배선되지 않은 채)
+
+코드를 조사해 보니 §7.3 인프라 일부가 **이미 작성되어 있었지만 아무 곳에서도 호출되지
+않는 죽은 코드**로 남아 있었다.
+
+- `apps/bridge/src/prompt.ts`의 `buildIndexOnlyPrompt(projectPath, bundle)` — 함수는
+  있지만 `bundle`을 만드는 코드도, 이 함수를 부르는 코드도 없었다.
+- `packages/protocol/src/agent.ts`의 `AnalyzeRequest.mode?: "full" | "incremental" |
+  "index-only"` — 타입만 선언되어 있고 `/api/analyze` 핸들러는 `body.mode`를 전혀
+  읽지 않았다.
+- `events.ndjson`(C7이 "모든 tool 호출 + duration"으로 계획한 범용 로그)은 실제로는
+  S2(버려진 proposal) 용도로만 좁게 쓰이고 있었다 — 탐색/토큰 측정에 쓸 수 없었다.
+
+즉 M8은 "이미 있는 것을 확인하고 부족한 부분만 채우는" milestone이 아니라, §7.3
+인프라 대부분을 새로 만들어야 하는 milestone이었다. 이는 계획과의 충돌이 아니라
+계획이 정확히 예고한 범위 그대로다(M6·M7이 "미리 준비되어 있던" 것과 대조적이다).
+
+### 완료한 것
+
+**index-only arm 배선**
+- [x] `apps/bridge/src/prompt.ts`
+  - `buildEvidenceBundle(evidence: EvidenceIndex): string` — evidence.json에서 **file/symbol
+    만** 뽑아 파일별로 그룹핑한 요약 문자열을 만든다. excerpt·summary·call/reference
+    그래프·route/db 세부는 절대 넣지 않는다 — 그것을 못 받았을 때 의미 품질이 얼마나
+    떨어지는지가 §7.3이 재려는 격차 그 자체이므로, 미리 메워 주면 비교가 무의미해진다.
+    `symbolId`는 `<relPath>#<qualifiedName>`(§6.2)이므로 파싱 없이 `#` 뒤만 잘라 쓴다.
+  - `selectAnalyzePrompt(mode, isFirst, projectPath, work, bundle)` — `/api/analyze`가
+    매 turn 어떤 프롬프트를 쓸지 고르는 단 하나의 결정점을 순수 함수로 분리했다.
+    `reindex()` 안의 인라인 삼항으로 남겨 두면 조용히 틀려도(§8이 경계하는 "조용한
+    성공") 실제 agent turn을 끝까지 태워야만 드러난다 — 순수 함수로 빼서 agent 없이
+    바로 시험했다.
+- [x] `apps/bridge/src/index.ts` — `reindex()`가 `mode` 인자를 받아
+    `selectAnalyzePrompt`에 그대로 넘긴다. `/api/analyze`가 `body.mode`를 읽어 전달한다.
+    `AnalyzeTransaction`/`AnalyzeSession` lifecycle은 **손대지 않았다** — 어떤 프롬프트를
+    쓰는지만 바뀌고, 커밋 절차·session 수명은 M4가 정한 그대로다.
+
+**탐색 여부 · 토큰 사용량 측정** (§7.3 "탐색을 금지하지 않는다 — 대신 탐색했는지를
+측정한다")
+- [x] `packages/protocol/src/agent.ts` — `AgentEvent`에 `agent.file.explored`
+    (`{taskId, path}`)와 `agent.usage`(`{taskId, totalTokens}`) 추가. `TaskState`에
+    `exploredFiles: string[]`·`tokenUsage?: number` 추가.
+- [x] `apps/bridge/src/state.ts` — `recordExploredFile`(중복 무시)·`setTokenUsage`.
+- [x] `apps/bridge/src/index.ts`의 `runTask` — 기존 `mcp.tool.called` 처리와 같은
+    자리에 두 이벤트 처리를 추가했다(하나의 결정점).
+- [x] Codex adapter — **추측하지 않고 `codex app-server generate-ts`로 실제 프로토콜
+    스키마를 받아 확인했다**(Finding 1·2가 세운 원칙 그대로): `commandExecution`
+    아이템의 `commandActions: CommandAction[]`이 `{type: "read", path}`로 shell
+    명령을 이미 best-effort 분류해 준다 — 이것이 MCP를 거치지 않은 직접 탐색이다.
+    `thread/tokenUsage/updated` 알림의 `tokenUsage.total.totalTokens`를 토큰 사용량으로
+    쓴다.
+- [x] Claude adapter — `tool_use` 블록 `name === "Read"`의 `input.file_path`를
+    탐색으로, `result` 메시지(`type: "result"`, 지금까지 전혀 처리하지 않던 메시지
+    타입)의 `usage.input_tokens + usage.output_tokens`를 토큰 사용량으로 쓴다.
+    **이 머신에는 claude CLI가 없어 실제 turn으로 재확인하지 못했다** — M3~M7과 같은
+    환경 제약이다. 필드 이름은 `@anthropic-ai/claude-agent-sdk`를 scratchpad에 설치해
+    `sdk.d.ts`의 `SDKResultSuccess`/`SDKResultError`/`BetaUsage` 타입을 직접 읽어
+    확인했다(추측 아님).
+
+**§7.3 비교 표 + 증분 안정성**
+- [x] `scripts/coverage.mjs`의 `checkCoverage`에 `counts` 필드를 추가했다(additive,
+    기존 `hardFailures`/`warnings`/`semanticQueue` 소비자는 영향 없음) — "몇 개 중 몇
+    개 통과"가 필요한데 `hardFailures`는 사람이 읽는 문장이라 그 숫자를 다시 셀 수
+    없었다.
+- [x] `scripts/stability.mjs` — §46 False Semantic Churn을 측정한다.
+    `computeStabilityMetrics(before, after)`는 **같은 store의 서로 다른 generation**을
+    받아 Concept/Claim/Canonical Scenario identity preservation과, evidenceRefs의
+    Jaccard overlap(IdentityResolver 자신이 이미 쓰는 것과 같은 방식, §6.3)으로
+    name-only churn · unnecessary split · unnecessary merge를 추정한다.
+    `computeEvidenceOriginStats(evidenceIndex)`는 grounding coverage(origin별)와
+    agent evidence relocation(exact/degraded/missing/재인덱싱 전) 비율을 센다.
+- [x] `scripts/eval.mjs` — 기존 M5 3-turn 흐름(turn1 첫 분석 → turn2 심볼 삭제 → turn3
+    기능 추가)은 **이미 같은 store에서 두 번째·세 번째 분석을 만들고 있었다** — §46이
+    요구하는 정확한 조건(같은 store, 재검토를 시키는 실제 코드 변경)이 새로 만들지
+    않아도 이미 갖춰져 있었다. `reportStability`/`reportEvidenceOrigin`을 turn2·turn3
+    직후에 추가했을 뿐이다.
+- [x] `scripts/create-fixture.mjs` — `writeFixtureTo(dir)`를 export하도록 리팩터링
+    (기존 `FIXTURE_DIR` 전용 동작은 `isMainModule` 가드로 그대로 유지, import-only
+    시 side effect 없음을 확인). §7.3 비교 arm은 **독립된 두 프로젝트 디렉터리**가
+    필요하다 — 같은 store를 공유하면 두 번째 turn이 첫 번째가 만든 Semantic Memory를
+    "이미 있는 의미"로 보고 재사용하려 들어 비교 자체가 오염된다.
+- [x] `scripts/eval-index-only.mjs`(`npm run eval:index-only`) — agent-first/index-only
+    각각 독립 디렉터리에서 첫 분석 1회씩 돌려 §7.3 표를 채운다. `checkCoverage`의
+    `counts`를 그대로 재사용한다 — 새 채점 기준을 만들지 않았다.
+- [x] `npm test` 170/170 (신규 17개: prompt 6 · coverage 추가 3 · stability 7 · 기존
+    회귀 없음). `npm run typecheck`/`npm run build` 전 패키지 통과.
+
+### mutation check로 확인한 것 (Finding 3 원칙 — 통과보다 "무엇을 확인하는지"를 먼저 본다)
+
+- `buildEvidenceBundle`의 kind 필터(`item.kind !== "file" && item.kind !== "symbol"`)를
+  제거하자 "route·call·db_read 등은 번들에 들어가지 않는다" 시험만 깨졌다 — route
+  evidence의 `summary`("POST /api/follow")가 번들에 새는 것을 그 시험이 정확히 잡았다.
+- `selectAnalyzePrompt`의 `mode === "index-only"` 분기에 `&& isFirst`를 몰래 붙이자
+  "mode가 index-only면 isFirst와 무관하게" 시험만 깨졌다.
+- `stability.mjs`의 `nameOnlyChurn`/`unnecessarySplit` 분기(`matches.length === 1` vs
+  `> 1`)를 하나로 합치자 "하나가 겹치는 여럿으로 쪼개지면 unnecessary split" 시험만
+  깨지고 나머지는 통과했다 — split과 churn이 실제로 구별되고 있다는 뜻이다.
+
+세 경우 모두 **의도한 시험만** 실패했다 — 다른 시험이 우연히 같이 잡지 않는다는 것을
+확인했다.
+
+### `npm run eval codex` · `npm run eval:index-only codex`로 확인한 것 (codex-cli
+0.149.0, 실제 agent, bridge를 실제로 띄워서)
+
+**탐지 메커니즘 자체가 동작하는지** — `npm run eval codex`의 turn1(첫 분석)에서
+`exploredFiles`가 실제 파일 경로 7개(`follow.js`, `FollowButton.jsx`, `schema.prisma`
+등)로 채워졌고, turn2·turn3에서도 각각 5개·3개가 채워졌다. `agent.usage`도 매 turn
+30만~280만 사이의 실제 토큰 수를 보고했다. **`codex app-server generate-ts`로 확인한
+프로토콜 필드가 실제 실행에서도 맞았다** — 추측이 아니었다는 것이 검증되었다.
+
+**§46 안정성 — 실제 수치**
+
+```text
+turn1 → turn2 (심볼 삭제, 재검토 지시)
+  Concept identity preservation: 100% (사라짐 0 / 새로 생김 0)
+  Claim identity preservation:   25%
+  Canonical Scenario id 안정성:  100%
+  Name-only churn 0 · split 0 · merge 0
+
+turn2 → turn3 (기능 추가, 기존 의미는 안 건드림)
+  Concept/Claim/Scenario identity preservation: 전부 100%
+```
+
+**Claim identity preservation 25%는 계획이 이미 예측한 것과 정확히 맞아떨어진다** —
+§6.4가 "predicate가 자유 문자열이므로 Claim identity는 Concept identity보다 불안정할
+것이다. 그것 자체가 §54 Q4이므로 eval은 둘을 따로 측정한다"고 적어 두었고, 실제로
+Concept 100% vs Claim 25%로 **같은 재검토 이벤트에서 둘의 안정성이 극명하게 갈렸다.**
+name-only churn·split·merge가 전부 0이었다는 것은 이번 재검토에서 agent가 Claim을
+아예 재사용하지 않고 **grounding이 무관해 보이는 새 Claim**을 만들었다는 뜻이다(있었으면
+churn으로 잡혔을 것이다) — Claim 재사용 후보 제시가 Concept만큼 강하게 작동하지 않을
+가능성을 시사한다. 단일 이벤트 하나이므로 이것으로 결론을 내리지 않는다.
+
+**§7.3 비교 표 — agent-first vs index-only, 같은 fixture, codex-cli 0.149.0, 3회 실행**
+
+```text
+run  arm          concept coverage  claim coverage  forbidden  grounding  agent-origin  탐색한파일  tokens
+1    agent-first  3/3               1/1             0          100%       4%            0          341439
+1    index-only   1/3               1/1             0          100%       4%            0          444610
+2    agent-first  0/3               0/1             0          100%       2%            0          410391
+2    index-only   1/3               1/1             0          100%       2%            0          370303
+3    agent-first  3/3               1/1             0          100%       2%            0          316811
+3    index-only   2/3               0/1             0          100%       2%            0          425935
+
+합계 concept coverage: agent-first 6/9(67%)  index-only 4/9(44%)
+합계 claim coverage:   agent-first 2/3(67%)  index-only 2/3(67%)
+```
+
+**읽는 법과 한계를 정직하게 적는다.**
+
+- concept coverage는 agent-first가 평균적으로 더 높다(67% vs 44%)는 방향은 나왔지만,
+  **2회차에 agent-first가 0/3으로 index-only보다 낮게 나온 경우가 있었다** — 단일
+  fixture·3회 실행으로는 "agent-first가 항상 낫다"고 말할 수 없다. §7.3이 스스로
+  "벤치마크가 아니다"라고 못박은 이유가 바로 이것이다.
+- claim coverage는 두 arm이 3회 합계로 정확히 같다(2/3) — 이 fixture의 claim 하나는
+  index-only 요약(파일/심볼 이름만)으로도 agent-first만큼 자주 만들어졌다는 뜻이다.
+- forbidden·grounding coverage는 두 arm 모두 전 실행에서 0개/100% — Validator ③(Claim은
+  반드시 evidenceRefs ≥ 1)이 이미 보장하는 것이라 여기서는 "위반이 관측되지 않았다"는
+  확인 이상의 의미는 크지 않다.
+- **탐색한 파일 수가 6번의 arm 실행 전부에서 0으로 나왔다** — index-only가 탐색하지
+  않은 것은 계획대로지만, **agent-first arm도 이 스크립트에서는 한 번도 native 도구로
+  파일을 읽지 않았다.** `npm run eval`의 turn1(같은 프롬프트, 다른 프로젝트 경로)에서는
+  같은 codex-cli로 7개 파일을 읽었으므로 탐지 자체의 결함은 아니다 — codex가 이번
+  fixture 규모에서는 `get_evidence(includeSource:true)`만으로 충분하다고 판단해 native
+  shell 읽기를 아예 안 쓴 실행이 있었다는 뜻으로 읽힌다. **run-to-run variance이지 버그가
+  아니다**라고 결론 내렸지만, 이 결론은 6회 관측(모두 0)에 기반하고 있어 index-only의
+  "탐색했는가"라는 질문 자체에 대해서는 이번 fixture 규모에서 판별력이 약하다 — 더 큰
+  fixture가 필요할 수 있다(§9 Q1′에 열린 채로 남긴다).
+- turn token은 index-only가 오히려 평균적으로 더 높았다(mean 413,616 vs 356,214) —
+  탐색을 안 해도 `get_evidence`를 반복 호출하는 비용이 있다는 뜻일 수 있다. 3회로는
+  결론 내리지 않는다.
+
+`claude`는 이 머신에 설치되어 있지 않아 codex로만 확인했다(M3~M7과 같은 제약).
+
+### §9 질문에 대한 답 (M8이 답할 수 있는 만큼만)
+
+**1′ — 저장소를 직접 탐색하게 하는 것이 미리 만든 Evidence 요약만 주는 것보다 의미
+품질이 높은가?** 이 fixture·3회 실행에서 concept coverage는 agent-first가 평균 더
+높았다(67% vs 44%)지만 분산이 커서(agent-first가 0/3으로 떨어진 회차가 있었다)
+단정할 수 없다. claim coverage는 두 arm이 같았다. **§7.3이 예고한 대로 "이 fixture에서"
+로만 답한다 — 벤치마크가 아니다.** 더 많은 반복과 더 큰 fixture가 있어야 방향성을
+신뢰 있게 말할 수 있다.
+
+**2 — Evidence Index는 어느 수준까지 필요한가?** agent-origin evidence 비율이
+2~4%로 낮았다(engine이 대부분을 커버). 두 arm 모두 propose_evidence를 소량만
+썼다는 것은, 이 fixture 규모·구성(P0~P2 adapter가 이미 route/db/ui_event까지
+커버)에서는 엔진 인덱스가 이미 상당 부분을 충당한다는 신호다. Kind 분포까지는
+이번에 따로 집계하지 않았다 — 열린 채로 남긴다.
+
+**4 — 자유 predicate Claim이 얼마나 안정적인가?** turn1→turn2에서 25% — Concept의
+100%와 극명히 갈렸다. 단일 이벤트이지만 계획이 미리 예측한 방향(§6.4)과 일치한다.
+
+**5 — Semantic Identity를 얼마나 안정적으로 유지할 수 있는가?** 관측된 범위에서
+name-only churn·split·merge는 0이었다(Concept도, Claim이 새로 만들어졌을 때도
+"쪼개짐"으로 잡히지 않았다 — 그냥 재사용을 안 한 것으로 보인다). Agent evidence
+relocation·EvidenceDiff 분포는 이번 3-turn 흐름에서 turn3 직후 기준 engine 50 /
+agent 4, relocation은 (재인덱싱을 한 번도 안 거쳐) 대부분 미상이었다 — 다음 재인덱싱
+이후 다시 재보아야 exact/degraded 비율을 말할 수 있다. 이번 세션에서는 시간상
+추가 재인덱싱을 돌리지 않았다.
+
+**9 — On-demand Anchor-based View가 자연스럽게 동작하는가?** M8이 새로 답하지
+않는다 — M7이 이미 Concept anchor·Trace anchor로 실제 브라우저 흐름을 확인했고
+(FINDINGS M7), M8은 그 이상의 anchor 다양성을 추가로 시험하지 않았다.
+
+### 이 문서가 다루지 않는 것
+
+**§53 View Utility 사람 평가(§9 Q6)는 이번에도 하지 않는다** — 기계적으로 판정할 수
+없다고 계획 스스로 명시했다("사람 평가"). 사람이 이 문서를 읽고 별도로 진행해야 한다.
+
+**agent-origin evidence의 kind 분포**(§9 Q2가 요구하는 "계속 같은 종류를 제안하면
+그것이 다음 adapter")는 집계하지 않았다 — `computeEvidenceOriginStats`는 지금
+origin별 개수만 세고 kind별로 나누지 않는다. 필요하면 쉽게 확장할 수 있는 자리를
+만들어 두었을 뿐이다.
+
+**EvidenceDiff contentChange 분포**(unchanged/cosmetic/modified/appeared/missing)는
+turn2/turn3에서 HTTP로 계산할 수 있는 상태였지만(`GET /api/evidence`가 이미
+`relocated`/`contentChange`를 병합해 준다) 이번 스크립트에 붙이지 않았다 — M8 세션
+시간 제약으로 agent-origin relocation 비율만 넣었다. 다음에 붙일 때는 `GET
+/api/evidence?limit=200`을 turn마다 호출해 `contentChange`별로 집계하면 된다(새
+메커니즘이 필요 없다).
+
+### 별도로 발견한 것 — M8 범위 밖의 gap
+
+implementation_plan §8의 M7 행이 완료 근거로 "acceptance 20"(Stop이 `task.error`가
+아니라 `task.interrupted`가 된다, 실제 codex/claude)을 들고 있는데, FINDINGS.md
+전체를 검색해도 실제 agent로 이것을 검증했다는 기록이 없다 — M3의 "미검증으로
+남는 것"에 처음 적힌 뒤(line 175 부근) 이후 어느 M 섹션에서도 다시 언급되지 않았다.
+`apps/bridge/src/index.ts`의 `/api/tasks/:taskId/stop` → `task.interrupted` 배선
+자체는 존재하고 `apps/bridge/test/m4-wiring.test.mjs`가 transaction 폐기는
+검증하지만, **실제 codex/claude turn을 중단시켜 이벤트 타입이 `task.interrupted`로
+나오는지는 여전히 확인된 적이 없다.** M8의 범위(index-only arm + eval)가 아니므로
+고치지 않았다 — 다음 세션 담당자가 acceptance 20을 검증할 때 참고할 수 있게
+기록만 남긴다.
+
+Finding 없음 — 계획과 충돌한 것이 없다. 위 gap은 M7이 남긴 미검증 항목이지 M8이
+만든 결함이 아니다.

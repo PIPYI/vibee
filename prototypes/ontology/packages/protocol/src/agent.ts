@@ -67,6 +67,13 @@ export type AgentEvent =
   | { type: "agent.action.started"; taskId: string; name: string; detail?: unknown }
   | { type: "agent.action.completed"; taskId: string; name: string; detail?: unknown }
   | { type: "mcp.tool.called"; taskId: string; tool: string; source: McpCallSource }
+  /**
+   * agent가 MCP가 아니라 **자기 native 도구**(shell/Read)로 파일을 직접 읽었다 (§7.3 index-only arm).
+   * 강제로 막지 않고 관측만 한다 — Codex/Claude 양쪽에 파일 도구를 확실히 끊을 방법이 없다.
+   */
+  | { type: "agent.file.explored"; taskId: string; path: string }
+  /** turn 이 소비한 누적 토큰 수 (§7.3 turn/token). provider마다 다른 usage 모양을 정규화한다 */
+  | { type: "agent.usage"; taskId: string; totalTokens: number }
   | { type: "analysis.progress"; taskId: string; phase: string; message: string }
   | { type: "memory.patched"; taskId: string; semanticVersion: number; summary: string }
   | { type: "view.ready"; taskId: string; viewKind: string; requestId: string }
@@ -98,6 +105,10 @@ export type TaskState = {
   error?: string;
   /** 이 task에서 관측된 MCP 호출. **두 증거원을 따로 기록한다** (B4) */
   mcpCalls: McpCallRecord[];
+  /** native 도구(shell/Read)로 직접 읽은 파일 경로 (중복 없음). §7.3 index-only arm이 "탐색했는가"를 여기서 잰다 */
+  exploredFiles: string[];
+  /** 이 turn이 소비한 누적 토큰 수. provider가 보고하지 않으면 없다 */
+  tokenUsage?: number;
 };
 
 /**

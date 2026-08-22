@@ -234,7 +234,26 @@ export class ClaudeAdapter implements AgentAdapter {
               source: "agent-stream",
             });
           }
+          // §7.3 — native `Read` 는 MCP 를 거치지 않은 저장소 직접 탐색이다.
+          if (name === "Read") {
+            const toolInput = (block["input"] ?? {}) as Record<string, unknown>;
+            const path = String(toolInput["file_path"] ?? "");
+            if (path) emit({ type: "agent.file.explored", taskId: input.taskId, path });
+          }
         }
+      }
+      return;
+    }
+
+    // §7.3 turn/token — 최종 usage 는 result 메시지에만 있다(중간 assistant 메시지의
+    // usage 는 final 이 아니다). `@anthropic-ai/claude-agent-sdk`의 `SDKResultMessage.usage`
+    // (`BetaUsage`: `input_tokens`/`output_tokens`)를 정적으로 확인해 옮겼다 — 이 머신에는
+    // claude CLI 가 없어 실제 turn 으로 재확인하지 못했다(M3~M7과 같은 제약, FINDINGS 참고).
+    if (type === "result") {
+      const usage = message["usage"] as Record<string, unknown> | undefined;
+      if (usage) {
+        const totalTokens = Number(usage["input_tokens"] ?? 0) + Number(usage["output_tokens"] ?? 0);
+        emit({ type: "agent.usage", taskId: input.taskId, totalTokens });
       }
     }
   }
