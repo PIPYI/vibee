@@ -1038,3 +1038,148 @@ implementation_plan §8의 M7 행이 완료 근거로 "acceptance 20"(Stop이 `t
 
 Finding 없음 — 계획과 충돌한 것이 없다. 위 gap은 M7이 남긴 미검증 항목이지 M8이
 만든 결함이 아니다.
+
+---
+
+## M8 이후 — 사용자 live 테스트에서 발견된 결함 (`ClaudeAdapter#checkReady`)
+
+M8 완료 보고 직후, 사용자가 실제로 bridge + 웹 뷰어를 띄우고 브라우저에서 Claude로
+Analyze를 눌러 보다가 다음을 겪었다.
+
+```text
+analysisVersion 2 · dirty 0 · 새 근거 0 · agent evidence relocate 0 (missing 0)
+turn 시작 — analyze
+turn 오류 — Cannot find package '@anthropic-ai/claude-agent-sdk' imported from
+  .../apps/bridge/dist/agents/claude/adapter.js
+```
+
+그리고 중지 버튼을 눌러도 반응이 없었다고 보고했다.
+
+### 원인
+
+`apps/bridge/src/agents/claude/adapter.ts`의 `checkReady()`가 SDK(`@anthropic-ai/
+claude-agent-sdk`, M3부터 선택적 런타임 의존성) 로딩에 실패했을 때 `installed: true`를
+돌려주고 있었다 — 주석은 "표면만 선언하고 로딩 실패는 `checkReady()`가 말한다"고
+정직한 보고를 약속해 두었는데, 코드는 그 반대였다.
+
+결과적으로:
+
+1. `/api/health`가 Claude를 "설치됨"으로 보고해 웹 뷰어의 agent 선택창에서 **선택
+   가능하게** 보였다(`apps/web/src/App.tsx`의 `<option disabled={!item.installed}>`).
+2. `/api/analyze`의 `if (!ready.installed)` 가드가 걸리지 않아 task가 그대로
+   생성되었다.
+3. `runTask` → `adapter.startTask()`가 `loadSdk()`를 다시 시도하다 raw
+   `ERR_MODULE_NOT_FOUND`를 그대로 던졌고, 그것이 가공되지 않은 채 `task.error`
+   메시지로 사용자에게 노출되었다.
+4. `startTask()`는 SDK import가 **성공한 뒤에야** `AbortController`를
+   `this.aborters`에 등록한다(§ Finding 7의 abort 메커니즘). import가 그 전에 실패하므로
+   등록된 aborter가 아예 없다 — 중지 버튼을 눌러도 abort할 대상이 없어 아무 일도
+   일어나지 않는다. **별도의 중지 버튼 결함이 아니라 1~3의 직접적 결과다.**
+
+실제로 이 저장소에서 재현했다 — 이 개발 머신은 `claude` CLI는 있지만(`claude
+--version` 성공) `@anthropic-ai/claude-agent-sdk`는 `node_modules`에 없어 사용자와
+정확히 같은 조합이었다.
+
+```json
+{
+  "agent": "claude", "installed": true, "authenticated": "unknown",
+  "version": "2.1.239 (Claude Code)",
+  "message": "@anthropic-ai/claude-agent-sdk 를 불러오지 못했습니다: ..."
+}
+```
+
+### 고침
+
+`checkReady()`의 SDK 로딩 실패 분기에서 `installed: true` → `installed: false`로
+바꿨다(`apps/bridge/src/agents/claude/adapter.ts`). Codex adapter의 `checkReady()`는
+애초에 CLI probe 실패 시 `installed: false`를 정확히 돌려주고 있었다 — Claude만
+SDK라는 추가 준비 단계가 있었는데 거기서만 부호가 뒤집혀 있었다.
+
+### 시험이 잡아낸 것 (mutation check)
+
+`apps/bridge/test/claude-adapter.test.mjs`를 새로 추가했다. `claude` CLI가 있는
+머신에서만 의미가 있으므로(SDK가 없는 것과 CLI가 없는 것을 구별해야 한다) CLI가 없으면
+건너뛴다. 고치기 전 코드로 먼저 돌려 실패하는 것을 확인했다(`installed: true`가
+그대로 나와 `true !== false`로 실패) — 그다음 고치고 통과하는 것을 확인했다. 다시
+`installed: true`로 되돌려 mutation check도 했다 — 시험이 정확히 이 결함만 잡는다.
+
+`npm test` 171/171(+1). `npm run typecheck`/`npm run build` 전 패키지 통과.
+
+### 남은 것 — 사용자가 실제로 Claude를 쓰려면
+
+이 고침은 **정직하게 실패를 보고하게** 할 뿐, SDK를 설치해 주지는 않는다. Claude로
+분석을 돌리려면 `apps/bridge` workspace에 SDK를 설치해야 한다:
+
+```bash
+npm install @anthropic-ai/claude-agent-sdk -w @onto/bridge
+npm run build -w @onto/bridge
+# bridge 를 재시작한다
+```
+
+설치하지 않으면(정상이다 — Codex만 쓰는 사용자를 위한 설계다, §6.1) 이제는 웹
+뷰어의 agent 선택창에서 Claude가 "(설치 안 됨)"으로 회색 처리되어 애초에 고를 수
+없다 — 사용자가 다시 이 경로로 혼란을 겪지 않는다.
+
+Finding 없음(계획 충돌 아님) — `checkReady()`가 정직하게 보고한다는 것은 M3부터
+계획이 요구한 계약이었고, 이번 고침은 그 계약을 코드가 실제로 지키게 만든 것뿐이다.
+실제 사용자가 브라우저로 직접 써 보기 전까지는 아무도 발견하지 못한 결함이었다 —
+"테스트 통과만으로 완료 판단하지 않는다"는 원칙이 정확히 겨냥하는 종류의 구멍이다.
+
+---
+
+## M8 이후 — bridge 재시작 시 EADDRINUSE (사용자 live 테스트에서 발견)
+
+### 관찰
+
+사용자가 위 checkReady 결함을 확인하려고 bridge 터미널에서 Ctrl+C로 종료한 뒤 다시
+빌드하고 `npm run bridge`를 돌렸는데 `EADDRINUSE: address already in use
+127.0.0.1:43220`로 죽었고, 처리되지 않은 예외의 raw 스택트레이스가 그대로 출력됐다.
+
+### 원인
+
+architecture 결함이 아니다. `onShutdown()`(`apps/bridge/src/platform.ts`)이 등록하는
+SIGINT 핸들러 자체는 정상이고 `server.close()` 뒤 `process.exit(0)`까지 제대로
+부른다. 문제는 `npm run bridge`(root) → `npm run start -w @onto/bridge` → `node
+dist/index.js`로 **두 겹 감싼 npm 스크립트 체인**에서, 터미널의 Ctrl+C(SIGINT)가
+가장 안쪽 `node` 프로세스까지 항상 전달된다는 보장이 없다는 것이었다(npm의 알려진
+한계). 실제로 이 저장소에서 재현됐다 — `ps`로 보니 고아가 된 `node dist/index.js`의
+부모는 이미 사용자 셸이 아니라 그 이전 세션의 중간 npm 프로세스였다.
+
+추가로, 처음 고쳤을 때 `server.once("error", ...)`만 걸었는데도 여전히 raw
+스택트레이스가 나왔다 — `ws`의 `WebSocketServer`가 기존 `http.Server`에 붙을 때
+**자기 자신에게도** 그 오류를 재발행하기 때문이다(`server`와 `wss`는 서로 다른
+EventEmitter이고, 리스너가 없는 쪽이 각자 처리되지 않은 예외를 던진다). `wss`에도
+같은 핸들러를 걸어야 했다.
+
+### 고침
+
+1. `apps/bridge/src/index.ts` — `server`·`wss` 양쪽에 `EADDRINUSE`를 잡는 핸들러를
+   달아 raw 스택트레이스 대신 "포트를 이미 다른 프로세스가 쓰고 있다 · `npm run
+   bridge:stop`으로 정리하라"는 읽을 수 있는 메시지로 바꿨다.
+2. `scripts/bridge-stop.mjs`(`npm run bridge:stop`) — 새로 추가. **자동으로 죽이지
+   않는다** — 그 포트에 있는 것이 진짜 우리 bridge인지 `GET /api/state`가 우리가
+   아는 모양(`tasks` 배열)으로 응답하는지 먼저 확인하고, 확인된 경우에만 정리한다.
+   확인되지 않으면(무관한 프로세스일 수 있다) PID만 알려주고 죽이지 않는다 —
+   "브리지를 켤 때마다 자동으로 기존 것을 종료"하는 방식은 채택하지 않았다. 그것은
+   확인 없이 프로세스를 죽이는 것이고, 우연히 같은 포트를 쓰는 무관한 프로세스를
+   죽이는 사고를 낼 수 있다(destructive action은 확인 후에만 — 세션 지침).
+   SIGTERM으로 먼저 시도하고 0.5초 뒤에도 살아 있으면 SIGKILL한다. 이미 꺼져 있으면
+   아무 일도 하지 않는다(idempotent).
+
+### 확인한 방법
+
+실제로 재현했다 — bridge를 백그라운드로 띄운 채 두 번째 bridge를 실행해
+`EADDRINUSE`를 그대로 발생시키고, 고치기 전 코드로 raw 스택트레이스가 나오는 것을
+먼저 확인한 뒤(server만 처리했을 때도 wss 쪽에서 여전히 죽는 것까지 포함), 고친
+뒤 읽을 수 있는 메시지로 바뀌는 것을 확인했다. `bridge-stop.mjs`는 세 가지 상황을
+모두 실제로 만들어 확인했다: (1) 우리 bridge가 떠 있을 때 — 식별하고 정리, (2) 이미
+꺼져 있을 때 — idempotent, (3) 우리 bridge가 아닌 프로세스(python으로 같은 포트에
+소켓만 열어 둠)가 그 포트에 있을 때 — 죽이지 않고 거부.
+
+`npm test` 171/171(회귀 없음, 새 유닛 시험은 추가하지 않았다 — 이 결함은 프로세스
+lifecycle·실제 포트 바인딩에 관한 것이라 순수 함수로 분리하기보다 위처럼 실제
+재현으로 검증하는 편이 맞다고 판단했다). `npm run typecheck`/`npm run build` 통과.
+
+Finding 없음(계획 충돌 아님) — 개발 편의 도구의 견고성 개선이다. "브리지 재시작 시
+기존 것을 자동으로 종료하는 기능"을 만들자는 사용자 제안을 그대로 구현하지 않고
+**확인 후 종료**로 좁힌 것은 의도적인 판단이다 — 근거는 위 "고침" 항목에 적었다.

@@ -16,6 +16,7 @@
     "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core && npm run typecheck -w @onto/mcp-server && npm run typecheck -w @onto/bridge && npm run typecheck -w @onto/web",
     "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs scripts/*.test.mjs",
     "bridge": "npm run start -w @onto/bridge",
+    "bridge:stop": "node scripts/bridge-stop.mjs",
     "web": "npm run dev -w @onto/web",
     "fixture": "node scripts/create-fixture.mjs",
     "mcp:register": "node scripts/register-codex-mcp.mjs",

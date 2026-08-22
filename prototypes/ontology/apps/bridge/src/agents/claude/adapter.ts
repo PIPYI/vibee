@@ -74,9 +74,13 @@ export class ClaudeAdapter implements AgentAdapter {
     try {
       await this.loadSdk();
     } catch (error) {
+      // CLI는 있지만 SDK가 없으면 **쓸 수 없는 것은 맞다** — `installed: true`로 보고하면
+      // `/api/health`가 이 agent를 선택 가능하게 보여주고, `/api/analyze`의 `!ready.installed`
+      // 가드도 통과시켜 실제 turn 시작까지 가서야(`startTask`의 import) 원본 모듈 오류가
+      // 그대로 사용자에게 샌다. 여기서 막아야 정직한 보고다.
       return {
         agent: "claude",
-        installed: true,
+        installed: false,
         authenticated: "unknown",
         version: probe.version,
         message: `${SDK_MODULE} 를 불러오지 못했습니다: ${String(error)}`,

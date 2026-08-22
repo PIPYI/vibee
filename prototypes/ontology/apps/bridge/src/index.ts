@@ -1071,6 +1071,26 @@ const isMainModule =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
 if (isMainModule) {
+  // 이전 bridge가 아직 그 포트를 물고 있는 흔한 경우를 **읽을 수 있는 오류**로 바꾼다.
+  // 그러지 않으면 Node가 처리되지 않은 'error' 이벤트로 스택트레이스를 던지고 죽는다 —
+  // 원인(포트 충돌)도 다음 행동(`npm run bridge:stop`)도 그 안에서 알 수 없다.
+  //
+  // **`server`와 `wss` 양쪽에 건다.** `ws`가 기존 `server`에 붙을 때 자신도 그 오류를
+  // 따로 재발행한다 — `server`에만 걸면 `wss`가 "처리되지 않은 'error' 이벤트"로 여전히
+  // 죽는다(둘 다 EventEmitter라 리스너가 없는 쪽이 각자 예외를 던진다).
+  const onListenError = (error: NodeJS.ErrnoException): void => {
+    if (error.code === "EADDRINUSE") {
+      log(`포트 ${config.port}을 이미 다른 프로세스가 쓰고 있습니다.`);
+      log("이전 bridge가 완전히 종료되지 않았을 수 있습니다 (npm의 중첩 스크립트에서");
+      log("Ctrl+C가 안쪽 프로세스까지 전달되지 않는 경우가 있습니다).");
+      log("`npm run bridge:stop`으로 정리한 뒤 다시 시도하세요.");
+      process.exit(1);
+    }
+    throw error;
+  };
+  server.once("error", onListenError);
+  wss.once("error", onListenError);
+
   server.listen(config.port, "127.0.0.1", () => {
     log(`listening on ${config.baseUrl}`);
     log(`mcp server = ${mcpServerPath}`);
