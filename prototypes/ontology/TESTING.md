@@ -1,5 +1,10 @@
 # 테스트 방법
 
+> 이 문서는 **MCP 채널(agent ↔ bridge) 자체가 도는지**만 진단하는 좁은 문서다. 전체
+> 흐름(프로젝트 열기 → Analyze → Overview/Scenario/Trace 보기)을 써 보려면
+> [how2use.md](./how2use.md)를 본다. 두 문서는 겹치지 않는다 — 여기는 "agent가 tool을
+> 실제로 부르는가"만 본다.
+
 ## 준비
 
 Node 20+ 가 필요하다. agent 는 **둘 중 하나만** 있어도 된다.
@@ -24,7 +29,8 @@ npm run build
 npm test
 ```
 
-61개가 통과해야 한다. 여기에는 **MCP server 를 진짜 자식 프로세스로 띄워** stdio 로
+전부 통과해야 한다(지금은 170개 — `npm test` 출력 마지막 줄이 정확한 숫자다).
+여기에는 **MCP server 를 진짜 자식 프로세스로 띄워** stdio 로
 `get_evidence` 를 부르고 그것이 loopback HTTP 로 bridge 에 닿는지 보는 시험이 포함된다
 (`apps/bridge/test/mcp-channel.test.mjs`). 즉 **`bridge-endpoint` 증거원은 여기서 이미 증명된다.**
 
@@ -115,21 +121,21 @@ curl -s localhost:43220/api/tasks/<taskId>/mcp-evidence | python3 -m json.tool
 npx wscat -c ws://127.0.0.1:43220/events
 ```
 
-## 4. 무엇을 보게 되는가 / 아직 안 되는 것
+## 4. 이 문서가 보는 것과 안 보는 것
 
 `npm run acceptance` 는 **채널 검증 전용 turn**(`POST /api/verify`)을 쓴다. agent 에게
-"tool 두 개를 부르고 본 것을 요약하라"고만 시킨다.
-
-`POST /api/analyze` 는 인덱싱 후 agent 에게 Concept/Claim 을 만들라고 지시하는데,
-**`submit_semantic_patch` 는 아직 없다 (M4).** 그래서 analyze 를 돌리면 agent 가 evidence 를
-읽고 의미를 만들어 놓고도 낼 곳이 없어 그렇게 보고할 것이다. 정상이다 — M4 에서 붙는다.
-
-지금 확인할 수 있는 것:
+"tool 두 개를 부르고 본 것을 요약하라"고만 시킨다 — Concept/Claim을 만들라고 시키지
+않는다. 이것으로 확인되는 것은 좁고 정확하다:
 
 - Evidence Index 가 fixture 에서 제대로 만들어지는가 (`get_evidence` 응답)
-- agent 가 MCP tool 을 실제로 부르는가 (두 증거원)
+- agent 가 MCP tool 을 실제로 부르는가 (두 증거원 — 이 문서의 유일한 목적)
 - 아직 분석하지 않은 프로젝트에서 tool 이 죽지 않고 안내를 주는가
 - bridge 가 꺼져 있을 때 tool 이 읽을 수 있는 오류를 주는가
+
+**`submit_semantic_patch`로 실제 Concept/Claim을 만들고, Overview/Scenario/Trace를
+브라우저에서 보고, 코드 변경 후 증분 재분석하는 것은 전부 여기 범위 밖이다** —
+[how2use.md](./how2use.md)를 본다. `npm run eval`이 그 흐름 전체(실제 patch 커밋 ·
+View Planner · §46 안정성 관측)를 실제 agent turn으로 검증하는 스크립트다.
 
 ## 5. 정리
 
