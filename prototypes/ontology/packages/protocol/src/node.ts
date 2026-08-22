@@ -75,3 +75,10 @@ export function eventsPath(projectPath: string): string {
 export function viewsDir(projectPath: string): string {
   return join(intelDir(projectPath), "views");
 }
+
+export {
+  findProtoRoot,
+  loadBridgeConfig,
+  protoRootFromModule,
+  type BridgeConfig,
+} from "./bridge-config.js";

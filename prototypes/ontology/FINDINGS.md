@@ -122,3 +122,65 @@ call · route · api_handler · ui_event · db_entity · db_read · db_write · 
 0보다 큰지 검사한다. 덮지 않으면 그 위의 시험들이 헛도는 것이므로 명시적으로 건다.
 
 Finding 없음 — 계획과 충돌한 것이 없다.
+
+---
+
+## M3 — MCP server + bridge + agent adapter (부분 완료)
+
+계획 §8이 M3에 요구한 것: **acceptance 2·3 — 두 증거원이 모두 관측된다.**
+
+### ⚠️ 이 머신에서 검증하지 못한 것
+
+**acceptance 2·3의 `agent-stream` 절반은 검증하지 못했다.** 이 머신에 `codex`·`claude` CLI가
+설치되어 있지 않다 (`command -v` 둘 다 없음). 진짜 agent turn 없이는 "agent가 그 호출을
+스스로 보고했다"를 확인할 방법이 없다.
+
+두 증거원을 분리해 둔 이유가 정확히 이것이므로, 한쪽만 보고 "MCP는 돈다"고 적지 않는다.
+
+| 증거원 | 뜻 | 상태 |
+|---|---|---|
+| `bridge-endpoint` | agent가 띄운 별도 프로세스가 실제로 bridge에 도달했다 | **검증됨** — `apps/bridge/test/mcp-channel.test.mjs`가 MCP server를 진짜 자식 프로세스로 띄우고 stdio MCP 프로토콜로 `get_evidence`를 호출해, 그것이 loopback HTTP로 bridge에 닿는 것을 확인한다 |
+| `agent-stream` | Codex/Claude가 그 호출을 보고했다 | **미검증** — CLI 필요 |
+
+검증 절차 (CLI가 있는 머신에서):
+
+```bash
+npm i -g @openai/codex && codex login          # 또는
+npm i -g @anthropic-ai/claude-code && claude
+npm run build && npm run bridge                # 창 1
+# 창 2에서 POST /api/analyze → GET /api/tasks/<id>/mcp-evidence
+# toolsWithBothSources 가 비어 있지 않아야 acceptance 2·3 통과
+```
+
+`GET /api/tasks/:taskId/mcp-evidence`가 두 증거원을 따로 보여주도록 만들어 두었으므로,
+CLI가 있는 머신에서는 즉시 확인할 수 있다.
+
+### 완료한 것
+
+- [x] `apps/bridge/src/platform.ts` — **OS 차이를 아는 유일한 모듈.**
+      `resolveAgentExecutable` · `cliSpawnOptions` · `killTree` · `probeAgentVersion` · `onShutdown`
+- [x] `@onto/mcp-server` — stdio MCP, 상태 없음, 전부 loopback 위임. lazy/degraded mode(C5),
+      instructions에 질문↔tool 매핑(C6)
+- [x] `apps/bridge` — HTTP + WS + `/internal/*` 토큰 가드, 커밋 1(재인덱싱)과 커밋 2 분리(V1)
+- [x] `CodexAdapter` — granular approval policy(B3), 우리 서버 이름만 elicitation 수락
+- [x] `ClaudeAdapter` — SDK를 **선택적 런타임 의존성**으로. 없어도 빌드되고 `checkReady()`가
+      정직하게 보고한다
+- [x] platform 경계 강제 시험 — `process.platform`이 platform.ts 밖에 있거나 MCP server가
+      OS를 알거나 CLI 이름을 직접 spawn하면 **시험이 실패한다**
+
+### 시험이 잡아낸 것
+
+`loadBridgeConfig`가 `ONTO_BRIDGE_TOKEN`을 읽지 않아 bridge와 MCP server가 서로 다른 토큰을
+쓰고 loopback이 401로 끊겼다. **양쪽이 같은 함수를 거치게 한 이유가 바로 이것인데 env를
+빠뜨렸다** — "같은 함수를 쓴다"는 사실만으로는 아무것도 보장되지 않는다는 것을 보여준다.
+두 프로세스로 실제로 돌려보지 않았다면 발견하지 못했을 종류의 결함이다.
+
+### 미검증으로 남는 것 (CLI가 있는 머신에서 확인해야 함)
+
+- `CodexAdapter` / `ClaudeAdapter`의 turn 실행 경로 전체. `checkReady()`가 "설치되지 않음"을
+  올바르게 보고하는 것만 확인했다.
+- Codex의 granular approval policy가 현재 CLI 버전에서 의도대로 도는지. spike에서 두 번
+  깨진 지점이므로 CLI 업데이트 후 가장 먼저 확인해야 한다.
+- Stop → `task.interrupted` (acceptance 20).
+
+Finding 없음 — 계획과 충돌한 것이 없다. 위는 환경 제약이지 설계 문제가 아니다.

@@ -1,0 +1,315 @@
+/**
+ * Codex adapter.
+ *
+ * **B3 — 반드시 유지할 승인 정책.** spike 에서 `approvalPolicy: "never"` 가 두 번 깨졌다:
+ * 0.147 은 MCP tool 승인을 elicitation 으로 물었고(Finding 1), 0.148 은 묻지 않고 즉시
+ * 거부했다(Finding 4). 스키마는 두 버전이 동일했으므로 타입 검사로는 잡히지 않았다.
+ *
+ * 교훈: **여러 동작을 한 단어로 묶은 설정값은 provider 가 재해석할 여지가 크다.**
+ * granular 형태가 "MCP 승인만 나에게 보내라"를 직접 표현하므로 그것을 쓴다.
+ */
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+import type {
+  AgentEvent,
+  AgentReadiness,
+  ModelOption,
+  SessionSummary,
+} from "@onto/protocol";
+import { MCP_SERVER_NAME } from "@onto/protocol";
+
+import { probeAgentVersion } from "../../platform.js";
+import { describeSession } from "../../prompt.js";
+import type { AgentAdapter, StartTaskInput, TaskOutcome } from "../types.js";
+import { AppServerClient, type Notification, type ServerRequest } from "./appServerClient.js";
+
+/** "MCP 승인만 우리에게 보내라"를 직접 표현한다. 포괄적 값의 의미 변화에 영향받지 않는다. */
+const APPROVAL_POLICY = {
+  granular: {
+    sandbox_approval: false,
+    rules: false,
+    skill_approval: false,
+    request_permissions: false,
+    mcp_elicitations: true,
+  },
+} as const;
+
+type TurnHandle = { threadId: string; turnId?: string };
+
+export class CodexAdapter implements AgentAdapter {
+  readonly id = "codex" as const;
+
+  private client: AppServerClient | undefined;
+  private initialized = false;
+  private readonly threadByProject = new Map<string, string>();
+  private readonly activeTurns = new Map<string, TurnHandle>();
+  private emitters = new Map<string, (event: AgentEvent) => void>();
+  private turnResolvers = new Map<string, (outcome: TaskOutcome) => void>();
+  private modelsCache: { at: number; models: ModelOption[] } | undefined;
+
+  private ensureClient(): AppServerClient {
+    if (this.client) return this.client;
+    this.client = new AppServerClient(
+      (notification) => this.handleNotification(notification),
+      (request) => this.handleServerRequest(request),
+    );
+    return this.client;
+  }
+
+  async checkReady(): Promise<AgentReadiness> {
+    const probe = probeAgentVersion("codex");
+    if (!probe.ok) {
+      return { agent: "codex", installed: false, authenticated: "unknown", message: probe.message };
+    }
+    return {
+      agent: "codex",
+      installed: true,
+      // 로그인 여부는 turn 을 돌려 봐야 안다. 지어내지 않는다.
+      authenticated: "unknown",
+      version: probe.version,
+    };
+  }
+
+  private async initialize(): Promise<void> {
+    if (this.initialized) return;
+    await this.ensureClient().call("initialize", {
+      clientInfo: { name: "onto-bridge", version: "0.1.0" },
+    });
+    this.ensureClient().notify("initialized", {});
+    this.initialized = true;
+  }
+
+  /**
+   * 모델 목록을 **provider 에게 직접 묻는다.** 하드코딩하지 않는 이유는 CLI 를 올리면
+   * 목록도 effort 집합도 바뀌기 때문이다. 응답은 커서 기반이라 끝까지 따라간다.
+   */
+  async listModels(): Promise<ModelOption[]> {
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    if (this.modelsCache && Date.now() - this.modelsCache.at < FIVE_MINUTES) {
+      return this.modelsCache.models;
+    }
+    await this.initialize();
+
+    const models: ModelOption[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = (await this.ensureClient().call("model/list", cursor ? { cursor } : {})) as {
+        models?: Array<Record<string, unknown>>;
+        nextCursor?: string;
+      };
+      for (const raw of page.models ?? []) {
+        const efforts = (raw["supportedReasoningEfforts"] as string[] | undefined) ?? [];
+        models.push({
+          id: String(raw["id"] ?? raw["slug"] ?? ""),
+          label: String(raw["displayName"] ?? raw["id"] ?? ""),
+          ...(raw["description"] ? { description: String(raw["description"]) } : {}),
+          efforts: efforts.map((effort) => ({ id: effort })),
+          ...(raw["defaultReasoningEffort"]
+            ? { defaultEffort: String(raw["defaultReasoningEffort"]) }
+            : {}),
+          isDefault: Boolean(raw["isDefault"]),
+        });
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    this.modelsCache = { at: Date.now(), models };
+    return models;
+  }
+
+  async startTask(input: StartTaskInput, emit: (event: AgentEvent) => void): Promise<TaskOutcome> {
+    await this.initialize();
+    this.emitters.set(input.taskId, emit);
+
+    let threadId = this.threadByProject.get(input.projectPath);
+    const resumed = threadId !== undefined;
+    if (!threadId) {
+      const started = (await this.ensureClient().call("thread/start", {
+        cwd: input.projectPath,
+        approvalPolicy: APPROVAL_POLICY,
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.projectPath] },
+      })) as { threadId: string };
+      threadId = started.threadId;
+      this.threadByProject.set(input.projectPath, threadId);
+    }
+
+    emit({ type: "agent.session", taskId: input.taskId, sessionId: threadId, resumed });
+    this.activeTurns.set(input.taskId, { threadId });
+
+    const outcome = new Promise<TaskOutcome>((resolve) => {
+      this.turnResolvers.set(input.taskId, resolve);
+    });
+
+    const turn = (await this.ensureClient().call("turn/start", {
+      threadId,
+      input: { text: input.prompt },
+      cwd: input.projectPath,
+      approvalPolicy: APPROVAL_POLICY,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+    })) as { turnId?: string };
+    this.activeTurns.set(input.taskId, { threadId, ...(turn.turnId ? { turnId: turn.turnId } : {}) });
+
+    try {
+      return await outcome;
+    } finally {
+      this.emitters.delete(input.taskId);
+      this.turnResolvers.delete(input.taskId);
+      this.activeTurns.delete(input.taskId);
+    }
+  }
+
+  /**
+   * MCP tool 승인 (B3).
+   *
+   * **무조건 수락하지 않는다.** 이 앱이 스스로 등록한 서버의 tool 만 자동 승인하고,
+   * 사용자가 개인적으로 설정해 둔 다른 MCP 서버의 호출은 거부한다.
+   */
+  private handleServerRequest(request: ServerRequest): unknown {
+    if (request.method === "mcpServer/elicitation/request") {
+      const params = (request.params ?? {}) as { serverName?: string };
+      const accepted = params.serverName === MCP_SERVER_NAME;
+      for (const emit of this.emitters.values()) {
+        const taskId = [...this.emitters.keys()][0] ?? "";
+        emit({
+          type: "agent.action.completed",
+          taskId,
+          name: accepted ? "mcp.approval.accepted" : "mcp.approval.declined",
+          detail: { server: params.serverName },
+        });
+        break;
+      }
+      return accepted
+        ? { action: "accept", content: {}, _meta: null }
+        : { action: "decline", content: null, _meta: null };
+    }
+    return {};
+  }
+
+  private handleNotification(notification: Notification): void {
+    const params = (notification.params ?? {}) as Record<string, unknown>;
+    const taskId = this.taskIdFor(String(params["turnId"] ?? ""), String(params["threadId"] ?? ""));
+    if (!taskId) return;
+    const emit = this.emitters.get(taskId);
+    if (!emit) return;
+
+    if (notification.method === "item/started" || notification.method === "item/completed") {
+      const item = (params["item"] ?? {}) as Record<string, unknown>;
+      const name = String(item["type"] ?? "item");
+      if (name === "mcpToolCall") {
+        // **agent-stream 증거원** — agent 가 스스로 보고한 것이다 (B4).
+        const tool = String(item["tool"] ?? "");
+        const serverName = String(item["server"] ?? "");
+        if (serverName === MCP_SERVER_NAME && notification.method === "item/started") {
+          emit({ type: "mcp.tool.called", taskId, tool, source: "agent-stream" });
+        }
+        emit({
+          type: notification.method === "item/started" ? "agent.action.started" : "agent.action.completed",
+          taskId,
+          name: `mcp:${serverName}/${tool}`,
+        });
+        return;
+      }
+      emit({
+        type: notification.method === "item/started" ? "agent.action.started" : "agent.action.completed",
+        taskId,
+        name,
+        detail: item,
+      });
+      return;
+    }
+
+    if (notification.method === "item/agentMessageDelta") {
+      emit({ type: "agent.message.delta", taskId, text: String(params["delta"] ?? "") });
+      return;
+    }
+
+    if (notification.method === "turn/completed") {
+      const turn = (params["turn"] ?? {}) as { status?: string };
+      // 중단은 예외가 아니라 status 로만 구분된다 (Finding 2).
+      const outcome: TaskOutcome = turn.status === "interrupted" ? "interrupted" : "completed";
+      this.turnResolvers.get(taskId)?.(outcome);
+    }
+  }
+
+  private taskIdFor(turnId: string, threadId: string): string | undefined {
+    for (const [taskId, handle] of this.activeTurns) {
+      if (turnId && handle.turnId === turnId) return taskId;
+      if (threadId && handle.threadId === threadId) return taskId;
+    }
+    return undefined;
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    const handle = this.activeTurns.get(taskId);
+    if (!handle) return;
+    await this.ensureClient().call("turn/interrupt", {
+      threadId: handle.threadId,
+      ...(handle.turnId ? { turnId: handle.turnId } : {}),
+    });
+  }
+
+  resetSession(projectPath: string): void {
+    this.threadByProject.delete(projectPath);
+  }
+
+  /**
+   * 이어받을 수 있는 세션들.
+   *
+   * rollout 파일의 `originator` 로 **우리가 만든 세션을 구분할 수 있다** — spike §7 에서
+   * 확인했다. 사용자의 `codex resume` 목록이 우리 thread 로 오염되는 문제를 다루려면 이 값이
+   * 필요하다.
+   */
+  async listSessions(projectPath: string): Promise<SessionSummary[]> {
+    const root = join(process.env["HOME"] ?? "", ".codex", "sessions");
+    if (!existsSync(root)) return [];
+    const sessions: SessionSummary[] = [];
+    const active = this.threadByProject.get(projectPath);
+
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir).sort()) {
+        const absolute = join(dir, entry);
+        if (statSync(absolute).isDirectory()) {
+          walk(absolute);
+          continue;
+        }
+        if (!entry.endsWith(".jsonl")) continue;
+        try {
+          const firstLine = readFileSync(absolute, "utf8").split("\n", 1)[0] ?? "";
+          const meta = JSON.parse(firstLine) as { payload?: Record<string, unknown> };
+          const payload = meta.payload ?? {};
+          if (payload["cwd"] !== projectPath) continue;
+          const id = String(payload["id"] ?? "");
+          sessions.push({
+            id,
+            preview: describeSession(String(payload["instructions"] ?? "")),
+            updatedAt: String(payload["timestamp"] ?? ""),
+            active: id === active,
+          });
+        } catch {
+          // 읽을 수 없는 rollout 은 건너뛴다. 목록 기능이 멈출 이유가 아니다.
+        }
+      }
+    };
+
+    try {
+      walk(root);
+    } catch {
+      return [];
+    }
+    return sessions.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  }
+
+  async resumeSession(projectPath: string, sessionId: string): Promise<void> {
+    await this.initialize();
+    await this.ensureClient().call("thread/resume", { threadId: sessionId });
+    this.threadByProject.set(projectPath, sessionId);
+  }
+
+  async dispose(): Promise<void> {
+    this.client?.dispose();
+    this.client = undefined;
+    this.initialized = false;
+  }
+}

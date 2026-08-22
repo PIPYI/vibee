@@ -12,8 +12,9 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core",
-    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core",
-    "test": "node --test packages/*/test/*.test.mjs"
+    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core && npm run build -w @onto/mcp-server && npm run build -w @onto/bridge",
+    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core && npm run typecheck -w @onto/mcp-server && npm run typecheck -w @onto/bridge",
+    "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
+    "bridge": "npm run start -w @onto/bridge"
   }
 }
