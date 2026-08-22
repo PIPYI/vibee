@@ -31,6 +31,9 @@ export function buildFullAnalyzePrompt(projectPath: string): string {
     "1. get_project_semantic_memory 로 현재 상태를 확인한다 (비어 있을 것이다).",
     "2. get_evidence 로 Evidence Index 를 훑고, **저장소를 직접 탐색하며** 무엇이 중요한지 판단한다.",
     "3. 비전공자가 이해할 수 있는 Concept 와 Claim 을 만든다.",
+    "4. 대표적인 사용자/시스템 목적(예: \"팔로우하기\")을 하나 이상 Scenario 로 등록한다.",
+    "   submit_semantic_patch 의 addedScenarios 에 { id, name, type, goal?, anchorConceptIds, status }",
+    "   만 싣는다 — 얇은 포인터일 뿐이다. anchorConceptIds 는 이미 만든 Concept id 를 가리켜야 한다.",
     "",
     EVIDENCE_RULES,
   ].join("\n");

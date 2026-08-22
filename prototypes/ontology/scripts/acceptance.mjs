@@ -19,7 +19,7 @@
  */
 import { execFileSync } from "node:child_process";
 
-import { FIXTURE_DIR, fetchJson, requireBridge } from "./_shared.mjs";
+import { FIXTURE_DIR, fetchJson, requireBridge, waitForTask } from "./_shared.mjs";
 
 const TIMEOUT_MS = 240_000;
 const REQUIRED_TOOLS = ["get_project_semantic_memory", "get_evidence"];
@@ -93,7 +93,7 @@ for (const agent of targets) {
   const taskId = started.body.taskId;
   check("verify turn 을 시작했다", true);
 
-  const outcome = await waitForTask(config.baseUrl, taskId);
+  const outcome = await waitForTask(config.baseUrl, taskId, TIMEOUT_MS);
   check("task 가 오류 없이 끝났다", outcome.status === "completed", outcome.detail);
 
   const evidence = await fetchJson(`${config.baseUrl}/api/tasks/${taskId}/mcp-evidence`);
@@ -145,24 +145,4 @@ function report(agent, results) {
   }
   const passed = results.filter((item) => item.ok).length;
   console.log(`  ${passed}/${results.length} (${agent})`);
-}
-
-/**
- * task 가 끝날 때까지 기다린다.
- *
- * **taskId 로 거른다** (B8). replay 버퍼에 이전 task 의 종료 이벤트가 남아 있으면 그것을
- * 자기 것으로 오인한다 — spike 의 acceptance 가 정확히 그것으로 망가졌다(Finding 5).
- * 여기서는 폴링이라 더 단순하지만, 같은 이유로 taskId 를 확인한다.
- */
-async function waitForTask(baseUrl, taskId) {
-  const deadline = Date.now() + TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const state = await fetchJson(`${baseUrl}/api/state`);
-    const task = (state.body.tasks ?? []).find((item) => item.taskId === taskId);
-    if (task && task.status !== "starting" && task.status !== "running") {
-      return { status: task.status, detail: task.error ?? "" };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  return { status: "timeout", detail: `${TIMEOUT_MS}ms 안에 끝나지 않았습니다` };
 }

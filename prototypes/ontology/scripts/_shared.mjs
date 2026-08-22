@@ -54,3 +54,23 @@ export async function requireBridge() {
   }
   return config;
 }
+
+/**
+ * task 가 끝날 때까지 기다린다.
+ *
+ * **taskId 로 거른다** (B8). replay 버퍼에 이전 task 의 종료 이벤트가 남아 있으면 그것을
+ * 자기 것으로 오인한다 — spike 의 acceptance 가 정확히 그것으로 망가졌다(Finding 5).
+ * 여기서는 폴링이라 더 단순하지만, 같은 이유로 taskId 를 확인한다.
+ */
+export async function waitForTask(baseUrl, taskId, timeoutMs = 240_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await fetchJson(`${baseUrl}/api/state`);
+    const task = (state.body.tasks ?? []).find((item) => item.taskId === taskId);
+    if (task && task.status !== "starting" && task.status !== "running") {
+      return { status: task.status, detail: task.error ?? "" };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return { status: "timeout", detail: `${timeoutMs}ms 안에 끝나지 않았습니다` };
+}

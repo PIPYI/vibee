@@ -246,6 +246,48 @@ test("17 — grounding 된 Concept 가 할 일 목록에 나타난다", () => {
   assert.deepEqual(work.affectedScenarioIds, ["scn-follow"]);
 });
 
+test("acceptance 18 — 심볼을 삭제하면 그 evidence만 missing이 되고, grounding된 Concept가 할 일 목록에 나타난다", () => {
+  const root = scratch({ "src/follow.js": FOLLOW, "src/service.js": CALLER });
+  const before = indexProject(root, { analysisVersion: 1 });
+
+  const symbolEvidence = before.evidence.find(
+    (item) => item.kind === "symbol" && item.symbolId === "src/follow.js#requestFollow",
+  );
+  assert.ok(symbolEvidence, "fixture 에 requestFollow 심볼 evidence 가 있어야 시험이 성립한다");
+
+  // 심볼을 삭제한다 (파일 자체는 남는다 — "그 evidence만" missing 이어야 한다).
+  write(root, { "src/follow.js": `export const FOLLOW_MODULE = true;\n` });
+  const after = indexProject(root, { analysisVersion: 2 });
+  const diffs = diffEvidence(before, after);
+
+  const symbolDiff = diffs.find((diff) => diff.evidenceId === symbolEvidence.id);
+  assert.equal(symbolDiff.contentChange, "missing", "삭제된 심볼은 missing 이어야 한다");
+
+  const memory = {
+    ...EMPTY_MEMORY,
+    concepts: [
+      {
+        id: "cpt-follow-request",
+        name: "팔로우 요청",
+        evidenceRefs: [symbolEvidence.id],
+        status: "active",
+        createdAtVersion: 1,
+        updatedAtVersion: 1,
+      },
+    ],
+  };
+
+  const work = buildWorkSet(diffs, memory, EMPTY_GROUNDING);
+  assert.deepEqual(
+    work.affectedConceptIds,
+    ["cpt-follow-request"],
+    "근거를 잃은 Concept 가 할 일 목록에 나타나지 않는다 — missing 도 dirty 에 기여해야 한다(U1)",
+  );
+  assert.ok(
+    work.dirtyEvidence.some((diff) => diff.evidenceId === symbolEvidence.id && diff.contentChange === "missing"),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // 18b / 18c
 // ---------------------------------------------------------------------------

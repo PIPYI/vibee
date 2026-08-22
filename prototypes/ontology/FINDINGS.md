@@ -453,3 +453,106 @@ Patch 루프가 붙은 뒤 `npm run eval`로 확인하는 것이 계획의 순�
 필요하고, M5가 Semantic Patch 루프를 붙인다).
 
 Finding 없음 — 계획과 충돌한 것이 없다. 위 네 가지는 전부 자체 구현 결함이었다.
+
+---
+
+## M5 — Semantic Patch 루프 + 증분 갱신 + SemanticWorkSet(U1) (완료)
+
+계획 §8이 M5에 요구한 것: acceptance 4 · 5 · 18 · 18b.
+
+### 시작할 때 이미 있었던 것
+
+M4가 `AnalyzeTransaction`/`AnalyzeSession`을 만들면서 §6.9의 두-커밋 lifecycle 전체를
+**이미 필요로 했다** — 그래서 M5가 시작되기 전부터 `semanticReconciledAnalysisVersion`
+(`packages/protocol/src/index.ts` · `packages/core/src/store.ts` · `validator.ts`),
+`buildWorkSet`(`packages/evidence/src/diff.ts`), `buildIncrementalAnalyzePrompt`
+(`apps/bridge/src/prompt.ts`)가 전부 구현되어 `apps/bridge`의 `reindex()`에 배선되어
+있었다(`m4_invariants.md` §8 compatibility rule 3이 이미 이 사실을 기록해 두었다).
+`buildWorkSet`도 acceptance 18b·18c는 이미 단위 시험이 있었다.
+
+**M5가 실제로 한 일은 그 위에 새 메커니즘을 얹는 것이 아니라, 이미 있는 메커니즘이
+정말로 끝까지 도는지 확인하고 마지막 구멍을 메우는 것이었다.**
+
+### 완료한 것
+
+- [x] `packages/evidence/test/indexer.test.mjs` — **acceptance 18** 단위 시험. 심볼을
+      삭제하면 `diffEvidence`가 그 evidence만 `missing`으로 잡고, `buildWorkSet`이 그
+      evidence에 grounding된 Concept를 `affectedConceptIds`에 넣는지 확인한다(17번 시험과
+      쌍을 이룬다 — 17은 `modified`, 18은 `missing`이 dirty에 기여하는지를 각각 건다).
+- [x] `fixtures/fixture-app/expectations.json` — §7.2. `scripts/create-fixture.mjs`가
+      만드는 팔로우/승인 fixture에 대해 사람이 미리 정한 구조적 기대(§7.2의 예시를 이
+      fixture에 맞게 그대로 채택했다 — 우연이 아니라 계획 저자가 같은 fixture를 염두에
+      두고 그 예시를 썼다는 뜻이다).
+- [x] `scripts/coverage.mjs` — S6의 세 층(structural hard · smoke warning · semantic
+      리뷰 큐)을 그대로 구현. `mustGroundIn`의 "path#name" 주소를 실제 evidence id로
+      해석하는 `resolveEvidenceIds`가 핵심이다.
+- [x] `scripts/eval.mjs`(`npm run eval`) — acceptance 4·5·18·18b를 **실제 codex/claude
+      turn으로** 확인하는 M5의 회귀 게이트. `/api/analyze`가 커밋 1(재인덱싱) 뒤에만
+      응답한다는 사실(§6.9)을 이용해, 18·18b의 **Core가 계산한 부분**(`workSetSize`)은
+      agent turn 완료를 기다리지 않고 확인한다 — LLM이 뭘 하든 상관없는 결정론적 증거다.
+      agent의 판단이 필요한 부분(5의 structural coverage, 18b의 "새 Concept를 만든다")만
+      turn이 끝난 뒤 커밋된 Semantic Memory를 파일시스템에서 직접 읽어 확인한다(B4).
+- [x] `apps/bridge/src/prompt.ts`의 `buildFullAnalyzePrompt`에 Scenario 등록 지시를
+      추가했다 — 아래 "구현 중 고친 것" 참고.
+- [x] `scripts/_shared.mjs`에 `waitForTask`를 옮겨 `acceptance.mjs`(M3)와 `eval.mjs`(M5)가
+      **같은 함수**를 쓰게 했다. M3가 이미 taskId 필터링이 중요하다는 것을 시험으로 증명해
+      둔 로직을 다시 만들지 않기 위함이다.
+- [x] `npm test` 121/121 — 새 시험 8개(acceptance 18 하나, coverage.mjs 시험 7개) 포함,
+      M1~M4 시험 전부 회귀 없음.
+
+### 구현 중 고친 것 (계획과 무관한 자체 결함 · 하나는 M4가 남긴 진짜 구멍)
+
+**1. `buildFullAnalyzePrompt`가 Scenario를 만들라고 시키지 않았다.** M4가 이미
+`CanonicalScenarioEntry` 영속과 `submit_semantic_patch`의 `addedScenarios` 필드를 전부
+구현해 두었는데(§6.4), 정작 첫 분석 프롬프트의 "순서"에는 Concept·Claim만 있고 Scenario는
+빠져 있었다 — 그래서 codex로 실제 turn을 돌려 보기 전까지는 `canonicalScenarios`가 항상
+빈 채로 커밋되고 있었다는 것을 아무도 몰랐다. `npm run eval`로 처음 실제 agent turn을
+끝까지 태워 보고서야 드러난, M4가 남긴 배선 구멍이다. 프롬프트에 4번 단계로 추가했다.
+
+**2. `scripts/coverage.mjs`의 `mustGroundIn` 해석이 agent-proposed evidence를 놓쳤다.**
+처음엔 "path#name" 주소를 엔진이 만든 raw `symbol`/`db_entity` evidence 하나에만
+매칭했다. 그런데 실제 codex turn은 `requestFollow`의 정책 분기를 발견하고 원시 심볼
+evidence 대신 `propose_evidence`로 **그 자리에 더 정밀한 `policy_note`/`conditional_policy`
+evidence를 새로 등록해 거기에 grounding했다** — 정확히 M4의 R2가 의도한 동작이다
+("엔진이 못 본 근거를 버리지 말고 제안하라"). 그런데 내 checker는 raw 심볼 id만 알아서
+"grounding되어 있지 않다"고 오판했다. `resolveEvidenceIds`를 **하나의 id가 아니라 그
+주소에 걸린 후보 id들의 집합**을 돌려주도록 고쳐, 원시 symbol evidence든 같은
+파일·symbolHint에 걸린 agent evidence든 **어느 쪽에 grounding해도** 인정하게 했다.
+agent가 M4의 설계대로 행동했는데 그것을 "실패"로 보고한 것이었다 — 메커니즘이 아니라
+검사 쪽의 결함이었다.
+
+**3. 같은 concept 쌍 사이에 claim이 여럿일 때 첫 번째 것만 봤다.** `requiredClaims`가
+`(subjectKey, objectKey)`로 관계를 찾는데, 실제 Semantic Memory에는 같은 두 Concept
+사이에 서로 다른 predicate의 claim이 여러 개 있을 수 있다(예: "승인을 요구한다"와
+"대기 목록에서 확인할 수 있다"가 둘 다 계정→팔로우 요청이다). `claims.find(...)`로 **첫
+번째** 것만 집어 그것의 grounding만 봤더니, grounding이 약한 쪽이 먼저 나오면 강한 쪽이
+있어도 실패로 떨어졌다. `relationClaims.find(claim이 mustGroundIn 전부를 만족)`으로
+고쳐, 후보 중 **하나라도** 요구를 만족하면 통과하게 했다. 회귀 시험을 추가했다
+(`scripts/coverage.test.mjs` "같은 subject/object 사이에 claim이 여럿이면...").
+
+### `npm run eval codex`로 확인한 것 (codex-cli 0.149.0, 실제 agent, 3회 실행)
+
+```text
+turn 1(첫 분석) → acceptance 4(submit_semantic_patch 커밋) · acceptance 5(structural coverage)
+turn 2(requestFollow 삭제 후 증분) → acceptance 18
+turn 3(block.js 기능 추가 후 증분) → acceptance 18b
+```
+
+- **acceptance 4·18·18b — 3회 모두 통과.** `submit_semantic_patch`가 두 증거원 모두에서
+  관측되고 `semanticVersion`이 실제로 올랐다(Validator ⓪~⑤ 전부 통과, 4). 심볼을 지우면
+  `workSetSize.affectedConcepts`가 agent turn을 기다리지 않고도(커밋 1만으로) 0보다
+  컸다(18). 새 기능 파일을 추가하면 `ungroundedAppearedEvidenceIds`가 채워졌고, turn이
+  끝난 뒤 그 evidence에 grounding된 새 Concept가 실제로 생겼다(18b).
+- **acceptance 5 — 3회 중 2회 통과, 1회 실패.** 실패한 1회는 checker 결함이 아니라
+  **모델 출력의 실제 편차**였다 — "비공개 계정" Concept는 만들었지만, 그것을
+  "팔로우 요청"과 잇는 Claim을 만들지 않고 다른 관계("계정 → 자신에게 온 요청을 확인할 수
+  있다")만 만들었다. 이것을 통과하도록 checker를 더 느슨하게 고치지 않았다 — 그러면
+  구조적 검사가 실제로 아무것도 증명하지 않게 된다. §7.3이 이미 이 성격을 규정해
+  두었다("단일 fixture이므로 이 fixture에서로만 말한다") — acceptance 5는 **이 fixture에서
+  구조가 맞는지**를 매 실행마다 재는 것이지, 모델이 항상 같은 관계를 만든다는 보장이
+  아니다. `npm run eval`은 그 편차를 감추지 않고 그대로 보고한다.
+- `claude`는 이 머신에 설치되어 있지 않아 codex로만 확인했다(M3·M4와 같은 제약).
+
+Finding 없음 — 계획과 충돌한 것이 없다. 위 세 가지는 전부 자체 구현 결함(그 중 하나는
+M4가 남긴 것)이었고, acceptance 5의 실행 간 편차는 결함이 아니라 §7.3이 이미 예상한
+live-agent 측정의 성질이다.
