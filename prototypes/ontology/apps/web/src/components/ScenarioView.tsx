@@ -88,10 +88,10 @@ export function ScenarioView({
               const archX = Math.max(from.right, to.right) + 60;
               const path = `M ${from.right} ${from.cy} C ${archX} ${from.cy}, ${archX} ${to.cy}, ${to.right} ${to.cy}`;
               return (
-                <g key={`t-${index}`}>
+                <g key={`t-${index}`} data-edge-from={transition.fromStepId} data-edge-to={transition.toStepId}>
                   <path d={path} className="edge edge-back" markerEnd="url(#arrow)" />
                   {transition.condition && (
-                    <text x={archX} y={(from.cy + to.cy) / 2} className="edge-label edge-label-back" textAnchor="start">
+                    <text x={archX} y={(from.cy + to.cy) / 2} className="edge-label edge-label-back" textAnchor="start" data-detail="context">
                       ↺ {transition.condition}
                     </text>
                   )}
@@ -99,10 +99,10 @@ export function ScenarioView({
               );
             }
             return (
-              <g key={`t-${index}`}>
+              <g key={`t-${index}`} data-edge-from={transition.fromStepId} data-edge-to={transition.toStepId}>
                 <line x1={from.right} y1={from.cy} x2={to.left} y2={to.cy} className="edge" markerEnd="url(#arrow)" />
                 {transition.condition && (
-                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle">
+                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle" data-detail="context">
                     {transition.condition}
                   </text>
                 )}
@@ -116,7 +116,11 @@ export function ScenarioView({
               const from = boxCenter(branch.sourceStepId);
               const to = boxCenter(path.nextStepId);
               return (
-                <g key={`b-${branchIndex}-${pathIndex}`}>
+                <g
+                  key={`b-${branchIndex}-${pathIndex}`}
+                  data-edge-from={branch.sourceStepId}
+                  data-edge-to={path.nextStepId}
+                >
                   <line
                     x1={from.right}
                     y1={from.cy}
@@ -125,7 +129,7 @@ export function ScenarioView({
                     className="edge edge-branch"
                     markerEnd="url(#arrow)"
                   />
-                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle">
+                  <text x={(from.right + to.left) / 2} y={(from.cy + to.cy) / 2 - 6} className="edge-label" textAnchor="middle" data-detail="context">
                     {path.label}
                   </text>
                 </g>
@@ -142,7 +146,7 @@ export function ScenarioView({
             const isEntry = step.id === ir.entryStepId;
             const isOutcome = ir.outcomeStepIds.includes(step.id);
             return (
-              <g key={step.id}>
+              <g key={step.id} data-node-id={step.id}>
                 <foreignObject x={left} y={top} width={BOX_WIDTH} height={BOX_HEIGHT}>
                   <button
                     type="button"
@@ -156,7 +160,7 @@ export function ScenarioView({
                 </foreignObject>
                 {changes.length > 0 && (
                   <foreignObject x={left} y={top + BOX_HEIGHT + 2} width={BOX_WIDTH} height={changes.length * 16 + 4}>
-                    <div className="state-change-note">
+                    <div className="state-change-note" data-detail="context">
                       {changes.map((change, index) => (
                         <div key={index}>
                           {nameOf(change.subjectConceptId)}: {change.from ?? "∅"} → {change.to ?? "∅"}

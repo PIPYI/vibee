@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { AgentId, OverviewIR, ScenarioIR, ScenarioStep, TraceIR, ViewAnchor } from "@onto/protocol";
+import type { AgentId, OverviewIR, ScenarioIR, ScenarioStep, TraceIR, ViewAnchor, ViewFreshness } from "@onto/protocol";
 
 import * as api from "./api.js";
 import { EvidenceExplorer } from "./components/EvidenceExplorer.js";
@@ -12,6 +12,7 @@ import { OverviewView, type OverviewItemSelection } from "./components/OverviewV
 import { ScenarioView } from "./components/ScenarioView.js";
 import { StepDetail } from "./components/StepDetail.js";
 import { TraceView } from "./components/TraceView.js";
+import { ViewerShell, type ViewerNode } from "./components/ViewerShell.js";
 import { useAgentEvents } from "./ws.js";
 
 type Panel = "explorer" | "overview" | "scenario" | "trace";
@@ -35,6 +36,9 @@ export function App(): React.JSX.Element {
   const [overview, setOverview] = useState<OverviewIR | null>(null);
   const [scenario, setScenario] = useState<ScenarioIR | null>(null);
   const [trace, setTrace] = useState<TraceIR | null>(null);
+  const [scenarioFreshness, setScenarioFreshness] = useState<ViewFreshness | undefined>(undefined);
+  const [overviewFreshness, setOverviewFreshness] = useState<ViewFreshness | undefined>(undefined);
+  const [traceKey, setTraceKey] = useState(0);
   const [crumbs, setCrumbs] = useState<Array<{ label: string; panel: Panel }>>([]);
   const [selectedStep, setSelectedStep] = useState<ScenarioStep | null>(null);
 
@@ -154,8 +158,9 @@ export function App(): React.JSX.Element {
       setViewLoading(true);
       setViewError(null);
       const result = await api.requestView({ viewKind: "overview", agent, projectPath: path });
-      await resolveViewResult(result, (ir) => {
+      await resolveViewResult(result, (ir, freshness) => {
         setOverview(ir as OverviewIR);
+        setOverviewFreshness(freshness);
         setPanel("overview");
         setCrumbs([{ label: "Overview", panel: "overview" }]);
       });
@@ -170,8 +175,9 @@ export function App(): React.JSX.Element {
       setViewLoading(true);
       setViewError(null);
       const result = await api.requestView({ viewKind: "scenario", anchor, agent, projectPath });
-      await resolveViewResult(result, (ir) => {
+      await resolveViewResult(result, (ir, freshness) => {
         setScenario(ir as ScenarioIR);
+        setScenarioFreshness(freshness);
         setSelectedStep(null);
         setPanel("scenario");
         setCrumbs((prev) => [...prev.slice(0, 1), { label, panel: "scenario" }]);
@@ -193,6 +199,7 @@ export function App(): React.JSX.Element {
       }
       if (result.viewKind === "trace") {
         setTrace(result.ir);
+        setTraceKey((prev) => prev + 1);
         setPanel("trace");
         setCrumbs((prev) => [...(fromScenario ? prev : prev.slice(0, 1)), { label, panel: "trace" }]);
       }
@@ -203,7 +210,7 @@ export function App(): React.JSX.Element {
   /** overview/scenario 공통 — 캐시면 즉시, turn이면 완료까지 기다린다. */
   async function resolveViewResult(
     result: api.ViewsPostResponse,
-    onReady: (ir: OverviewIR | ScenarioIR) => void,
+    onReady: (ir: OverviewIR | ScenarioIR, freshness: ViewFreshness) => void,
   ): Promise<void> {
     if ("error" in result) {
       setViewLoading(false);
@@ -216,14 +223,14 @@ export function App(): React.JSX.Element {
     }
     if ("cached" in result) {
       setViewLoading(false);
-      onReady(result.view.ir);
+      onReady(result.view.ir, result.view.freshness);
       return;
     }
     setTaskId(result.taskId);
     const final = await api.pollView(result.taskId);
     setViewLoading(false);
     if ("view" in final) {
-      onReady(final.view.ir);
+      onReady(final.view.ir, final.view.freshness);
     } else if ("error" in final) {
       setViewError(final.error);
     } else {
@@ -362,12 +369,39 @@ export function App(): React.JSX.Element {
             />
           )}
           {!viewLoading && panel === "overview" && overview && (
-            <OverviewView ir={overview} onSelectItem={onSelectOverviewItem} />
+            <>
+              {overviewFreshness === "needs_review" && (
+                <p className="freshness-banner">
+                  코드가 바뀌었지만 이 화면은 아직 최신이 아닙니다 — 여전히 읽을 수 있습니다.
+                </p>
+              )}
+              <OverviewView ir={overview} onSelectItem={onSelectOverviewItem} />
+            </>
           )}
           {!viewLoading && panel === "scenario" && scenario && (
-            <ScenarioView ir={scenario} onSelectStep={onSelectStep} resolveConceptName={resolveConceptName} />
+            <ViewerShell
+              viewKind="scenario"
+              viewKey={scenario.id}
+              nodes={scenario.steps.map((step): ViewerNode => ({ id: step.id, label: step.label }))}
+              freshness={scenarioFreshness}
+              freshnessNote="코드가 새 근거를 만들었을 수 있습니다"
+            >
+              <ScenarioView ir={scenario} onSelectStep={onSelectStep} resolveConceptName={resolveConceptName} />
+            </ViewerShell>
           )}
-          {!viewLoading && panel === "trace" && trace && <TraceView ir={trace} />}
+          {!viewLoading && panel === "trace" && trace && (
+            <ViewerShell
+              viewKind="trace"
+              viewKey={`trace-${traceKey}`}
+              nodes={trace.codeEntities.map((entity): ViewerNode => ({
+                id: entity.id,
+                label: entity.label,
+                sublabel: entity.filePath,
+              }))}
+            >
+              <TraceView ir={trace} />
+            </ViewerShell>
+          )}
         </section>
 
         {selectedStep && scenario && (

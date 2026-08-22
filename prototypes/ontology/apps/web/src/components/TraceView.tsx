@@ -71,7 +71,15 @@ export function TraceView({
             if (!from || !to) return null;
             if (link.selfLoop) {
               return (
-                <text key={index} x={from.right + 4} y={from.cy} className="edge-label" fontSize={11}>
+                <text
+                  key={index}
+                  x={from.right + 4}
+                  y={from.cy}
+                  className="edge-label"
+                  fontSize={11}
+                  data-edge-from={link.fromId}
+                  data-edge-to={link.toId}
+                >
                   ↻ self
                 </text>
               );
@@ -80,7 +88,16 @@ export function TraceView({
             if (link.nonForward) {
               const archX = Math.max(from.right, to.right) + 50;
               const path = `M ${from.right} ${from.cy} C ${archX} ${from.cy}, ${archX} ${to.cy}, ${to.right} ${to.cy}`;
-              return <path key={index} d={path} className="edge edge-back" markerEnd="url(#trace-arrow)" />;
+              return (
+                <path
+                  key={index}
+                  d={path}
+                  className="edge edge-back"
+                  markerEnd="url(#trace-arrow)"
+                  data-edge-from={link.fromId}
+                  data-edge-to={link.toId}
+                />
+              );
             }
             return (
               <line
@@ -91,6 +108,8 @@ export function TraceView({
                 y2={to.cy}
                 className="edge"
                 markerEnd="url(#trace-arrow)"
+                data-edge-from={link.fromId}
+                data-edge-to={link.toId}
               />
             );
           })}
@@ -99,19 +118,21 @@ export function TraceView({
             const pos = posByEntity.get(entity.id);
             if (!pos) return null;
             return (
-              <foreignObject key={entity.id} x={pos.left} y={pos.top} width={BOX_WIDTH} height={BOX_HEIGHT}>
-                <button
-                  type="button"
-                  className="trace-entity"
-                  style={entity.sccId ? { borderColor: colorForScc(entity.sccId) } : undefined}
-                  onClick={() => onSelectEntity?.(entity.id)}
-                  title={`${entity.kind}${entity.filePath ? ` · ${entity.filePath}` : ""}`}
-                >
-                  <span className="trace-entity-kind">{entity.kind}</span>
-                  <span className="trace-entity-label">{entity.label}</span>
-                  {entity.sccId && <span className="scc-mark" title="이 그룹은 서로 순환 참조합니다">⟲</span>}
-                </button>
-              </foreignObject>
+              <g key={entity.id} data-node-id={entity.id}>
+                <foreignObject x={pos.left} y={pos.top} width={BOX_WIDTH} height={BOX_HEIGHT}>
+                  <button
+                    type="button"
+                    className="trace-entity"
+                    style={entity.sccId ? { borderColor: colorForScc(entity.sccId) } : undefined}
+                    onClick={() => onSelectEntity?.(entity.id)}
+                    title={`${entity.kind}${entity.filePath ? ` · ${entity.filePath}` : ""}`}
+                  >
+                    <span className="trace-entity-kind" data-detail="context">{entity.kind}</span>
+                    <span className="trace-entity-label">{entity.label}</span>
+                    {entity.sccId && <span className="scc-mark" title="이 그룹은 서로 순환 참조합니다">⟲</span>}
+                  </button>
+                </foreignObject>
+              </g>
             );
           })}
         </svg>
