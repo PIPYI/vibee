@@ -366,6 +366,38 @@ server.registerTool(
 );
 
 /**
+ * `ir`의 정확한 shape은 Core의 ajv schema(단 한 벌, A6)가 검증한다 — 여기서 zod로
+ * 다시 베끼지 않는다. `description`이 그 shape을 사람이 읽는 말로 설명한다.
+ */
+server.registerTool(
+  "submit_view_ir",
+  {
+    title: "View IR 제출",
+    description:
+      "Overview 또는 Scenario View를 제출한다. **좌표(x/y)를 넣지 마라** — layout은 " +
+      "렌더러가 계산한다. 개수 제한은 없지만 넘치면 warning으로 알려 준다(제출은 성공한다).\n\n" +
+      "viewKind \"overview\"의 ir: { title, areas: [{ id, label, items: [{ id, label, " +
+      "conceptRefs?, scenarioRefs? }] }], importantConnections?: [{ from, to, label? }] }. " +
+      "conceptRefs/scenarioRefs는 실재하는 Concept/Scenario id여야 하고, " +
+      "importantConnections의 from/to는 이 Overview 안의 item id를 가리켜야 한다.\n\n" +
+      "viewKind \"scenario\"의 ir: { id, name, type: \"user\"|\"system\", goal?, outcome?, " +
+      "participants: [{ id, label, conceptRefs? }], steps: [{ id, label, participantId?, " +
+      "conceptRefs, evidenceRefs }], transitions: [{ fromStepId, toStepId, condition?, loop?, " +
+      "evidenceRefs }], branches?, stateChanges?, entryStepId, outcomeStepIds }. " +
+      "**모든 step은 evidenceRefs가 하나 이상 있어야 하고 entryStepId에서 도달할 수 있어야 " +
+      "한다.** DAG일 필요는 없다 — 재시도/재신청 루프는 그 transition에 loop:true와 " +
+      "반드시 condition을 함께 표시한다(같은 행동을 반복된 step으로 펼치지 마라).\n\n" +
+      "실패하면 diagnostics로 이유와 supportedFixes가 온다 — 같은 turn에서 고쳐 다시 제출하라.",
+    inputSchema: {
+      viewKind: z.enum(["overview", "scenario"]),
+      ir: z.record(z.unknown()).describe("OverviewIR 또는 viewKind가 가리키는 ScenarioIR"),
+    },
+  },
+  async ({ viewKind, ir }) =>
+    reply(await callBridge("/internal/submit-view-ir", { method: "POST", body: JSON.stringify({ viewKind, ir }) })),
+);
+
+/**
  * Impact View는 이번 범위 밖이다 (§4).
  *
  * tool을 아예 없애지 않고 **자리를 남긴다** — agent가 물어봤을 때 "없다"가 아니라

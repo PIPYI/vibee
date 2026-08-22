@@ -189,6 +189,178 @@ export const SEMANTIC_PATCH_SCHEMA = {
   },
 } as const;
 
+// ---------------------------------------------------------------------------
+// View IR (§6.6~§6.8, §22, §28~§33)
+// ---------------------------------------------------------------------------
+
+/**
+ * `submit_view_ir`의 `overview` payload (§22).
+ *
+ * **`maxItems`가 없다** (§6.7) — 정보량 초과는 `view-validator`의 soft budget이 warning으로
+ * 다루지, schema가 거절하지 않는다.
+ */
+export const OVERVIEW_IR_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $id: "onto://schemas/overview-ir.json",
+  title: "OverviewIR",
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "areas"],
+  properties: {
+    title: nonEmptyString,
+    areas: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "label", "items"],
+        properties: {
+          id: nonEmptyString,
+          label: nonEmptyString,
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "label"],
+              properties: {
+                id: nonEmptyString,
+                label: nonEmptyString,
+                conceptRefs: stringArray,
+                scenarioRefs: stringArray,
+              },
+            },
+          },
+        },
+      },
+    },
+    importantConnections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["from", "to"],
+        properties: {
+          from: nonEmptyString,
+          to: nonEmptyString,
+          label: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+const scenarioParticipant = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    conceptRefs: stringArray,
+    // Renderer의 lane 배치 힌트일 뿐이다 — semantic correctness가 이것에 의존하지 않는다.
+    layoutHint: { type: "string" },
+  },
+} as const;
+
+const scenarioStep = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label", "conceptRefs", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    participantId: { type: "string" },
+    conceptRefs: stringArray,
+    claimRefs: stringArray,
+    // acceptance 15 — 비어 있으면 안 된다. 그 판단은 schema가 아니라 view-validator가 한다.
+    evidenceRefs,
+    confidence,
+  },
+} as const;
+
+const scenarioTransition = {
+  type: "object",
+  additionalProperties: false,
+  required: ["fromStepId", "toStepId", "evidenceRefs"],
+  properties: {
+    fromStepId: nonEmptyString,
+    toStepId: nonEmptyString,
+    condition: { type: "string" },
+    // back edge인가 (R5). true면 view-validator가 condition을 요구한다.
+    loop: { type: "boolean" },
+    evidenceRefs,
+    confidence,
+  },
+} as const;
+
+const scenarioBranch = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sourceStepId", "conditionLabel", "evidenceRefs", "paths"],
+  properties: {
+    sourceStepId: nonEmptyString,
+    conditionLabel: nonEmptyString,
+    conceptRefs: stringArray,
+    claimRefs: stringArray,
+    evidenceRefs,
+    paths: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["label", "nextStepId"],
+        properties: { label: nonEmptyString, nextStepId: nonEmptyString },
+      },
+    },
+  },
+} as const;
+
+const scenarioStateChange = {
+  type: "object",
+  additionalProperties: false,
+  required: ["subjectConceptId", "causedByStepId", "evidenceRefs"],
+  properties: {
+    subjectConceptId: nonEmptyString,
+    from: { type: "string" },
+    to: { type: "string" },
+    changeKind: { enum: ["create", "update", "delete", "state_transition"] },
+    causedByStepId: nonEmptyString,
+    evidenceRefs,
+  },
+} as const;
+
+/**
+ * `submit_view_ir`의 `scenario` payload (§28~§33).
+ *
+ * **좌표 필드가 없다** (A7) — layout은 렌더러가 결정론적으로 계산한다.
+ * **DAG를 요구하지 않는다** (R5) — `entryStepId`/`outcomeStepIds`만 요구한다.
+ */
+export const SCENARIO_IR_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $id: "onto://schemas/scenario-ir.json",
+  title: "ScenarioIR",
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name", "type", "participants", "steps", "transitions", "entryStepId", "outcomeStepIds"],
+  properties: {
+    id: nonEmptyString,
+    name: nonEmptyString,
+    type: { enum: ["user", "system"] },
+    goal: { type: "string" },
+    outcome: { type: "string" },
+    participants: { type: "array", items: scenarioParticipant },
+    steps: { type: "array", items: scenarioStep },
+    transitions: { type: "array", items: scenarioTransition },
+    branches: { type: "array", items: scenarioBranch },
+    stateChanges: { type: "array", items: scenarioStateChange },
+    entryStepId: nonEmptyString,
+    outcomeStepIds: { type: "array", items: nonEmptyString },
+    evidenceRefs: stringArray,
+    confidence,
+  },
+} as const;
+
 /**
  * `propose_evidence`의 payload (§6.5 R2).
  *

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * M5 회귀 게이트 — acceptance 4 · 5 · 18 · 18b (implementation_plan.md §7.1 · §7.2).
+ * M5·M6 회귀 게이트 — acceptance 4 · 5 · 11 · 15 · 18 · 18b (implementation_plan.md §7.1 · §7.2).
  *
  *   npm run eval          # 설치된 agent 전부
  *   npm run eval codex
@@ -9,7 +9,9 @@
  * acceptance.mjs(M3)는 채널만 본다 — tool이 불렸고 데이터가 흘렀는가. 여기서는 그 다음을
  * 본다: **submit_semantic_patch가 실제로 하나의 generation을 커밋했는가**(4),
  * **그렇게 커밋된 Semantic Memory가 이 fixture에서 사람이 미리 정한 구조적 기대를
- * 만족하는가**(5), 그리고 **코드가 바뀐 뒤 다음 turn이 올바른 할 일을 받는가**(18·18b).
+ * 만족하는가**(5), **View Planner가 만든 Overview/Scenario가 schema와 구조 검사를
+ * 실제로 통과하는가**(11·15, M6), 그리고 **코드가 바뀐 뒤 다음 turn이 올바른 할 일을
+ * 받는가**(18·18b).
  *
  * ## 무엇을 신뢰하는가
  *
@@ -18,9 +20,12 @@
  * 비동기로 시작된다(§6.9). 그래서 응답의 `workSetSize`만으로 Core가 옳은 할 일을
  * 계산했는지 증명할 수 있다 — LLM이 뭘 하든 상관없다.
  *
- * agent의 판단이 필요한 부분(5의 structural coverage, 18b의 "새 Concept를 만든다")은
- * turn이 끝난 뒤 **파일시스템 위의 committed Semantic Memory를 직접 읽어** 확인한다
- * (B4 — agent 자기 보고를 신뢰의 근거로 삼지 않는다).
+ * agent의 판단이 필요한 부분(5의 structural coverage, 11·15의 View IR 내용, 18b의
+ * "새 Concept를 만든다")은 turn이 끝난 뒤 **파일시스템 위의 committed 상태를 직접 읽어**
+ * 확인한다(B4 — agent 자기 보고를 신뢰의 근거로 삼지 않는다). 11·15는 `/internal/submit-view-ir`가
+ * 이미 `validateViewIR`를 통과시켜야 `ok:true`가 되므로 "실패 없이 끝났다"만으로도 schema를
+ * 증명하지만, "성공의 부재를 실패로 쓴다"의 반대 방향 오류(성공을 곧이곧대로 믿는 것)를
+ * 피하려고 evidenceRefs·도달 가능성을 이 스크립트에서 **다시** 계산해 대조한다.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -109,6 +114,97 @@ for (const agent of targets) {
   }
 
   // ---------------------------------------------------------------------
+  // turn 1.5 — View Planner. acceptance 11 (schema) · 15 (step evidenceRef · 도달 가능성)
+  // ---------------------------------------------------------------------
+  const overviewTurn = await viewTurn(config.baseUrl, agent, { viewKind: "overview" }, "Overview 생성");
+  check("Overview turn 이 오류 없이 끝났다", overviewTurn.outcome.status === "completed", overviewTurn.outcome.detail);
+  if (overviewTurn.outcome.status === "completed") {
+    const result = await fetchJson(`${config.baseUrl}/api/views/${overviewTurn.taskId}`);
+    check(
+      "acceptance 11 — OverviewIR 이 submit_view_ir 의 Validator(schema+구조)를 통과했다",
+      result.ok && Boolean(result.body.view),
+      JSON.stringify(result.body),
+    );
+    if (result.body.view) {
+      const ir = result.body.view.ir;
+      const conceptIds = new Set(afterTurn1.memory.concepts.map((c) => c.id));
+      const scenarioIds = new Set(afterTurn1.memory.canonicalScenarios.map((s) => s.id));
+      const allRefsResolve = ir.areas.every((area) =>
+        area.items.every(
+          (item) =>
+            (item.conceptRefs ?? []).every((ref) => conceptIds.has(ref)) &&
+            (item.scenarioRefs ?? []).every((ref) => scenarioIds.has(ref)),
+        ),
+      );
+      check(
+        "acceptance 11 — OverviewIR 의 conceptRefs/scenarioRefs 가 전부 실재한다 (다시 계산해 대조)",
+        allRefsResolve,
+        JSON.stringify(ir.areas),
+      );
+    }
+  }
+
+  const anchorConcept = afterTurn1.memory.concepts[0];
+  const scenarioTurn = anchorConcept
+    ? await viewTurn(
+        config.baseUrl,
+        agent,
+        { viewKind: "scenario", anchor: { kind: "concept", conceptId: anchorConcept.id } },
+        "Scenario 생성",
+      )
+    : undefined;
+  check(
+    "Scenario turn 이 오류 없이 끝났다",
+    Boolean(anchorConcept) && scenarioTurn?.outcome.status === "completed",
+    scenarioTurn?.outcome.detail ?? "afterTurn1 에 anchor 로 쓸 concept 가 없다",
+  );
+  if (scenarioTurn?.outcome.status === "completed") {
+    const result = await fetchJson(`${config.baseUrl}/api/views/${scenarioTurn.taskId}`);
+    check(
+      "acceptance 11 — ScenarioIR 이 submit_view_ir 의 Validator(schema+구조)를 통과했다",
+      result.ok && Boolean(result.body.view),
+      JSON.stringify(result.body),
+    );
+    if (result.body.view) {
+      const ir = result.body.view.ir;
+      const presentEvidence = new Set(
+        afterTurn1.evidence.evidence.filter((e) => e.status === "present").map((e) => e.id),
+      );
+      const everyStepGrounded = ir.steps.every(
+        (step) => step.evidenceRefs.length > 0 && step.evidenceRefs.every((ref) => presentEvidence.has(ref)),
+      );
+      check(
+        "acceptance 15 — 모든 step 이 evidenceRef ≥ 1 이고 실재하는 present evidence를 가리킨다 (다시 계산해 대조)",
+        everyStepGrounded,
+        JSON.stringify(ir.steps.map((s) => ({ id: s.id, evidenceRefs: s.evidenceRefs }))),
+      );
+
+      const graph = new Map();
+      const addEdge = (from, to) => {
+        if (!graph.has(from)) graph.set(from, []);
+        graph.get(from).push(to);
+      };
+      for (const t of ir.transitions) addEdge(t.fromStepId, t.toStepId);
+      for (const b of ir.branches ?? []) for (const p of b.paths) addEdge(b.sourceStepId, p.nextStepId);
+      const reached = new Set([ir.entryStepId]);
+      const queue = [ir.entryStepId];
+      while (queue.length > 0) {
+        const current = queue.shift();
+        for (const next of graph.get(current) ?? []) {
+          if (reached.has(next)) continue;
+          reached.add(next);
+          queue.push(next);
+        }
+      }
+      check(
+        "acceptance 15 — entryStepId 에서 모든 step 에 도달할 수 있다 (다시 계산해 대조)",
+        ir.steps.every((step) => reached.has(step.id)),
+        `entry=${ir.entryStepId}, reached=${[...reached].join(",")}, steps=${ir.steps.map((s) => s.id).join(",")}`,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // turn 2 — 심볼 삭제. acceptance 18
   // ---------------------------------------------------------------------
   deleteSymbol();
@@ -177,6 +273,24 @@ async function analyzeTurn(baseUrl, agent, label) {
   const taskId = started.body.taskId;
   const outcome = await waitForTask(baseUrl, taskId, TIMEOUT_MS);
   return { taskId, summary: started.body, outcome };
+}
+
+/**
+ * `POST /api/views`도 캐시가 없으면 turn을 열고 `taskId`만 돌려준다(§6.9 [C]) — 결과는
+ * turn이 끝난 뒤 `GET /api/views/:id`로 가져온다.
+ */
+async function viewTurn(baseUrl, agent, request, label) {
+  const started = await fetchJson(`${baseUrl}/api/views`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agent, projectPath: FIXTURE_DIR, ...request }),
+  });
+  if (!started.ok) {
+    throw new Error(`${label} 시작 실패: ${JSON.stringify(started.body)}`);
+  }
+  const taskId = started.body.taskId;
+  const outcome = await waitForTask(baseUrl, taskId, TIMEOUT_MS);
+  return { taskId, outcome };
 }
 
 /**

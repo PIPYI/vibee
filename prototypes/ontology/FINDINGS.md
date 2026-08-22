@@ -556,3 +556,107 @@ turn 3(block.js 기능 추가 후 증분) → acceptance 18b
 Finding 없음 — 계획과 충돌한 것이 없다. 위 세 가지는 전부 자체 구현 결함(그 중 하나는
 M4가 남긴 것)이었고, acceptance 5의 실행 간 편차는 결함이 아니라 §7.3이 이미 예상한
 live-agent 측정의 성질이다.
+
+---
+
+## M6 — View Planner (Overview·Scenario) + schema/validator + budget (완료)
+
+계획 §8이 M6에 요구한 것: acceptance 11 · 15.
+
+### 시작할 때 이미 있었던 것
+
+`packages/protocol/src/index.ts`에 `OverviewIR`·`ScenarioIR`·`ViewRequest`·`ViewCacheKey`·
+`CachedView<T>` 등 타입 전체가 이미 정의되어 있었고(§22·§28~§33), `McpToolName`에
+`"submit_view_ir"`도 이미 예약되어 있었다 — 둘 다 M0~M1 시절 protocol 패키지를 통째로
+설계할 때 함께 만들어진 것이지 M6가 만든 것이 아니다. Trace(§6.6)는 M2에서 이미 완성되어
+`projectTrace`가 결정론적으로 도는 상태였다. 그 외 — schema, Validator, budget, bridge
+배선, mcp-server tool 등록, 프롬프트 — **전부 M6가 새로 만들었다.**
+
+### 완료한 것
+
+- [x] `packages/protocol/src/schemas.ts` — `OVERVIEW_IR_SCHEMA`·`SCENARIO_IR_SCHEMA` (ajv,
+      한 벌만, A6). `SEMANTIC_PATCH_SCHEMA`와 같은 관례대로 **`maxItems`를 넣지 않았다**
+      (§6.7 — 개수 제한은 schema가 아니라 soft budget의 일이다).
+- [x] `packages/core/src/view-validator.ts` — `submit_view_ir`의 Validator.
+      `submit_semantic_patch`의 ⓪~⑤와 다르다 — View는 `SemanticStore`에 커밋되지 않으므로
+      (§6.4, cache일 뿐이다) `AnalyzeTransaction`도 `store.commit`도 모르는 순수 함수다.
+      - schema(ajv) → 참조 무결성(conceptRefs/claimRefs/scenarioRefs/evidenceRefs가 실재하고
+        present, I9) → Scenario 구조(entry/outcome 실재, **acceptance 15**: step evidenceRef
+        ≥ 1 + entry에서 전부 도달 가능, back edge는 `condition` 필수, §6.8) → soft budget
+        (warning만, §6.7) 순서로 계층을 나눴다 — validatePatch의 ⓪~④ 계층 구조를 그대로
+        따른 것이다.
+      - loop-unrolled 감지(§6.8) — 같은 conceptRefs·비슷한 label의 step 쌍을 warning으로
+        잡는다. **경고일 뿐이다** — 정말 다른 반복이라 다르게 표현해야 하는 경우를 강제로
+        막지 않는다.
+- [x] `packages/core/src/viewBudget.ts` — Overview/Scenario의 soft budget 초기값과 근거를
+      주석에 적었다(§53에서 조정될 값이라는 것도 함께).
+- [x] `apps/bridge/src/view.ts` — Overview/Scenario 캐시 키(`semanticVersion`으로 잡는다,
+      `analysisVersion`이 아니다 — V2). Trace는 캐시가 없다(동기라 필요 없다).
+- [x] `apps/bridge/src/state.ts` — `viewCache`(taskId가 아니라 cache key로) ·
+      `pendingViewRequests`(taskId → 이 turn이 무엇을 만들려는 것이었는지) ·
+      `viewResultsByTask`(완료된 turn의 결과를 taskId로 찾는 길). 전부 bridge 메모리에만
+      있다 — `@onto/core`의 generation store를 거치지 않는다(§6.4, "cache일 뿐이고
+      source of truth가 아니다").
+- [x] `apps/bridge/src/prompt.ts` — `buildOverviewPrompt`·`buildScenarioPrompt`.
+- [x] `apps/bridge/src/index.ts`
+  - `POST /api/views` — `viewKind: "trace"`는 `projectTrace`를 그대로 불러 **동기로 즉시
+    응답한다**(§6.6 R4, agent turn이 없다). `"overview"|"scenario"`는 캐시가 있으면 즉시,
+    없으면 view turn을 연다(§6.4 V2·§6.9 [C]).
+  - `GET /api/views/:id` — taskId로 완료된 view turn의 결과를 가져온다. **freshness는
+    캐시에 써 둔 값을 믿지 않고 매번 다시 계산한다** — 코드가 그 사이에 더 바뀌었을 수
+    있기 때문이다(V2, `withCurrentFreshness`).
+  - `/internal/submit-view-ir` — Core의 `validateViewIR`를 부르고, 통과하면
+    `viewCache`에 남긴다. transaction이 없으면 lazy/degraded로 답한다(C5).
+- [x] `packages/mcp-server/src/index.ts` — `submit_view_ir` tool 등록. **`ir`의 zod 스키마를
+      따로 만들지 않았다** — `concept`/`claim`처럼 zod로 다시 베끼면 A6("schema는 한 곳에만")를
+      스스로 어기는 셈이고, ScenarioIR은 중첩이 훨씬 깊어 유지비가 크다. 대신 `ir: z.record(z.unknown())`로
+      느슨하게 받고 실제 검증은 전부 Core의 ajv schema(단 하나)에 맡겼다 — `description`에
+      정확한 shape을 사람이 읽는 말로 적어 agent를 안내한다.
+- [x] `packages/core/test/view-validator.test.mjs` — acceptance 11(schema 통과/실패)·
+      15(step evidenceRef·도달 가능성) 단위 시험 17개. loop condition 필수, loop-unrolled
+      warning, I9(허구·missing evidence 거절), soft budget이 제출을 막지 않는다는 것까지 포함.
+- [x] `apps/bridge/test/view-wiring.test.mjs` — m4-wiring.test.mjs와 같은 방식(agent CLI
+      없이 agent가 만들 상태만 대신 준비하고 나머지는 실제 HTTP route를 통과한다) 8개.
+      trace의 동기 응답, cache-hit이 agent 없이도 즉시 응답하는 것, `submit_view_ir`가
+      틀린 viewKind·허구 conceptRefs를 실제로 거절하는 것까지 검증한다.
+- [x] `apps/bridge/test/mcp-channel.test.mjs` — M3가 tool 목록을 정확히 단언하던 시험에
+      `submit_view_ir`를 추가했다(추가하지 않으면 M6가 M3 시험을 깬다).
+- [x] `npm test` 146/146. `npm run typecheck` 전 패키지 통과.
+
+### `npm run eval codex`로 확인한 것 (codex-cli 0.149.0, 실제 agent)
+
+M5의 3-turn 흐름(첫 분석 → 심볼 삭제 → 기능 추가) 사이, 첫 분석 직후에 View turn 둘을
+끼워 넣었다 — Semantic Memory가 이미 있어야 View를 만들 수 있기 때문이다.
+
+```text
+turn 1(첫 분석) 이후
+  → Overview turn  → GET /api/views/:id → acceptance 11(schema+구조 통과, conceptRefs/
+                      scenarioRefs가 실재한다는 것을 스크립트가 **다시 계산해** 대조)
+  → Scenario turn  → GET /api/views/:id → acceptance 11 · 15(모든 step이 evidenceRef ≥ 1
+                      이고 present이며, entryStepId에서 전부 도달 가능하다는 것을 스크립트가
+                      **다시 계산해** 대조 — "성공을 곧이곧대로 믿지 않는다")
+```
+
+**실제 결과 — Overview·Scenario 관련 8개 항목 전부 1회차에 통과.** M5 때와 달리 이번엔
+`view-validator`나 bridge 배선에서 실행 중에 새로 드러난 버그가 없었다 — unit 시험
+17개 + wiring 시험 8개가 이미 잡아낸 것 이상이 live run에서 나오지 않았다. Overview는
+실제로 Concept 5개·Scenario 2개를 3개 Area로 묶고 `importantConnections`까지 만들어
+냈고, Scenario는 3-step 흐름을 만들며 그 중 하나(정책 판단)를 `propose_evidence`로
+등록한 agent evidence에 grounding했다 — M4의 R2("엔진이 못 본 근거를 버리지 말고
+제안하라")가 View Planner turn에서도 그대로 작동한다는 뜻이다. Trace도 별도로
+`POST /api/views`에 직접 호출해 동기 응답(agent 없이, taskId 없이)을 확인했다.
+
+M5의 acceptance 5(structural coverage) 실패가 이번에도 재현되었다 — M5 FINDINGS에 이미
+기록한 것과 같은 종류의 live-model 편차이고, M6와는 무관하다.
+
+`claude`는 이 머신에 설치되어 있지 않아 codex로만 확인했다(M3~M5와 같은 제약).
+
+### 이 문서가 다루지 않는 것
+
+renderer safety ceiling(§6.7 — 뷰어가 안 멎게 IR을 "…외 N개"로 접는 것)은 M6에 없다.
+그것은 **렌더러의 책임**이라고 계획이 명시한다("IR을 거절하지 않는다") — M7(React viewer)
+범위다. View turn을 몇 번이고 다시 열 수 있게 하는 것(재생성 버튼, 캐시 무효화 UI)도
+M7/apps/web의 몫이다. 이 문서는 그 UI를 만들지 않았다 — bridge API(`POST /api/views`)는
+이미 몇 번이고 다시 부를 수 있게 되어 있으므로 막혀 있는 것은 없다.
+
+Finding 없음 — 계획과 충돌한 것이 없다.

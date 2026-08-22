@@ -14,7 +14,12 @@
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 
 import type { Diagnostic } from "@onto/protocol";
-import { EVIDENCE_PROPOSAL_SCHEMA, SEMANTIC_PATCH_SCHEMA } from "@onto/protocol";
+import {
+  EVIDENCE_PROPOSAL_SCHEMA,
+  OVERVIEW_IR_SCHEMA,
+  SCENARIO_IR_SCHEMA,
+  SEMANTIC_PATCH_SCHEMA,
+} from "@onto/protocol";
 
 /**
  * `allErrors` — 첫 오류에서 멈추지 않는다. agent가 한 번에 다 고칠 수 있어야 왕복이 줄어든다.
@@ -72,13 +77,16 @@ function toDiagnostic(error: ErrorObject, root: unknown, code: string): Diagnost
   };
 }
 
+const SCHEMAS_BY_KEY = {
+  "semantic-patch": { schema: SEMANTIC_PATCH_SCHEMA, code: "patch/schema" },
+  "evidence-proposal": { schema: EVIDENCE_PROPOSAL_SCHEMA, code: "proposal/schema" },
+  "overview-ir": { schema: OVERVIEW_IR_SCHEMA, code: "view/schema" },
+  "scenario-ir": { schema: SCENARIO_IR_SCHEMA, code: "view/schema" },
+} as const;
+
 /** schema 검사. 통과하면 빈 배열이다. */
-export function validateAgainst(
-  key: "semantic-patch" | "evidence-proposal",
-  payload: unknown,
-): Diagnostic[] {
-  const schema = key === "semantic-patch" ? SEMANTIC_PATCH_SCHEMA : EVIDENCE_PROPOSAL_SCHEMA;
-  const code = key === "semantic-patch" ? "patch/schema" : "proposal/schema";
+export function validateAgainst(key: keyof typeof SCHEMAS_BY_KEY, payload: unknown): Diagnostic[] {
+  const { schema, code } = SCHEMAS_BY_KEY[key];
   const validate = compile(key, schema as object);
   if (validate(payload)) return [];
   return (validate.errors ?? []).map((error) => toDiagnostic(error, payload, code));

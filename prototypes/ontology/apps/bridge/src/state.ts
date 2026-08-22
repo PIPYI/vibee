@@ -7,9 +7,25 @@
  * 영속 상태(Semantic Memory·Evidence)는 여기 있지 않고 `@onto/core`의 generation store에 있다.
  */
 import type { AnalyzeSession } from "@onto/core";
-import type { AgentEvent, AgentEventEnvelope, McpCallSource, TaskState } from "@onto/protocol";
+import type {
+  AgentEvent,
+  AgentEventEnvelope,
+  CachedView,
+  McpCallSource,
+  OverviewIR,
+  ScenarioIR,
+  TaskState,
+} from "@onto/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
+
+/** `POST /api/views`가 view turn 을 열 때 남기는 것. `/internal/submit-view-ir`가 소비한다. */
+export type PendingViewRequest = {
+  viewKind: "overview" | "scenario";
+  /** turn 시작 시점의 semanticVersion. 캐시 키의 절반이다(V2 — analysisVersion이 아니다) */
+  semanticVersion: number;
+  requestHash: string;
+};
 
 export class BridgeState {
   private projectPath: string | null = null;
@@ -27,6 +43,17 @@ export class BridgeState {
   private readonly analyzeSessions = new Map<string, AnalyzeSession>();
   /** 커밋 1이 만든 dirty evidence 개수. ④ churn 판정의 입력이다 (재인덱싱마다 갱신) */
   private readonly dirtyEvidenceCounts = new Map<string, number>();
+
+  /**
+   * Overview/Scenario 캐시 (§6.4). **cache일 뿐이고 source of truth가 아니다** — `@onto/core`의
+   * generation store를 거치지 않는다. bridge 프로세스가 재시작되면 비고, 다음 요청이 다시
+   * turn을 연다. 그것으로 충분하다 — ScenarioIR/OverviewIR은 언제든 재생성 가능한 View다.
+   */
+  private readonly viewCache = new Map<string, CachedView<OverviewIR | ScenarioIR>>();
+  /** taskId 별로 연 view turn 이 무엇을 만들려는 것이었는지. `/internal/submit-view-ir`가 찾는다 */
+  private readonly pendingViewRequests = new Map<string, PendingViewRequest>();
+  /** 완료된 view turn 의 taskId → viewCache 키. `GET /api/views/:id`가 taskId로 결과를 찾는다 */
+  private readonly viewResultsByTask = new Map<string, string>();
 
   private seq = 0;
   private readonly buffer: AgentEventEnvelope[] = [];
@@ -123,6 +150,35 @@ export class BridgeState {
 
   getDirtyEvidenceCount(taskId: string): number | undefined {
     return this.dirtyEvidenceCounts.get(taskId);
+  }
+
+  setPendingViewRequest(taskId: string, request: PendingViewRequest): void {
+    this.pendingViewRequests.set(taskId, request);
+  }
+
+  getPendingViewRequest(taskId: string): PendingViewRequest | undefined {
+    return this.pendingViewRequests.get(taskId);
+  }
+
+  clearPendingViewRequest(taskId: string): void {
+    this.pendingViewRequests.delete(taskId);
+  }
+
+  setViewCache(key: string, value: CachedView<OverviewIR | ScenarioIR>): void {
+    this.viewCache.set(key, value);
+  }
+
+  getViewCache(key: string): CachedView<OverviewIR | ScenarioIR> | undefined {
+    return this.viewCache.get(key);
+  }
+
+  setViewResultForTask(taskId: string, cacheKey: string): void {
+    this.viewResultsByTask.set(taskId, cacheKey);
+  }
+
+  getViewResultForTask(taskId: string): CachedView<OverviewIR | ScenarioIR> | undefined {
+    const key = this.viewResultsByTask.get(taskId);
+    return key ? this.viewCache.get(key) : undefined;
   }
 
   /** 이 task에서 두 증거원이 모두 관측된 tool들. acceptance 2·3이 이것을 본다. */

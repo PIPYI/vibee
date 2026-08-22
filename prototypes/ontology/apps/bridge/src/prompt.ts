@@ -7,7 +7,7 @@
  * C9의 evidence-first 제약을 넣되 한 줄을 바꾼다 — CoderMind의 "실재하는 노드만"을 그대로
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
-import type { SemanticWorkSet } from "@onto/protocol";
+import type { SemanticWorkSet, ViewRequest } from "@onto/protocol";
 
 const EVIDENCE_RULES = [
   "규칙:",
@@ -101,6 +101,74 @@ export function buildIndexOnlyPrompt(projectPath: string, bundle: string): strin
   ].join("\n");
 }
 
+const VIEW_RULES = [
+  "규칙:",
+  "1. conceptRefs·claimRefs·evidenceRefs·scenarioRefs는 전부 실재하는 id여야 한다 — 지어내지 마라.",
+  "   get_project_semantic_memory / get_concept_context / get_scenario_context 로 실재하는 id를 확인하라.",
+  "2. 좌표(x/y)를 넣지 마라. layout은 렌더러가 계산한다 (A7).",
+  "3. 개수 제한은 없지만, 한 화면에서 따라갈 수 있는 정도로 추려라 — 넘치면 warning으로",
+  "   돌아오고 그래도 제출은 성공하지만, 정말 중요한 것만 남기는 편이 낫다.",
+  "4. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_view_ir 하라.",
+].join("\n");
+
+function requestContext(request: ViewRequest): string[] {
+  const lines: string[] = [];
+  if (request.anchor) lines.push(`anchor: ${JSON.stringify(request.anchor)}`);
+  if (request.question) lines.push(`사용자 질문: ${request.question}`);
+  return lines;
+}
+
+/**
+ * Overview View Planner (§22, §6.9 [C]).
+ *
+ * Trace와 달리 **AI가 만든다** — 그 안의 어떤 것도 Evidence 그래프에서 결정론적으로
+ * 나오지 않기 때문이다(R4의 반대 방향: Overview는 "무엇이 중요한가"라는 판단 자체다).
+ */
+export function buildOverviewPrompt(projectPath: string, request: ViewRequest): string {
+  return [
+    "이 프로젝트가 무엇을 하는지 비전공자가 한눈에 볼 수 있는 Overview를 만든다.",
+    `프로젝트 경로: ${projectPath}`,
+    ...requestContext(request),
+    "",
+    "순서:",
+    "1. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다.",
+    "2. 의미 있는 단위로 Area를 나누고, 각 Area 안에 item(대표 Concept/Scenario)을 담는다.",
+    "   Area는 presentation hierarchy일 뿐이다 — 새 Core ontology를 만드는 것이 아니다.",
+    "3. submit_view_ir 로 { viewKind: \"overview\", ir: OverviewIR } 를 제출한다.",
+    "",
+    VIEW_RULES,
+  ].join("\n");
+}
+
+/**
+ * Scenario View Planner (§28~§33, §6.8).
+ *
+ * **DAG를 강요하지 않는다(R5)** — 재시도·재신청 루프는 `loop: true` + `condition`으로
+ * back edge를 표시하면 된다. 같은 행동을 반복된 step으로 펼치지 마라.
+ */
+export function buildScenarioPrompt(projectPath: string, request: ViewRequest): string {
+  return [
+    "하나의 목적을 설명하는 대표 흐름(Scenario)을 만든다.",
+    `프로젝트 경로: ${projectPath}`,
+    ...requestContext(request),
+    "",
+    "순서:",
+    "1. anchor가 있으면 get_scenario_context 로, 없으면 get_project_semantic_memory 로",
+    "   이 흐름에 관련된 Concept·Claim을 모은다.",
+    "2. 참여자(participants)와 순서가 있는 step으로 흐름을 구성한다.",
+    "   **step은 Concept 하나와 1:1일 필요가 없다** — 여러 개를 하나로 압축해도 된다.",
+    "3. entryStepId(시작)와 outcomeStepIds(하나 이상의 종료 지점)를 정한다.",
+    "   흐름이 DAG일 필요는 없다 — 재시도/재신청 루프는 그 transition에",
+    "   `loop: true` 와 반드시 `condition` 을 함께 표시한다. 같은 행동을 반복된 step으로",
+    "   펼치지 마라 — 그것은 step 하나 + back edge다.",
+    "4. **모든 step은 evidenceRefs 가 하나 이상 있어야 하고, entryStepId에서 도달할 수 있어야",
+    "   한다** — 둘 다 없으면 거절된다.",
+    "5. submit_view_ir 로 { viewKind: \"scenario\", ir: ScenarioIR } 를 제출한다.",
+    "",
+    VIEW_RULES,
+  ].join("\n");
+}
+
 /**
  * 세션 미리보기를 사람이 읽을 이름으로 바꾼다.
  *
@@ -113,6 +181,8 @@ export function describeSession(preview: string): string {
   if (text.startsWith("이 프로젝트의 의미 구조를 처음으로")) return "전체 분석";
   if (text.startsWith("코드가 바뀌었다")) return "증분 분석";
   if (text.startsWith("아래는 이 프로젝트의 Evidence Index 요약")) return "분석 (index-only arm)";
+  if (text.startsWith("이 프로젝트가 무엇을 하는지")) return "Overview 생성";
+  if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 

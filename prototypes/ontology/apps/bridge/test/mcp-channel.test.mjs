@@ -133,6 +133,7 @@ test("MCP server 가 §48 의 tool 들을 노출한다", async () => {
     "propose_evidence",
     "search_claims",
     "submit_semantic_patch",
+    "submit_view_ir",
   ]);
 });
 

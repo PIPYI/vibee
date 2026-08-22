@@ -20,7 +20,10 @@ import {
   AnalyzeSession,
   SemanticStore,
   commitPatch,
+  hasError,
   initialProjectState,
+  projectTrace,
+  validateViewIR,
   type LoadedState,
 } from "@onto/core";
 import {
@@ -36,11 +39,16 @@ import type {
   AgentId,
   AgentReadiness,
   AnalyzeRequest,
+  CachedView,
   EvidenceProposal,
   HealthResponse,
+  OverviewIR,
+  ScenarioIR,
   SemanticPatch,
   SemanticWorkSet,
   TaskMode,
+  ViewKind,
+  ViewRequest,
 } from "@onto/protocol";
 import { BRIDGE_TOKEN_HEADER } from "@onto/protocol";
 import { loadBridgeConfig, protoRootFromModule } from "@onto/protocol/bridge-config";
@@ -63,9 +71,12 @@ import { onShutdown } from "./platform.js";
 import {
   buildFullAnalyzePrompt,
   buildIncrementalAnalyzePrompt,
+  buildOverviewPrompt,
+  buildScenarioPrompt,
   buildVerifyPrompt,
 } from "./prompt.js";
 import { BridgeState } from "./state.js";
+import { hashViewRequest, viewCacheKeyString, VIEW_PLANNER_VERSION } from "./view.js";
 
 const protoRoot = protoRootFromModule(import.meta.url);
 const config = loadBridgeConfig(protoRoot);
@@ -441,6 +452,9 @@ async function runTask(
     // **turn이 어떻게 끝났든** transaction을 버린다 (§6.5 S2) — 반쯤 쓰인 evidence는 없다.
     // 이미 `/api/tasks/:id/stop`이 지웠다면 여기서는 아무것도 하지 않는다(idempotent).
     state.disposeAnalyzeSession(taskId, `task ${mode} ended`);
+    // view turn 이 무엇을 만들려 했는지도 마찬가지로 정리한다. 성공한 제출은 이미
+    // `viewResultsByTask`에 별도로 남아 있으므로 여기서 지워도 결과는 사라지지 않는다.
+    state.clearPendingViewRequest(taskId);
   }
 }
 
@@ -532,6 +546,149 @@ app.post("/api/sessions/reset", (req: Request, res: Response) => {
   // 세션 파일을 지우지 않는다. bridge 가 들고 있던 참조만 버린다.
   adapter.resetSession(body.projectPath);
   res.json({ ok: true });
+});
+
+type ViewsRequestBody = ViewRequest & {
+  agent?: AgentId;
+  projectPath?: string;
+  model?: string;
+  effort?: string;
+};
+
+/**
+ * 캐시된 View의 freshness는 **읽는 시점에 다시 계산한다** — 캐시에 써 둔 값을 그대로
+ * 믿지 않는다. 코드가 그 사이에 더 바뀌었을 수 있고, `reconcile` 상태는 언제든 최신이어야
+ * 한다(§6.4 V2).
+ */
+function withCurrentFreshness(
+  cached: CachedView<OverviewIR | ScenarioIR>,
+  head: LoadedState,
+): CachedView<OverviewIR | ScenarioIR> {
+  const freshness =
+    head.project.semanticReconciledAnalysisVersion >= head.project.analysisVersion ? "current" : "needs_review";
+  return { ...cached, freshness };
+}
+
+/**
+ * `POST /api/views` — Trace는 동기(§6.6 R4), Overview/Scenario는 캐시 우선(§6.4 V2),
+ * 캐시가 없으면 view turn을 연다(§6.9 [C]).
+ */
+app.post("/api/views", async (req: Request, res: Response) => {
+  const body = req.body as ViewsRequestBody;
+  if (body?.viewKind !== "trace" && body?.viewKind !== "overview" && body?.viewKind !== "scenario") {
+    res.status(400).json({ error: `지원하지 않는 viewKind: ${String(body?.viewKind)}` });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(body.projectPath ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const store = new SemanticStore(projectPath);
+  if (!store.isInitialized()) {
+    res.status(412).json({ error: "프로젝트가 아직 인덱싱되지 않았습니다. 먼저 분석을 실행하세요." });
+    return;
+  }
+  const head = store.load();
+
+  // --- Trace — Core가 동기로 투영한다. agent turn이 없다 (§6.6 R4) --------------
+  if (body.viewKind === "trace") {
+    if (!body.anchor) {
+      res.status(400).json({ error: "viewKind \"trace\" 는 anchor 가 필요합니다." });
+      return;
+    }
+    const ir = projectTrace(head.evidence, body.anchor, {
+      ...(body.scope?.hops !== undefined ? { hops: body.scope.hops } : {}),
+      ...(body.scope?.direction ? { direction: body.scope.direction } : {}),
+      memory: head.memory,
+      grounding: head.grounding,
+    });
+    res.json({ viewKind: "trace", ir });
+    return;
+  }
+
+  // --- Overview/Scenario — 캐시 우선, 없으면 turn (§6.4 V2) --------------------
+  const requestHash = hashViewRequest(body);
+  const cacheKey = viewCacheKeyString(body.viewKind, head.project.semanticVersion, requestHash);
+  const cached = state.getViewCache(cacheKey);
+  if (cached) {
+    res.json({ viewKind: body.viewKind, cached: true, view: withCurrentFreshness(cached, head) });
+    return;
+  }
+
+  const adapter = adapters.get(body.agent as AgentId);
+  if (!adapter) {
+    res.status(400).json({ error: `지원하지 않는 agent: ${String(body.agent)}` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "이미 실행 중인 task 가 있습니다. 먼저 중지하세요." });
+    return;
+  }
+  const ready = await adapter.checkReady();
+  if (!ready.installed) {
+    res.status(412).json({ error: ready.message ?? "agent 를 쓸 수 없습니다." });
+    return;
+  }
+
+  state.setProjectPath(projectPath);
+  const taskId = randomUUID();
+  const prompt =
+    body.viewKind === "overview" ? buildOverviewPrompt(projectPath, body) : buildScenarioPrompt(projectPath, body);
+
+  state.setPendingViewRequest(taskId, {
+    viewKind: body.viewKind,
+    semanticVersion: head.project.semanticVersion,
+    requestHash,
+  });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    mode: "view",
+    prompt,
+    status: "starting",
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.effort ? { effort: body.effort } : {}),
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+  res.json({ viewKind: body.viewKind, taskId });
+  void runTask(adapter, taskId, projectPath, prompt, "view", body as AnalyzeRequest);
+});
+
+/**
+ * view turn이 끝난 뒤 결과를 가져온다. **taskId로 찾는다** — `POST /api/views`가 turn을
+ * 열면서 돌려준 `taskId`를 그대로 쓴다(B8과 같은 이유로, 다른 turn의 결과를 오인하지 않는다).
+ */
+app.get("/api/views/:id", (req: Request, res: Response) => {
+  const taskId = String(req.params["id"]);
+  const task = state.getTask(taskId);
+  if (!task) {
+    res.status(404).json({ error: `task 를 찾을 수 없습니다: ${taskId}` });
+    return;
+  }
+  if (task.status === "starting" || task.status === "running") {
+    res.json({ status: task.status });
+    return;
+  }
+  const cached = state.getViewResultForTask(taskId);
+  if (!cached) {
+    res.status(404).json({
+      status: task.status,
+      error:
+        task.status === "completed"
+          ? "이 turn 은 view 를 제출하지 않고 끝났습니다."
+          : (task.error ?? "이 turn 은 view 를 만들지 못했습니다."),
+    });
+    return;
+  }
+  const head = new SemanticStore(task.projectPath).load();
+  res.json({ status: task.status, view: withCurrentFreshness(cached, head) });
 });
 
 // ---------------------------------------------------------------------------
@@ -742,6 +899,74 @@ app.post("/internal/semantic-patch", requireToken, async (req: Request, res: Res
 
   state.emit({ type: "validation.failed", taskId, tool: "submit_semantic_patch", diagnostics: outcome.diagnostics });
   res.json({ ok: false, diagnostics: outcome.diagnostics });
+});
+
+/**
+ * `submit_view_ir` (§6.6~§6.8). Trace는 여기로 오지 않는다 — Core가 동기로 투영하고
+ * `submit_view_ir`을 받지 않는다(§6.6). `SemanticStore`에 커밋하지 않는다 — View는
+ * cache일 뿐이다(§6.4). **transaction이 없으면 lazy/degraded로 답한다** (C5) — view turn
+ * 밖에서 부르면 실패가 아니라 무엇을 해야 하는지 말해 준다.
+ */
+app.post("/internal/submit-view-ir", requireToken, (req: Request, res: Response) => {
+  recordArrival("submit_view_ir");
+  const projectPath = state.getProjectPath();
+  const taskId = state.getActiveTaskId();
+  const pending = taskId ? state.getPendingViewRequest(taskId) : undefined;
+  if (!projectPath || !taskId || !pending) {
+    res.json({
+      error: "no_active_transaction",
+      next_step: "view turn 이 진행 중일 때만 submit_view_ir 를 쓸 수 있습니다.",
+    });
+    return;
+  }
+
+  const body = req.body as { viewKind?: ViewKind; ir?: unknown };
+  if (body.viewKind !== pending.viewKind) {
+    res.json({
+      ok: false,
+      diagnostics: [
+        {
+          code: "view/wrong-kind",
+          severity: "error",
+          message: `이 turn 은 "${pending.viewKind}" 를 요청받았는데 "${String(body.viewKind)}" 를 제출했습니다.`,
+          subject: {},
+          evidence: { expected: pending.viewKind, got: body.viewKind },
+          supportedFixes: [`viewKind 를 "${pending.viewKind}" 로 맞춘다`],
+        },
+      ],
+    });
+    return;
+  }
+
+  const head = new SemanticStore(projectPath).load();
+  const result =
+    pending.viewKind === "overview"
+      ? validateViewIR({ viewKind: "overview", ir: body.ir, memory: head.memory })
+      : validateViewIR({ viewKind: "scenario", ir: body.ir, memory: head.memory, evidence: head.evidence });
+
+  if (hasError(result.diagnostics) || !result.ir) {
+    state.emit({ type: "validation.failed", taskId, tool: "submit_view_ir", diagnostics: result.diagnostics });
+    res.json({ ok: false, diagnostics: result.diagnostics });
+    return;
+  }
+
+  const cacheKey = viewCacheKeyString(pending.viewKind, pending.semanticVersion, pending.requestHash);
+  const cached: CachedView<OverviewIR | ScenarioIR> = {
+    key: {
+      viewKind: pending.viewKind,
+      semanticVersion: pending.semanticVersion,
+      plannerVersion: VIEW_PLANNER_VERSION,
+      requestHash: pending.requestHash,
+    },
+    freshness:
+      head.project.semanticReconciledAnalysisVersion >= head.project.analysisVersion ? "current" : "needs_review",
+    builtAt: new Date().toISOString(),
+    ir: result.ir,
+  };
+  state.setViewCache(cacheKey, cached);
+  state.setViewResultForTask(taskId, cacheKey);
+  state.emit({ type: "view.ready", taskId, viewKind: pending.viewKind, requestId: cacheKey });
+  res.json({ ok: true, diagnostics: result.diagnostics });
 });
 
 /** 시험과 진단용 — 이 task 에서 두 증거원이 모두 관측된 tool 들 (B4). */

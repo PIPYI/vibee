@@ -66,3 +66,5 @@ export {
   type ValidateInput,
   type ValidateResult,
 } from "./validator.js";
+export { validateViewIR, type ViewValidateInput, type ViewValidateResult } from "./view-validator.js";
+export { VIEW_BUDGET } from "./viewBudget.js";
