@@ -11,6 +11,7 @@ import type {
   AgentEvent,
   AgentEventEnvelope,
   CachedView,
+  EvidenceDiff,
   McpCallSource,
   OverviewIR,
   ScenarioIR,
@@ -54,6 +55,16 @@ export class BridgeState {
   private readonly pendingViewRequests = new Map<string, PendingViewRequest>();
   /** 완료된 view turn 의 taskId → viewCache 키. `GET /api/views/:id`가 taskId로 결과를 찾는다 */
   private readonly viewResultsByTask = new Map<string, string>();
+
+  /**
+   * 가장 최근 재인덱싱의 EvidenceDiff (evidenceId → diff). **재인덱싱마다 통째로 갈아 끼운다**
+   * — 이전 diff는 지금 시점에서는 의미가 없다. 뷰어의 grounding 배지("코드가 옮겨졌습니다"·
+   * "내용이 바뀌었습니다")가 이것을 본다(§6.9 apps/web). `evidence.json`에는 이 분류가
+   * 저장되지 않으므로(§6.2 T1은 순간의 판정이지 영속 필드가 아니다) bridge 메모리에만 있다 —
+   * 재시작하면 비고, 다음 재인덱싱이 다시 채운다. 그것으로 충분하다 — 배지는 참고 정보이지
+   * source of truth가 아니다.
+   */
+  private lastEvidenceDiffs = new Map<string, EvidenceDiff>();
 
   private seq = 0;
   private readonly buffer: AgentEventEnvelope[] = [];
@@ -179,6 +190,14 @@ export class BridgeState {
   getViewResultForTask(taskId: string): CachedView<OverviewIR | ScenarioIR> | undefined {
     const key = this.viewResultsByTask.get(taskId);
     return key ? this.viewCache.get(key) : undefined;
+  }
+
+  setLastEvidenceDiffs(diffs: readonly EvidenceDiff[]): void {
+    this.lastEvidenceDiffs = new Map(diffs.map((item) => [item.evidenceId, item]));
+  }
+
+  getLastEvidenceDiff(evidenceId: string): EvidenceDiff | undefined {
+    return this.lastEvidenceDiffs.get(evidenceId);
   }
 
   /** 이 task에서 두 증거원이 모두 관측된 tool들. acceptance 2·3이 이것을 본다. */

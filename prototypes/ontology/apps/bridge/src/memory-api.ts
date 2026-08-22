@@ -160,6 +160,13 @@ function describeEvidence(
     ...(evidence.location ? { location: evidence.location } : {}),
     ...(evidence.summary ? { summary: evidence.summary } : {}),
     ...(evidence.graph ? { graph: evidence.graph } : {}),
+    // 뷰어의 grounding 배지가 신뢰 수준을 구별하는 데 쓴다 (§6.10) — "확인함"과 "주장함"은
+    // 다른 신뢰 수준이고, relocation이 exact인지 degraded(추정)인지도 다르다.
+    ...(evidence.confidence !== undefined ? { confidence: evidence.confidence } : {}),
+    ...(evidence.relocationConfidence ? { relocationConfidence: evidence.relocationConfidence } : {}),
+    ...(evidence.missingSinceVersion !== undefined
+      ? { missingSinceVersion: evidence.missingSinceVersion }
+      : {}),
   };
 
   if (!includeSource || !evidence.filePath || !evidence.location) return base;

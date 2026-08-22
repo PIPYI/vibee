@@ -660,3 +660,140 @@ M7/apps/web의 몫이다. 이 문서는 그 UI를 만들지 않았다 — bridge
 이미 몇 번이고 다시 부를 수 있게 되어 있으므로 막혀 있는 것은 없다.
 
 Finding 없음 — 계획과 충돌한 것이 없다.
+
+---
+
+## M7 — React viewer 3개 View + Progressive Disclosure (완료)
+
+계획 §8이 M7에 요구한 것: "브라우저에서 Overview → Scenario → Step → Trace가 끝까지
+이어진다."
+
+### 시작할 때 이미 있었던 것
+
+`apps/web`은 **완전히 비어 있었다** — 디렉터리 두 개(`apps/web`, `apps/web/src`)만 있고
+파일이 하나도 없었다. `packages/protocol`에 `OverviewIR`·`ScenarioIR`·`TraceIR`·
+`ViewAnchor`·`isReconcileCurrent` 등 브라우저가 그대로 쓸 수 있는 타입만 M0~M1 시절부터
+준비되어 있었다. `prototypes/byoa-mcp-spike/apps/web`에서 WS 재접속 패턴(§6.9 B1 —
+`onclose`에서만 재접속을 건다)만 포팅했고, 셸과 View 컴포넌트는 이 프로젝트 도메인에
+맞게 새로 썼다(byoa는 기능1의 interview UI라 도메인이 다르다).
+
+### 완료한 것
+
+**bridge — 브라우저용 읽기 API (M0~M6는 `/internal/*`만 만들었다, 전부 MCP 전용 토큰
+가드)**
+- [x] `GET /api/memory` — `/internal/memory`와 같은 데이터, 토큰 없이. `?detail=full`로
+      전체 Semantic Memory를 받는다 — Overview/Scenario가 참조하는 id를 이름으로
+      resolve하는 데 쓴다.
+- [x] `GET /api/evidence` — hover/click 시 `file:line`·소스 발췌를 렌더 시점에 resolve한다
+      (§6.4 V2). `memory-api.ts`의 `describeEvidence`에 `confidence`·`relocationConfidence`·
+      `missingSinceVersion`을 추가로 실었다 — 이미 `Evidence`에 있던 필드인데 지금까지
+      어떤 API도 노출하지 않고 있었다.
+- [x] `BridgeState.lastEvidenceDiffs` — 가장 최근 재인덱싱의 `relocated`/`contentChange`
+      분류. `evidence.json`에는 이 판정이 남지 않으므로(§6.2 T1은 순간의 판정이지 영속
+      필드가 아니다) bridge 메모리에만 둔다. `performReindex`가 재인덱싱마다 갈아 끼우고,
+      `GET /api/evidence`가 병합해 돌려준다.
+- [x] `apps/bridge/test/browser-reads.test.mjs` — 토큰 없이 접근되는지, `detail=full`
+      전환, `includeSource`, 재인덱싱 후 `relocated`/`contentChange`가 실제로 채워지는지
+      4개 시험.
+
+**apps/web — 새 워크스페이스 (React 19 + Vite 8)**
+- [x] `src/api.ts` — bridge REST 클라이언트. `pollView()`가 `/api/views/:id`를 완료될
+      때까지 다시 묻는다 — `scripts/eval.mjs`가 같은 API를 HTTP로 폴링하는 것과 같은
+      패턴이다.
+- [x] `src/ws.ts` — `/events`. byoa의 재접속 패턴을 그대로.
+- [x] `src/layout/scenarioLayout.ts` — §6.8의 rank/lane 계산. **back edge 판정을 두 가지
+      합집합으로 한다**: DFS가 찾은 구조적 cycle(agent가 `loop:true`를 빠뜨려도 렌더러가
+      무한 루프나 잘못된 rank에 빠지지 않게 하는 안전망)과 agent가 명시한 `loop:true`.
+      Node 24가 `.ts`를 그대로 실행하므로(native type stripping) `apps/web/test/*.test.mjs`가
+      컴파일 없이 소스를 직접 import해 시험한다 — 5개, "agent가 loop:true를 빠뜨려도
+      DFS가 구조적 cycle을 잡는다"를 포함.
+- [x] `src/layout/traceLayout.ts` — hop column 묶기. Core가 이미 정렬해 낸 순서를 그대로
+      믿는다. 시험 2개.
+- [x] `src/components/OverviewView.tsx` — area → item 트리(§22).
+- [x] `src/components/ScenarioView.tsx` — swimlane. branch는 분기 표시가 붙은 step에서
+      갈라지는 라벨 달린 선, back edge는 옆 레일의 회귀 호, `stateChange`는 원인 step
+      옆의 `{concept}: {from} → {to}` 주석(§34).
+- [x] `src/components/TraceView.tsx` — hop column. **`nonForward` 엣지를 Scenario back
+      edge와 같은 스타일(옆 레일 점선 호)로 그리고, `cycle`(SCC)은 sccId로부터 뽑은
+      안정적인 색의 테두리로 따로 표시한다** — 계획이 명시한 "같은 회귀 호" 요구를
+      그대로 구현했다.
+- [x] `src/components/Grounding.tsx`(`EvidenceList`) — **Grounding을 항상 만질 수 있게
+      한다**(§6.10). 접힌 한 줄(kind·경로:줄·배지), 펼치면 소스 발췌. 배지: `origin:
+      "agent"` · `relocationConfidence: "degraded"` · `relocated` · `contentChange`(수정/새
+      근거) · 낮은 confidence(`?`). **숨기지 않고 약하게 — status가 uncertain/낮은
+      confidence여도 목록에서 빠지지 않는다.**
+- [x] `src/components/StepDetail.tsx` — Progressive Disclosure의 세 번째 칸. Concept
+      chip·Claim·상태 변화·근거(EvidenceList)·"실제 코드 보기" 버튼.
+- [x] `src/components/EvidenceExplorer.tsx` — 분석 전 fallback. Semantic Memory가 없어도
+      Evidence만으로 file/symbol을 anchor 삼아 Trace를 바로 보여준다(§6.6, §7.4의
+      "Trace는 바로 보인다").
+- [x] `src/App.tsx` — 셸. 프로젝트 선택 → (미분석이면 EvidenceExplorer, 분석했으면
+      자동으로 Overview 요청) → Overview item 클릭 → Scenario → step 클릭 → StepDetail →
+      "실제 코드 보기" → Trace. breadcrumb으로 아무 단계로나 되돌아간다(캐시된 IR을
+      다시 fetch하지 않는다 — 이미 state에 있다).
+- [x] `npm run web`(루트) · `npm run typecheck`에 `@onto/web` 포함 · `npm test`에
+      `apps/web/test/*.test.mjs` 포함(기존 glob이 이미 이것을 잡는다, 수정 불필요).
+- [x] `npm test` 157/157. `npm run typecheck`·`vite build` 전부 통과.
+
+### 실제 브라우저로 확인한 것 (Playwright + headless Chromium, 실제 codex agent)
+
+시스템 지시가 "UI 변경은 브라우저에서 실제로 써 보고 나서 완료로 보고하라"고 요구한다 —
+타입 검사와 시험은 코드가 맞다는 것을 증명하지, **기능이 맞다는 것을 증명하지 않는다.**
+이 리포에는 `chromium-cli`가 없어 scratchpad에 Playwright를 임시로 설치해(프로젝트
+의존성에는 넣지 않았다) 실제로 클릭해 보았다.
+
+```text
+1. 프로젝트 선택 → 분석 전 → EvidenceExplorer가 파일/심볼 목록을 보여준다
+2. 파일 하나 클릭 → Trace가 **agent 없이 즉시** 렌더된다 (§6.6) — hop 0~2, nonForward
+   엣지가 주황 점선 호로 표시됨
+3. Analyze 클릭 → 실제 codex turn 완료 → Overview가 자동으로 뜬다(3개 Area, item마다
+   "시나리오 →" pill, importantConnections가 실제 라벨로 resolve됨)
+4. Overview item(시나리오 pill 있는 것) 클릭 → Scenario turn → swimlane 렌더(참여자
+   lane, entry/outcome 색 구분, branch 조건 라벨)
+5. Scenario step 클릭 → StepDetail 패널(관련 Concept chip, 근거 — kind·file:line까지)
+6. "실제 코드 보기" 클릭 → 같은 step을 anchor로 한 Trace가 뜨고 breadcrumb이
+   "Overview › 다른 사용자 팔로우하기 › Trace: ..."로 전부 이어진다
+```
+
+**전 구간 console 오류 0.** M7이 요구하는 "Overview → Scenario → Step → Trace가 끝까지
+이어진다"를 실제 agent·실제 브라우저로 확인했다.
+
+### 시험이 잡아낸 것 (실제 사용 중 발견 — 코드가 아니라 프론트엔드 설계 가정의 결함)
+
+**Overview item이 `conceptRefs` 없이 `scenarioRefs`만 가질 수 있다는 것을 놓쳤다.**
+`OverviewIR`의 item 스키마는 `conceptRefs`/`scenarioRefs` 둘 다 선택이고 M6의
+`view-validator`는 이것을 정확히 허용한다 — "여기서 시나리오를 보라"는 뜻으로
+`scenarioRefs`만 채운 item은 유효한 OverviewIR이다. 그런데 `onSelectOverviewItem`은
+`item.conceptRefs[0]`으로만 Scenario anchor를 만들었다. 실제 codex 실행에서 "다른 사용자
+팔로우하기" item이 정확히 이 모양(scenarioRefs만 있고 conceptRefs 없음)으로 나왔고,
+클릭해도 **아무 일도 일어나지 않았다** — 에러도 없이 조용히 무시되었다(콘솔에도 안
+찍혔다. `if (!conceptId) return;`이 그렇게 만들었다). 실제로 클릭해 보지 않았다면 코드
+리뷰만으로는 못 잡았을 결함이다 — 타입은 맞았고(`conceptRefs`가 optional array라는 것을
+정확히 반영했다), 조용히 아무 반응이 없는 것이 "정상적인 무동작"인지 "결함"인지는
+실행해서만 구별된다.
+
+`get_scenario_context`가 Concept anchor만 받아 scenario id를 직접 ViewAnchor로 쓸 수
+없으므로(§6.5), scenario id를 못 쓴다. 대신 **이미 `fullMemory()`로 읽어 둔
+`CanonicalScenarioEntry.anchorConceptIds`에서 anchor를 빌린다** — 새 API도 프롬프트
+변경도 필요 없었다. 고친 뒤 같은 흐름을 다시 실행해 Scenario·StepDetail·Trace까지
+전부 이어지는 것을 확인했다.
+
+### 이 문서가 다루지 않는 것
+
+**Renderer safety ceiling의 "…외 N개" 접기는 만들지 않았다.** §6.7은 이것을 렌더러의
+책임으로 못박아 두었고, Trace의 `truncatedAtHop`은 메시지로 보여주지만 Overview/Scenario
+쪽에서 soft budget을 넘긴 항목을 실제로 접어 보여주는 UI는 없다 — `view-validator`의
+`view/over-budget` warning은 지금 `events.ndjson`/diagnostics로만 가고 화면에 아직
+안 나온다. fixture 규모(soft budget 이내)에서는 필요가 없었고, 실제로 넘는 사례를 만들어
+보지 못했다.
+
+**View 재생성 버튼(캐시 무효화 UI)이 없다.** 캐시가 있으면 `POST /api/views`가 항상
+캐시를 돌려주므로, 사용자가 "다시 만들어 줘"를 누를 방법이 UI에는 없다(bridge API 자체는
+같은 요청을 다시 보내는 것을 막지 않지만, 캐시 키가 같으면 항상 캐시 hit이다 — 강제
+재생성 파라미터가 없다).
+
+**"agent-first vs index-only" 비교나 §53 View Utility 사람 평가는 M8 범위다** — 이
+문서는 View가 **렌더된다**는 것만 확인했지 사람이 그것을 이해하기 쉬운지는 재지 않았다.
+
+Finding 없음 — 계획과 충돌한 것이 없다. "시험이 잡아낸 것"의 결함은 프론트엔드 자체
+설계 가정의 오류였고, 실제 실행으로만 드러났다.

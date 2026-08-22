@@ -195,6 +195,57 @@ app.get("/api/mcp-arrivals", (_req: Request, res: Response) => {
 });
 
 /**
+ * 브라우저용 Semantic Memory 읽기 (§6.10 apps/web).
+ *
+ * `/internal/memory`와 같은 데이터를 쓰지만 **토큰 가드가 없다** — 그것은 MCP server
+ * 전용 경계(B1)이지 브라우저를 막으려는 것이 아니다. 브라우저는 bridge의 첫째 클라이언트다.
+ */
+app.get("/api/memory", (req: Request, res: Response) => {
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  res.json(req.query["detail"] === "full" ? loaded : memoryDigest(loaded));
+});
+
+/**
+ * 브라우저용 Evidence 조회 — hover/click 시 `file:line`·소스 발췌를 렌더 시점에 resolve한다
+ * (§6.4 V2, §6.10 "View IR에 굳어 있지 않고 렌더 시점에 Evidence Store에서 resolve된다").
+ *
+ * `relocated`/`contentChange`는 `evidence.json`에 남지 않는 순간의 판정이므로(§6.2 T1)
+ * **가장 최근 재인덱싱의 결과에서만** 붙는다 — bridge 가 재시작되었거나 그 evidence가
+ * 이번 재인덱싱에서 다뤄지지 않았으면 없다. 없다고 "안 바뀌었다"는 뜻은 아니다.
+ */
+app.get("/api/evidence", (req: Request, res: Response) => {
+  const projectPath = state.getProjectPath();
+  const loaded = loadState(projectPath);
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const idsParam = req.query["ids"];
+  const ids = typeof idsParam === "string" ? idsParam.split(",").filter(Boolean) : undefined;
+  const result = queryEvidence(loaded, projectPath!, {
+    ...(ids ? { ids } : {}),
+    ...(req.query["filePath"] ? { filePath: String(req.query["filePath"]) } : {}),
+    ...(req.query["kind"] ? { kind: String(req.query["kind"]) } : {}),
+    ...(req.query["symbolId"] ? { symbolId: String(req.query["symbolId"]) } : {}),
+    includeSource: req.query["includeSource"] === "true",
+    ...(req.query["limit"] ? { limit: Number(req.query["limit"]) } : {}),
+  });
+  const evidenceList = result["evidence"] as Array<Record<string, unknown>>;
+  for (const item of evidenceList) {
+    const diff = state.getLastEvidenceDiff(String(item["id"]));
+    if (diff) {
+      item["relocated"] = diff.relocated;
+      item["contentChange"] = diff.contentChange;
+    }
+  }
+  res.json(result);
+});
+
+/**
  * 결정론적 재인덱싱만 (agent turn 없음).
  *
  * Trace 는 Evidence 만 있으면 동작하므로(§6.6), agent turn 을 태우지 않고 인덱싱만
@@ -355,6 +406,9 @@ async function performReindex(
     snapshot.evidence = withMissing;
     return snapshot;
   });
+
+  // 뷰어의 grounding 배지가 본다 — evidence.json 에는 이 분류가 남지 않는다(§6.2 T1).
+  state.setLastEvidenceDiffs(diffs);
 
   return { after, nextVersion, work, agentCarry };
 }
