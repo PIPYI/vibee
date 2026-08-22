@@ -337,6 +337,35 @@ function validateScenario(rawIr: unknown, memory: SemanticMemory, evidence: Evid
     }
   });
 
+  // schema2 §5 — activations/phases는 그래프 엣지가 아니라 주석 층이다. 도달 가능성 계산에
+  // 넣지 않는다 — step 순서에 관여하지 않고, step id를 참조할 뿐이다.
+  (ir.activations ?? []).forEach((activation, index) => {
+    const base = `/activations/${index}`;
+    checkEvidenceRefs(activation.evidenceRefs, `${base}/evidenceRefs`);
+    if (!participantIds.has(activation.participantId)) {
+      diagnostics.push(
+        diagnostic(
+          "scenario/unknown-participant",
+          "error",
+          `${base}/participantId 가 실재하지 않는 participant "${activation.participantId}" 를 가리킵니다.`,
+          { subject: { path: `${base}/participantId` }, supportedFixes: ["participants[].id 중 하나를 쓴다"] },
+        ),
+      );
+    }
+    if (!stepIds.has(activation.fromStepId)) diagnostics.push(unknownStep(base, "fromStepId", activation.fromStepId));
+    if (!stepIds.has(activation.toStepId)) diagnostics.push(unknownStep(base, "toStepId", activation.toStepId));
+  });
+
+  const phaseIds = new Set<string>();
+  (ir.phases ?? []).forEach((phase, index) => {
+    const base = `/phases/${index} (id: "${phase.id}")`;
+    if (phaseIds.has(phase.id)) diagnostics.push(duplicateId("view/duplicate-id", base, phase.id));
+    phaseIds.add(phase.id);
+    checkEvidenceRefs(phase.evidenceRefs, `${base}/evidenceRefs`);
+    if (!stepIds.has(phase.fromStepId)) diagnostics.push(unknownStep(base, "fromStepId", phase.fromStepId));
+    if (!stepIds.has(phase.toStepId)) diagnostics.push(unknownStep(base, "toStepId", phase.toStepId));
+  });
+
   if (hasError(diagnostics)) return { diagnostics, viewKind: "scenario" };
 
   // --- 도달 가능성 (acceptance 15) -------------------------------------------
@@ -439,6 +468,36 @@ function scenarioBudgetWarnings(ir: ScenarioIR): Diagnostic[] {
           subject: {},
           evidence: { count: ir.steps.length, budget: budget.maxSteps },
           supportedFixes: ["여러 step을 하나로 압축하거나 다른 Scenario로 나누는 것을 고려한다"],
+        },
+      ),
+    );
+  }
+  const activationCount = ir.activations?.length ?? 0;
+  if (activationCount > budget.maxActivations) {
+    warnings.push(
+      diagnostic(
+        "view/over-budget",
+        "warning",
+        `activations가 ${activationCount}개입니다 (권장 ${budget.maxActivations}개 이하).`,
+        {
+          subject: {},
+          evidence: { count: activationCount, budget: budget.maxActivations },
+          supportedFixes: ["짧거나 덜 중요한 activation을 생략하는 것을 고려한다"],
+        },
+      ),
+    );
+  }
+  const phaseCount = ir.phases?.length ?? 0;
+  if (phaseCount > budget.maxPhases) {
+    warnings.push(
+      diagnostic(
+        "view/over-budget",
+        "warning",
+        `phases가 ${phaseCount}개입니다 (권장 ${budget.maxPhases}개 이하).`,
+        {
+          subject: {},
+          evidence: { count: phaseCount, budget: budget.maxPhases },
+          supportedFixes: ["인접한 국면을 합치는 것을 고려한다"],
         },
       ),
     );

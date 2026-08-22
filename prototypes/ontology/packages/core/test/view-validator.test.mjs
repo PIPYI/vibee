@@ -261,3 +261,91 @@ test("Scenario — soft budget(steps) 초과는 warning일 뿐 제출은 성공�
   assert.ok(result.ir);
   assert.ok(codesOf(result.diagnostics).includes("view/over-budget"));
 });
+
+// ---------------------------------------------------------------------------
+// M11 — ScenarioIR v2 (activations/phases/transition.kind, schema2 §5)
+// ---------------------------------------------------------------------------
+
+test("M11 — activations/phases/kind가 없는 기존 IR도 그대로 통과한다 (하위호환)", () => {
+  const ir = baseScenario();
+  assert.equal(ir.activations, undefined);
+  assert.equal(ir.phases, undefined);
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("M11 — 유효한 activation·phase·kind:return을 모두 가진 ScenarioIR은 통과한다", () => {
+  const ir = baseScenario({
+    transitions: [{ fromStepId: "s1", toStepId: "s2", kind: "return", evidenceRefs: [] }],
+    activations: [{ participantId: "p1", fromStepId: "s1", toStepId: "s2", evidenceRefs: [EV1.id] }],
+    phases: [{ id: "ph1", label: "요청 국면", fromStepId: "s1", toStepId: "s2", evidenceRefs: [EV1.id] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.ir.activations[0].participantId, "p1");
+  assert.equal(result.ir.phases[0].id, "ph1");
+});
+
+test("M11 — activation이 실재하지 않는 participantId를 가리키면 거절된다", () => {
+  const ir = baseScenario({
+    activations: [{ participantId: "p-없음", fromStepId: "s1", toStepId: "s2", evidenceRefs: [] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(codesOf(result.diagnostics).includes("scenario/unknown-participant"));
+});
+
+test("M11 — activation이 실재하지 않는 step을 가리키면 거절된다", () => {
+  const ir = baseScenario({
+    activations: [{ participantId: "p1", fromStepId: "s1", toStepId: "s-없음", evidenceRefs: [] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(codesOf(result.diagnostics).includes("scenario/unknown-step"));
+});
+
+test("M11 — activation의 evidenceRefs가 실재하지 않으면 거절된다 (I9)", () => {
+  const ir = baseScenario({
+    activations: [{ participantId: "p1", fromStepId: "s1", toStepId: "s2", evidenceRefs: ["ev-지어냄"] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(codesOf(result.diagnostics).includes("evidence/unknown-id"));
+});
+
+test("M11 — phase가 실재하지 않는 step을 가리키면 거절된다", () => {
+  const ir = baseScenario({
+    phases: [{ id: "ph1", label: "국면", fromStepId: "s-없음", toStepId: "s2", evidenceRefs: [] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(codesOf(result.diagnostics).includes("scenario/unknown-step"));
+});
+
+test("M11 — phase id가 중복되면 거절된다", () => {
+  const ir = baseScenario({
+    phases: [
+      { id: "ph1", label: "국면 1", fromStepId: "s1", toStepId: "s1", evidenceRefs: [] },
+      { id: "ph1", label: "국면 2", fromStepId: "s2", toStepId: "s2", evidenceRefs: [] },
+    ],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(codesOf(result.diagnostics).includes("view/duplicate-id"));
+});
+
+test("M11 — kind:\"return\"은 loop·condition 없이도 통과한다 (구조 검사와 무관한 렌더 구분일 뿐)", () => {
+  const ir = baseScenario({
+    transitions: [{ fromStepId: "s1", toStepId: "s2", kind: "return", evidenceRefs: [] }],
+  });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("M11 — soft budget(activations/phases) 초과는 warning일 뿐 제출은 성공한다", () => {
+  const activations = Array.from({ length: 20 }, () => ({
+    participantId: "p1",
+    fromStepId: "s1",
+    toStepId: "s2",
+    evidenceRefs: [],
+  }));
+  const ir = baseScenario({ activations });
+  const result = validateViewIR({ viewKind: "scenario", ir, memory: SCENARIO_MEMORY, evidence: EVIDENCE_INDEX });
+  assert.ok(result.ir);
+  assert.ok(codesOf(result.diagnostics).includes("view/over-budget"));
+});

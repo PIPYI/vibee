@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildEvidenceBundle, selectAnalyzePrompt } from "../dist/prompt.js";
+import { buildEvidenceBundle, buildOverviewPrompt, buildScenarioPrompt, selectAnalyzePrompt } from "../dist/prompt.js";
 
 const EMPTY_WORK_SET = {
   dirtyEvidence: [],
@@ -123,4 +123,25 @@ test("mode가 없으면 기존 isFirst 분기(full/incremental)를 그대로 쓴
   const incremental = selectAnalyzePrompt(undefined, false, "/tmp/proj", EMPTY_WORK_SET, "(안 씀)");
   assert.match(incremental, /코드가 바뀌었다/);
   assert.doesNotMatch(incremental, /Evidence Index 요약/);
+});
+
+/**
+ * `buildOverviewPrompt` — M11 (schema2 §4) Entry map을 Canonical Scenario 색인으로.
+ */
+test("Overview 프롬프트는 Canonical Scenario를 item으로 먼저 올리라고 지시한다", () => {
+  const prompt = buildOverviewPrompt("/tmp/proj", {});
+  assert.match(prompt, /Canonical Scenario/);
+  assert.match(prompt, /scenarioRefs/);
+  assert.match(prompt, /여기서 어떤 일이 일어나는가/);
+});
+
+/**
+ * `buildScenarioPrompt` — M11 (schema2 §5) activations/phases/kind는 선택이라고 명시한다.
+ */
+test("Scenario 프롬프트는 activations·phases·kind:return을 선택 사항으로 안내한다", () => {
+  const prompt = buildScenarioPrompt("/tmp/proj", {});
+  assert.match(prompt, /activations/);
+  assert.match(prompt, /phases/);
+  assert.match(prompt, /kind: "return"/);
+  assert.match(prompt, /선택이다/);
 });

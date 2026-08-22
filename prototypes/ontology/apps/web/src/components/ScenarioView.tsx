@@ -144,7 +144,49 @@ export function ScenarioView({
             <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-color, #888)" />
             </marker>
+            <marker id="arrow-return" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="none" stroke="var(--edge-color, #888)" strokeWidth="1" />
+            </marker>
           </defs>
+
+          {/* phase band — schema2 §5. 국면 구간을 배경에 깐다. Reading Depth가 MAP에서 접는다. */}
+          {(ir.phases ?? []).map((phase) => {
+            const from = boxCenter(phase.fromStepId);
+            const to = boxCenter(phase.toStepId);
+            if (!from || !to) return null;
+            const left = Math.min(from.left, to.left) - 16;
+            const right = Math.max(from.right, to.right) + 16;
+            return (
+              <g key={phase.id} data-detail="context">
+                <rect x={left} y={8} width={right - left} height={height - 16} className="phase-band" rx={10} />
+                <text x={left + 8} y={22} className="phase-band-label">
+                  {phase.label}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* activation bar — schema2 §5. 참여자가 활성인 step 구간을 lane 아래 얇은 띠로 보여준다. */}
+          {(ir.activations ?? []).map((activation, index) => {
+            const laneIndex = layout.lanes.indexOf(activation.participantId);
+            if (laneIndex < 0) return null;
+            const from = boxCenter(activation.fromStepId);
+            const to = boxCenter(activation.toStepId);
+            if (!from || !to) return null;
+            const left = Math.min(from.left, to.left);
+            const right = Math.max(from.right, to.right);
+            return (
+              <rect
+                key={`act-${index}`}
+                x={left}
+                y={y(laneIndex) + BOX_HEIGHT + 6}
+                width={right - left}
+                height={4}
+                className="activation-bar"
+                data-detail="context"
+              />
+            );
+          })}
 
           {/* lane 라벨 */}
           {layout.lanes.map((laneId, index) => {
@@ -187,9 +229,14 @@ export function ScenarioView({
             const route = routed.get(`t-${index}`);
             if (!route) return null;
             const label = pendingLabels.find((l) => l.id === `t-${index}`);
+            const isReturn = transition.kind === "return";
             return (
               <g key={`t-${index}`} data-edge-from={transition.fromStepId} data-edge-to={transition.toStepId}>
-                <path d={routedPath(route.fromPort, route.toPort)} className="edge" markerEnd="url(#arrow)" />
+                <path
+                  d={routedPath(route.fromPort, route.toPort)}
+                  className={`edge${isReturn ? " edge-return" : ""}`}
+                  markerEnd={isReturn ? "url(#arrow-return)" : "url(#arrow)"}
+                />
                 {label && (
                   <text
                     x={label.cx}

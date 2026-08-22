@@ -142,6 +142,16 @@ for (const agent of targets) {
         allRefsResolve,
         JSON.stringify(ir.areas),
       );
+
+      // M11 (schema2 §4) — Entry map이 실제로 Canonical Scenario 색인처럼 쓰이는지 측정한다.
+      // pass/fail 기준이 아니다 — §53 View Utility에서 다듬을 값이라 지금은 관측만 한다.
+      const items = ir.areas.flatMap((area) => area.items);
+      const withScenarioRefs = items.filter((item) => (item.scenarioRefs ?? []).length > 0);
+      const ratio = items.length > 0 ? (withScenarioRefs.length / items.length) : null;
+      console.log(
+        `  [M11] Overview item ${items.length}개 중 scenarioRefs를 가진 것 ${withScenarioRefs.length}개` +
+          (ratio === null ? "" : ` (${(ratio * 100).toFixed(0)}%)`),
+      );
     }
   }
 

@@ -22,5 +22,9 @@ export const VIEW_BUDGET = {
     maxParticipants: 6,
     /** §30 — step은 Concept 1:1이 아니라 압축된 단위이므로 20은 이미 넉넉하다. */
     maxSteps: 20,
+    /** schema2 §5 — activation은 참여자 수 × 국면 수 정도로 늘어나는 게 자연스럽다. */
+    maxActivations: 16,
+    /** schema2 §5 — 국면은 한 화면에서 구분되어 보이는 정도로 제한한다. */
+    maxPhases: 6,
   },
 } as const;

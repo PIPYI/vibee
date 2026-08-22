@@ -624,3 +624,24 @@ button:disabled {
   stroke-width: 6;
   pointer-events: none;
 }
+
+/* Scenario M11 — activation bar / phase band / return transition (schema2 §5) */
+.phase-band {
+  fill: rgba(91, 140, 255, 0.05);
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+.phase-band-label {
+  fill: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.activation-bar {
+  fill: var(--accent);
+  opacity: 0.35;
+}
+.edge-return {
+  stroke-dasharray: 3 3;
+  opacity: 0.75;
+}

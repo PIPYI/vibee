@@ -567,6 +567,9 @@ export type ScenarioIR = {
   transitions: ScenarioTransition[];
   branches?: ScenarioBranch[];
   stateChanges?: ScenarioStateChange[];
+  /** schema2 §5. 세 필드(activations/phases/transition.kind) 모두 선택이다 — 없는 기존 IR도 그대로 유효하다. */
+  activations?: ScenarioActivation[];
+  phases?: ScenarioPhase[];
 
   entryStepId: string;
   outcomeStepIds: string[];
@@ -608,6 +611,11 @@ export type ScenarioTransition = {
    * 렌더는 옆 레일의 회귀 호로 그리고 step 순서를 재배치하지 않는다.
    */
   loop?: boolean;
+  /**
+   * schema2 §5 — 없으면 "call"과 동일하게 다룬다 (하위호환). `loop`와는 다른 축이다:
+   * `loop`는 되돌아가는 흐름이고, `return`은 응답이다. 렌더에서만 다르게 그린다.
+   */
+  kind?: "call" | "return";
   evidenceRefs: string[];
   confidence?: number;
 };
@@ -629,6 +637,29 @@ export type ScenarioStateChange = {
   to?: string;
   changeKind?: "create" | "update" | "delete" | "state_transition";
   causedByStepId: string;
+  evidenceRefs: string[];
+};
+
+/**
+ * schema2 §5 — 참여자가 어느 step 구간 동안 활성인가. archify sequence의 activation bar에서
+ * 표현 문법만 빌린다 (A11) — 좌표는 없고 항상 step id 참조다 (A7·A12).
+ */
+export type ScenarioActivation = {
+  participantId: string;
+  fromStepId: string;
+  toStepId: string;
+  evidenceRefs: string[];
+};
+
+/**
+ * schema2 §5 — 흐름의 국면에 이름을 붙인다. archify sequence의 phase segment에서 표현
+ * 문법만 빌린다 (A11). Reading Depth(§2)가 접을 자연스러운 단위이기도 하다.
+ */
+export type ScenarioPhase = {
+  id: string;
+  label: string;
+  fromStepId: string;
+  toStepId: string;
   evidenceRefs: string[];
 };
 

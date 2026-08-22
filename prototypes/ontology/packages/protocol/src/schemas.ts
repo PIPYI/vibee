@@ -289,8 +289,36 @@ const scenarioTransition = {
     condition: { type: "string" },
     // back edge인가 (R5). true면 view-validator가 condition을 요구한다.
     loop: { type: "boolean" },
+    // schema2 §5 — 없으면 "call"과 같다. loop와 다른 축이므로 같이 있어도 된다.
+    kind: { enum: ["call", "return"] },
     evidenceRefs,
     confidence,
+  },
+} as const;
+
+// schema2 §5 — activation/phase 모두 좌표가 아니라 step id 참조로만 표현한다 (A7·A12).
+const scenarioActivation = {
+  type: "object",
+  additionalProperties: false,
+  required: ["participantId", "fromStepId", "toStepId", "evidenceRefs"],
+  properties: {
+    participantId: nonEmptyString,
+    fromStepId: nonEmptyString,
+    toStepId: nonEmptyString,
+    evidenceRefs,
+  },
+} as const;
+
+const scenarioPhase = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label", "fromStepId", "toStepId", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    fromStepId: nonEmptyString,
+    toStepId: nonEmptyString,
+    evidenceRefs,
   },
 } as const;
 
@@ -354,6 +382,8 @@ export const SCENARIO_IR_SCHEMA = {
     transitions: { type: "array", items: scenarioTransition },
     branches: { type: "array", items: scenarioBranch },
     stateChanges: { type: "array", items: scenarioStateChange },
+    activations: { type: "array", items: scenarioActivation },
+    phases: { type: "array", items: scenarioPhase },
     entryStepId: nonEmptyString,
     outcomeStepIds: { type: "array", items: nonEmptyString },
     evidenceRefs: stringArray,
