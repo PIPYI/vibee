@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { SemanticStore, type LoadedState } from "@onto/core";
+import { SemanticStore, conceptCandidates, describeCandidate, type LoadedState } from "@onto/core";
 import type { Evidence } from "@onto/protocol";
 
 export type Unavailable = { error: "memory_unavailable"; reason: string; next_step: string };
@@ -103,14 +103,27 @@ export type EvidenceQuery = {
   limit?: number;
 };
 
-/** evidence 레코드. `includeSource` 를 켜면 그 범위의 실제 소스를 함께 준다. */
+/**
+ * evidence 레코드. `includeSource` 를 켜면 그 범위의 실제 소스를 함께 준다.
+ *
+ * `pending` — 현재 task 의 AnalyzeTransaction 이 검증했지만 아직 `evidence.json` 에는 없는
+ * 근거 (§6.5 S2). **transaction 의 pendingEvidence 도 여기 보여야 한다** — 그러지 않으면
+ * agent 가 방금 propose_evidence 로 등록받은 id 를 get_evidence 로 되짚어 확인할 수 없고,
+ * "검증된 제안은 이 task 안에서 즉시 grounding 할 수 있다"는 약속이 깨진다.
+ */
 export function queryEvidence(
   state: LoadedState,
   projectPath: string,
   query: EvidenceQuery,
+  pending: readonly Evidence[] = [],
 ): Record<string, unknown> {
   const limit = Math.min(query.limit ?? 50, 200);
-  let matched = state.evidence.evidence;
+  let matched: Evidence[] = state.evidence.evidence;
+  if (pending.length > 0) {
+    const byId = new Map(matched.map((item) => [item.id, item] as const));
+    for (const item of pending) byId.set(item.id, item);
+    matched = [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
 
   if (query.ids && query.ids.length > 0) {
     const wanted = new Set(query.ids);
@@ -205,13 +218,18 @@ export function conceptContext(
     /**
      * 재사용을 검토할 기존 Concept (§15).
      *
-     * Core 가 후보를 찾아 주되 **강제하지 않는다** — 판단은 AI, 측정은 Core (I1).
-     * 완전한 IdentityResolver 는 M4 에서 붙는다. 여기서는 이름 유사도만 본다.
+     * `@onto/core`의 IdentityResolver — exact/정규화 이름 · grounding overlap(Jaccard) ·
+     * 이전 버전 id를 함께 본다. **Core 가 후보를 찾아 주되 강제하지 않는다** — 판단은 AI,
+     * 측정은 Core (I1). `id`를 draft 에 넣지 않는다 — 넣으면 자기 자신이 "same-id" 로
+     * 매칭되어 후보 목록에 자기 자신이 낀다.
      */
-    reuseCandidates: memory.concepts
-      .filter((item) => item.id !== concept.id && sharesToken(item.name, concept.name))
-      .slice(0, 10)
-      .map((item) => ({ id: item.id, name: item.name })),
+    reuseCandidates: conceptCandidates(memory, grounding, {
+      name: concept.name,
+      ...(concept.aliases ? { aliases: concept.aliases } : {}),
+      evidenceRefs: concept.evidenceRefs,
+    })
+      .filter((candidate) => candidate.id !== concept.id)
+      .map((candidate) => describeCandidate(candidate, (id) => memory.concepts.find((item) => item.id === id))),
   };
 }
 
@@ -229,15 +247,6 @@ function summarizeClaim(claim: {
     object: claim.object,
     status: claim.status,
   };
-}
-
-function sharesToken(a: string, b: string): boolean {
-  const left = new Set(a.toLowerCase().split(/[\s_-]+/u).filter(Boolean));
-  return b
-    .toLowerCase()
-    .split(/[\s_-]+/u)
-    .filter(Boolean)
-    .some((token) => left.has(token));
 }
 
 /** predicate 는 자유 문장이므로 정확 일치가 아니라 부분 일치로 찾는다 (I3). */

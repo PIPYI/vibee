@@ -6,6 +6,7 @@
  *
  * 영속 상태(Semantic Memory·Evidence)는 여기 있지 않고 `@onto/core`의 generation store에 있다.
  */
+import type { AnalyzeSession } from "@onto/core";
 import type { AgentEvent, AgentEventEnvelope, McpCallSource, TaskState } from "@onto/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
@@ -14,6 +15,18 @@ export class BridgeState {
   private projectPath: string | null = null;
   private readonly tasks = new Map<string, TaskState>();
   private activeTaskId: string | null = null;
+
+  /**
+   * task 별 AnalyzeTransaction 을 들고 있는 session (§6.5 S2 · §6.3 T3).
+   *
+   * **여기가 유일한 소유자다.** `/internal/propose-evidence` · `/internal/semantic-patch` 는
+   * `state.getActiveTaskId()` 로 현재 task 를 찾고, 그 task 의 session 을 통해서만
+   * transaction 에 접근한다 — MCP server 는 상태가 없으므로(B1) session 은 언제나 bridge
+   * 쪽에 있어야 한다.
+   */
+  private readonly analyzeSessions = new Map<string, AnalyzeSession>();
+  /** 커밋 1이 만든 dirty evidence 개수. ④ churn 판정의 입력이다 (재인덱싱마다 갱신) */
+  private readonly dirtyEvidenceCounts = new Map<string, number>();
 
   private seq = 0;
   private readonly buffer: AgentEventEnvelope[] = [];
@@ -79,6 +92,37 @@ export class BridgeState {
         return;
       }
     }
+  }
+
+  setAnalyzeSession(taskId: string, session: AnalyzeSession): void {
+    this.analyzeSessions.set(taskId, session);
+  }
+
+  getAnalyzeSession(taskId: string): AnalyzeSession | undefined {
+    return this.analyzeSessions.get(taskId);
+  }
+
+  /**
+   * transaction 을 버리고 session 을 잊는다 (T3 · §6.5 S2).
+   *
+   * turn이 어떻게 끝났든(완료·중단·오류) 반드시 불러야 한다 — **반쯤 쓰인 evidence는
+   * 없다.** `POST /api/tasks/:id/stop`도 여기를 부른다. 이미 정리된 task 를 다시 불러도
+   * 안전하다(idempotent) — session 이 없으면 조용히 아무것도 하지 않는다.
+   */
+  disposeAnalyzeSession(taskId: string, reason: string): void {
+    const session = this.analyzeSessions.get(taskId);
+    if (!session) return;
+    session.dispose(reason);
+    this.analyzeSessions.delete(taskId);
+    this.dirtyEvidenceCounts.delete(taskId);
+  }
+
+  setDirtyEvidenceCount(taskId: string, count: number): void {
+    this.dirtyEvidenceCounts.set(taskId, count);
+  }
+
+  getDirtyEvidenceCount(taskId: string): number | undefined {
+    return this.dirtyEvidenceCounts.get(taskId);
   }
 
   /** 이 task에서 두 증거원이 모두 관측된 tool들. acceptance 2·3이 이것을 본다. */

@@ -14,7 +14,8 @@ import { entityKey } from "@onto/protocol";
 
 import { normalizedText } from "./normalize.js";
 
-function sha1(text: string): string {
+/** propose_evidence의 id 재료도 이것을 쓴다 (§6.5 R2). */
+export function sha1(text: string): string {
   return createHash("sha1").update(text, "utf8").digest("hex");
 }
 

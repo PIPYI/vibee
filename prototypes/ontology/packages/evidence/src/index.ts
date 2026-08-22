@@ -27,6 +27,7 @@ export {
   fingerprintOf,
   linkEvidenceBaseId,
   rawHashOf,
+  sha1,
   resolveLinkIds,
   sha256,
   symbolEvidenceId,
@@ -48,3 +49,14 @@ export {
   type LanguageConfig,
 } from "./lang.js";
 export { collectSymbolSites, type SymbolSite } from "./sites.js";
+export {
+  DEGRADED_SIMILARITY_THRESHOLD,
+  carryAgentEvidence,
+  lineCountOf,
+  relocateExtent,
+  relocationTokens,
+  sliceLines,
+  type AgentCarryReport,
+  type PositionedToken,
+  type RelocationResult,
+} from "./relocate.js";

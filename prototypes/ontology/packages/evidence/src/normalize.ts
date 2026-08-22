@@ -43,12 +43,30 @@ function isClosingBracket(kind: ts.SyntaxKind): boolean {
  * 정규화: 따옴표 스타일 (`'x'`와 `"x"`가 같은 토큰이 된다)
  * 남기는 것: 식별자 · 키워드 · 리터럴 **값** · 연산자 · 구조적 구두점
  */
-function tokenizeCode(text: string): string[] {
+/**
+ * 위치까지 함께 나르는 정규화 토큰.
+ *
+ * relocation(§6.5 S1 ②)이 **같은 토큰 길이의 창**을 밀려면 두 가지가 필요하다 — 정규화된
+ * 토큰 값(그래야 따옴표 스타일이 창을 어긋내지 않는다)과 원문에서의 위치(그래야 창을 다시
+ * 줄 범위로 바꿀 수 있다).
+ *
+ * **지문 파이프라인과 같은 함수에서 나온다.** 세미콜론·후행 콤마를 여기서만 남기면 창 길이가
+ * 지문의 토큰 수와 어긋나 relocation 이 조용히 실패한다 — 실제로 그렇게 한 번 틀렸다.
+ */
+export type NormalizedToken = {
+  /** 지문에 들어가는 값. `id:` / `str:` / `num:` 접두사가 붙는다 */
+  norm: string;
+  start: number;
+  end: number;
+  isIdentifier: boolean;
+};
+
+function scanCode(text: string): NormalizedToken[] {
   // skipTrivia = true → 공백과 주석을 건너뛴다.
   const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.JSX, text);
-  const tokens: string[] = [];
+  const tokens: NormalizedToken[] = [];
   /** 콤마는 다음 토큰을 보고 나서 결정한다 — 닫는 괄호가 오면 후행 콤마다. */
-  let pendingComma = false;
+  let pendingComma: { start: number; end: number } | null = null;
 
   for (;;) {
     const kind = scanner.scan();
@@ -56,14 +74,19 @@ function tokenizeCode(text: string): string[] {
 
     if (pendingComma) {
       // 닫는 괄호 앞의 콤마는 스타일이다. 그 외의 콤마는 구조를 나른다.
-      if (!isClosingBracket(kind)) tokens.push(",");
-      pendingComma = false;
+      if (!isClosingBracket(kind)) {
+        tokens.push({ norm: ",", ...pendingComma, isIdentifier: false });
+      }
+      pendingComma = null;
     }
 
     if (isDroppedPunctuation(kind)) continue;
 
+    const start = scanner.getTokenStart();
+    const end = scanner.getTokenEnd();
+
     if (kind === ts.SyntaxKind.CommaToken) {
-      pendingComma = true;
+      pendingComma = { start, end };
       continue;
     }
 
@@ -74,25 +97,64 @@ function tokenizeCode(text: string): string[] {
       case ts.SyntaxKind.TemplateMiddle:
       case ts.SyntaxKind.TemplateTail:
         // getTokenValue()는 따옴표를 벗긴 값이다. 따옴표 스타일이 지문에서 사라진다.
-        tokens.push(`str:${scanner.getTokenValue()}`);
+        tokens.push({ norm: `str:${scanner.getTokenValue()}`, start, end, isIdentifier: false });
         break;
       case ts.SyntaxKind.NumericLiteral:
       case ts.SyntaxKind.BigIntLiteral:
-        tokens.push(`num:${scanner.getTokenValue()}`);
+        tokens.push({ norm: `num:${scanner.getTokenValue()}`, start, end, isIdentifier: false });
         break;
       case ts.SyntaxKind.Identifier:
       case ts.SyntaxKind.PrivateIdentifier:
-        tokens.push(`id:${scanner.getTokenText()}`);
+        tokens.push({ norm: `id:${scanner.getTokenText()}`, start, end, isIdentifier: true });
         break;
       default:
-        tokens.push(scanner.getTokenText());
+        tokens.push({ norm: scanner.getTokenText(), start, end, isIdentifier: false });
         break;
     }
   }
 
   // 파일 끝의 후행 콤마.
-  if (pendingComma) tokens.push(",");
+  if (pendingComma) tokens.push({ norm: ",", ...pendingComma, isIdentifier: false });
   return tokens;
+}
+
+/**
+ * `code` 프로파일 — 코드의 의미만 남긴다.
+ *
+ * 버리는 것: 공백 · 줄바꿈 · 주석 · 세미콜론 · **후행 콤마**
+ * 정규화: 따옴표 스타일 (`'x'`와 `"x"`가 같은 토큰이 된다)
+ * 남기는 것: 식별자 · 키워드 · 리터럴 **값** · 연산자 · 구조적 구두점
+ */
+function tokenizeCode(text: string): string[] {
+  return scanCode(text).map((token) => token.norm);
+}
+
+/**
+ * 낱말 단위 prose 토큰.
+ *
+ * `tokenizeProse`는 지문을 위해 **압축된 문자열 하나**를 돌려주지만, 창을 밀려면 낱말마다
+ * 위치가 필요하다. 둘은 같은 것을 세지 않는다 — 그래서 일치 판정은 언제나
+ * `fingerprintOf(slice, profile)`로 다시 확인한다.
+ */
+function scanProse(text: string): NormalizedToken[] {
+  const tokens: NormalizedToken[] = [];
+  const pattern = /\S+/gu;
+  for (;;) {
+    const match = pattern.exec(text);
+    if (!match) break;
+    tokens.push({
+      norm: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+      isIdentifier: true,
+    });
+  }
+  return tokens;
+}
+
+/** relocation 이 쓰는 위치 있는 토큰열 (§6.5 S1). */
+export function positionedTokens(text: string, profile: NormalizationProfile): NormalizedToken[] {
+  return profile === "prose" ? scanProse(text) : scanCode(text);
 }
 
 /**

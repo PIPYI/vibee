@@ -35,12 +35,25 @@ function sameLocation(a: Evidence, b: Evidence): boolean {
  * 두 인덱스 사이의 EvidenceDiff.
  *
  * `previous`가 없으면 첫 인덱싱이므로 전부 `appeared`다.
+ *
+ * **`next`에는 "지금 실제로 있는 것"만 들어와야 한다.** `carryMissingEvidence`가 사라진
+ * 것을 `missing` 상태로 다시 채워 넣은 인덱스를 여기에 넘기면, 지워진 심볼이 `next`에
+ * 존재하게 되어 rawHash 비교에서 **`unchanged`로 분류된다** — 근거가 사라졌는데 아무 일도
+ * 없었던 것처럼 보이는, T1이 막으려던 바로 그 조용한 부패다. 순서는 언제나
+ * `diffEvidence(before, 지금있는것)` → `carryMissingEvidence(before, 지금있는것)`이다.
  */
 export function diffEvidence(
   previous: EvidenceIndex | undefined,
   next: EvidenceIndex,
 ): EvidenceDiff[] {
-  const before = new Map((previous?.evidence ?? []).map((item) => [item.id, item]));
+  // **이미 missing 이던 것은 이번 전이의 변화가 아니다.** 그것을 매번 다시 missing 으로
+  // 내보내면 그 근거에 걸린 의미가 영원히 dirty 로 남아, 포매팅만 바꾼 커밋에서도
+  // reconcile 이 절대 따라잡지 못한다 (§6.9 커밋 1).
+  const before = new Map(
+    (previous?.evidence ?? [])
+      .filter((item) => item.status === "present")
+      .map((item) => [item.id, item]),
+  );
   const diffs: EvidenceDiff[] = [];
 
   for (const item of next.evidence) {

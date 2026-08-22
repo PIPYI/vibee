@@ -11,19 +11,35 @@
  * **이 파일은 OS 를 알지 않는다** — 실행 파일 해석과 프로세스 정리는 `./platform.js` 에만 있다.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { SemanticStore, initialProjectState } from "@onto/core";
-import { buildWorkSet, carryMissingEvidence, diffEvidence, indexProject } from "@onto/evidence";
+import {
+  AnalyzeSession,
+  SemanticStore,
+  commitPatch,
+  initialProjectState,
+  type LoadedState,
+} from "@onto/core";
+import {
+  buildWorkSet,
+  carryAgentEvidence,
+  carryMissingEvidence,
+  diffEvidence,
+  indexProject,
+  type AgentCarryReport,
+} from "@onto/evidence";
 import type {
   AgentEvent,
   AgentId,
   AgentReadiness,
   AnalyzeRequest,
+  EvidenceProposal,
   HealthResponse,
+  SemanticPatch,
+  SemanticWorkSet,
   TaskMode,
 } from "@onto/protocol";
 import { BRIDGE_TOKEN_HEADER } from "@onto/protocol";
@@ -184,8 +200,20 @@ app.post("/api/index", async (req: Request, res: Response) => {
   }
   state.setProjectPath(projectPath);
   try {
-    const prepared = await reindex(projectPath, "index-only", body.gitBase);
-    res.json(prepared.summary);
+    // **세션을 열지 않는다** — agent turn 이 없으므로 AnalyzeTransaction 이 필요 없다.
+    // `reindex()` 를 쓰면 존재하지 않는 task 에 세션이 묶여 정리되지 않고 남는다.
+    const store = new SemanticStore(projectPath);
+    const { after, nextVersion, work } = await performReindex(store, projectPath, body.gitBase);
+    res.json({
+      analysisVersion: nextVersion,
+      semanticVersion: after.project.semanticVersion,
+      workSetSize: {
+        dirtyEvidence: work.dirtyEvidence.length,
+        affectedConcepts: work.affectedConceptIds.length,
+        affectedClaims: work.affectedClaimIds.length,
+        ungroundedAppearedEvidence: work.ungroundedAppearedEvidenceIds.length,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: asMessage(error) });
   }
@@ -241,8 +269,26 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
   }
 });
 
+/** 참조된 파일만 읽는다 (S1 relocation의 창 검색 대상). 실패는 null — carryAgentEvidence가 missing 으로 접는다 */
+function readProjectFile(projectPath: string): (relPath: string) => string | null {
+  return (relPath) => {
+    try {
+      return readFileSync(join(projectPath, relPath), "utf8");
+    } catch {
+      return null;
+    }
+  };
+}
+
+type ReindexOutcome = {
+  after: LoadedState;
+  nextVersion: number;
+  work: SemanticWorkSet;
+  agentCarry: AgentCarryReport;
+};
+
 /**
- * 커밋 1 — Repository re-index.
+ * 커밋 1 — Repository re-index (§6.9).
  *
  * ```text
  * analysisVersion++
@@ -251,13 +297,21 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
  *   SemanticWorkSet 이 비어 있으면 → 새 analysisVersion 으로 advance
  *   있으면                        → 기존 값 유지
  * ```
+ *
+ * **순서가 중요하다** (S1 · T1) — diff 는 "지금 실제로 있는 것"과 비교해야 한다.
+ * `carryAgentEvidence` 가 먼저 agent evidence 를 relocate 하고, 그 결과를 `diffEvidence` 가
+ * 보고, **그 다음에** `carryMissingEvidence` 가 사라진 것을 `missing` 으로 채운다. 순서를
+ * 바꾸면 사라진 근거가 `unchanged` 로 분류되는 조용한 부패가 생긴다 — M4 시험이 실제로
+ * 이 순서를 걸고 있다.
+ *
+ * `AnalyzeSession`을 열지 않는다 — 그것은 agent turn 을 태우는 `reindex()` 의 몫이다.
+ * `/api/index`(index-only) 는 세션이 필요 없다.
  */
-async function reindex(
+async function performReindex(
+  store: SemanticStore,
   projectPath: string,
-  taskId: string,
   gitBase: string | undefined,
-): Promise<{ prompt: string; summary: Record<string, unknown> }> {
-  const store = new SemanticStore(projectPath);
+): Promise<ReindexOutcome> {
   store.cleanOrphans();
   if (!store.isInitialized()) {
     await store.init(initialProjectState(randomUUID(), projectPath));
@@ -269,13 +323,18 @@ async function reindex(
     analysisVersion: nextVersion,
     ...(gitBase ? { gitBase } : {}),
   });
-  const withMissing = carryMissingEvidence(before.evidence, fresh);
-  const diffs = diffEvidence(before.evidence, withMissing);
+  const { index: withAgent, report: agentCarry } = carryAgentEvidence(
+    before.evidence,
+    fresh,
+    readProjectFile(projectPath),
+  );
+  const diffs = diffEvidence(before.evidence, withAgent);
+  const withMissing = carryMissingEvidence(before.evidence, withAgent);
   const work = buildWorkSet(diffs, before.memory, before.grounding);
   const workEmpty =
     work.dirtyEvidence.length === 0 && work.ungroundedAppearedEvidenceIds.length === 0;
 
-  await store.commit("repository re-index", "index", (snapshot) => {
+  const after = await store.commit("repository re-index", "index", (snapshot) => {
     snapshot.project.analysisVersion = nextVersion;
     // 의미는 아직 아무것도 바뀌지 않았다.
     if (workEmpty) {
@@ -286,14 +345,41 @@ async function reindex(
     return snapshot;
   });
 
+  return { after, nextVersion, work, agentCarry };
+}
+
+/**
+ * 프로젝트를 재인덱싱하고, agent turn 을 위한 프롬프트와 **새 AnalyzeSession** 을 연다.
+ *
+ * 세션은 `taskId` 에 묶여 `state` 에 저장된다 — `/internal/propose-evidence` ·
+ * `/internal/semantic-patch` 가 `state.getActiveTaskId()` 로 이것을 찾는다.
+ */
+async function reindex(
+  projectPath: string,
+  taskId: string,
+  gitBase: string | undefined,
+): Promise<{ prompt: string; summary: Record<string, unknown> }> {
+  const store = new SemanticStore(projectPath);
+  const before = store.isInitialized() ? store.load() : undefined;
+  const { after, nextVersion, work, agentCarry } = await performReindex(store, projectPath, gitBase);
+
+  state.setAnalyzeSession(
+    taskId,
+    new AnalyzeSession(taskId, projectPath, { baseAnalysisVersion: nextVersion, index: after.evidence }),
+  );
+  state.setDirtyEvidenceCount(taskId, work.dirtyEvidence.length);
+
   state.emit({
     type: "analysis.progress",
     taskId,
     phase: "indexed",
-    message: `analysisVersion ${nextVersion} · dirty ${work.dirtyEvidence.length} · 새 근거 ${work.ungroundedAppearedEvidenceIds.length}`,
+    message:
+      `analysisVersion ${nextVersion} · dirty ${work.dirtyEvidence.length} · ` +
+      `새 근거 ${work.ungroundedAppearedEvidenceIds.length} · ` +
+      `agent evidence relocate ${agentCarry.relocated.length} (missing ${agentCarry.missing.length})`,
   });
 
-  const isFirst = before.project.semanticVersion === 0 && before.memory.concepts.length === 0;
+  const isFirst = (before?.project.semanticVersion ?? 0) === 0 && (before?.memory.concepts.length ?? 0) === 0;
   const prompt = isFirst
     ? buildFullAnalyzePrompt(projectPath)
     : buildIncrementalAnalyzePrompt(projectPath, work);
@@ -302,7 +388,7 @@ async function reindex(
     prompt,
     summary: {
       analysisVersion: nextVersion,
-      semanticVersion: before.project.semanticVersion,
+      semanticVersion: after.project.semanticVersion,
       workSetSize: {
         dirtyEvidence: work.dirtyEvidence.length,
         affectedConcepts: work.affectedConceptIds.length,
@@ -351,6 +437,10 @@ async function runTask(
     const message = asMessage(error);
     state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
     state.emit({ type: "task.error", taskId, message });
+  } finally {
+    // **turn이 어떻게 끝났든** transaction을 버린다 (§6.5 S2) — 반쯤 쓰인 evidence는 없다.
+    // 이미 `/api/tasks/:id/stop`이 지웠다면 여기서는 아무것도 하지 않는다(idempotent).
+    state.disposeAnalyzeSession(taskId, `task ${mode} ended`);
   }
 }
 
@@ -415,6 +505,9 @@ app.post("/api/tasks/:taskId/stop", async (req: Request, res: Response) => {
     res.status(404).json({ error: `task 를 찾을 수 없습니다: ${taskId}` });
     return;
   }
+  // **stop이 transaction을 폐기한다** (§6.5 S2) — adapter가 실제로 멈추는 것을 기다리지
+  // 않는다. `runTask`의 `finally`가 나중에 같은 것을 다시 부르지만 idempotent라 안전하다.
+  state.disposeAnalyzeSession(taskId, "stopped by user");
   await adapters.get(task.agent)?.stopTask(taskId);
   res.json({ ok: true });
 });
@@ -496,7 +589,11 @@ app.post("/internal/evidence", requireToken, (req: Request, res: Response) => {
     res.json(loaded);
     return;
   }
-  res.json(queryEvidence(loaded, projectPath!, req.body ?? {}));
+  // **transaction 의 pendingEvidence 도 보인다** (§6.5) — 검증된 제안은 이 task 안에서
+  // 즉시 grounding 할 수 있어야 self-deadlock 이 생기지 않는다.
+  const taskId = state.getActiveTaskId();
+  const pending = taskId ? state.getAnalyzeSession(taskId)?.transaction.pendingEvidence ?? [] : [];
+  res.json(queryEvidence(loaded, projectPath!, req.body ?? {}, pending));
 });
 
 app.get("/internal/concepts", requireToken, (req: Request, res: Response) => {
@@ -545,6 +642,108 @@ app.get("/internal/scenario-context", requireToken, (req: Request, res: Response
   );
 });
 
+/**
+ * `propose_evidence` (§6.5 R2 · S1). Core 가 검증하고 id 를 발급한다 — agent 는 id 를 직접
+ * 쓰지 않는다. **transaction 이 없으면 lazy/degraded 로 답한다** (C5) — analyze turn 밖에서
+ * 부르면 실패가 아니라 무엇을 해야 하는지 말해 준다.
+ */
+app.post("/internal/propose-evidence", requireToken, (req: Request, res: Response) => {
+  recordArrival("propose_evidence");
+  const taskId = state.getActiveTaskId();
+  const session = taskId ? state.getAnalyzeSession(taskId) : undefined;
+  if (!taskId || !session) {
+    res.json({
+      error: "no_active_transaction",
+      next_step: "analyze turn 이 진행 중일 때만 propose_evidence 를 쓸 수 있습니다.",
+    });
+    return;
+  }
+
+  const outcome = session.transaction.propose(req.body as EvidenceProposal);
+  if (!outcome.ok) {
+    state.emit({ type: "validation.failed", taskId, tool: "propose_evidence", diagnostics: outcome.diagnostics });
+    res.json({ ok: false, diagnostics: outcome.diagnostics });
+    return;
+  }
+  res.json({ ok: true, evidence: outcome.value, diagnostics: outcome.diagnostics });
+});
+
+/**
+ * `submit_semantic_patch` (§6.3 Validator ⓪~⑤). 실패하면 `{ok:false, diagnostics}` —
+ * 같은 turn 에서 고쳐 다시 제출할 수 있다.
+ *
+ * **T3** — `evidence/file-changed-during-turn` 이 나면 여기서 재인덱싱하고 같은 session 에
+ * 새 transaction 을 연다. `performReindex` 는 비동기이므로 **먼저 실행해 결과를 만들고**,
+ * `AnalyzeSession.restartAfterRace` 에는 이미 계산된 값을 동기로 돌려주는 클로저만 넘긴다 —
+ * Core 의 동기 API 를 바꾸지 않고 T3 를 완성하는 최소 변경이다.
+ */
+app.post("/internal/semantic-patch", requireToken, async (req: Request, res: Response) => {
+  recordArrival("submit_semantic_patch");
+  const projectPath = state.getProjectPath();
+  const taskId = state.getActiveTaskId();
+  const session = taskId ? state.getAnalyzeSession(taskId) : undefined;
+  if (!projectPath || !taskId || !session) {
+    res.json({
+      error: "no_active_transaction",
+      next_step: "analyze turn 이 진행 중일 때만 submit_semantic_patch 를 쓸 수 있습니다.",
+    });
+    return;
+  }
+
+  const store = new SemanticStore(projectPath);
+  const head = store.load();
+  const dirtyEvidenceCount = state.getDirtyEvidenceCount(taskId);
+
+  const outcome = await commitPatch(store, {
+    head,
+    transaction: session.transaction,
+    patch: req.body as SemanticPatch,
+    ...(dirtyEvidenceCount !== undefined ? { dirtyEvidenceCount } : {}),
+  });
+
+  if (outcome.ok) {
+    state.emit({
+      type: "memory.patched",
+      taskId,
+      semanticVersion: outcome.value.semanticVersion,
+      summary: `concept +${outcome.value.diffSummary.conceptsAdded.length} · claim +${outcome.value.diffSummary.claimsAdded.length}`,
+    });
+    res.json({ ok: true, ...outcome.value, diagnostics: outcome.diagnostics });
+    return;
+  }
+
+  const raceDiagnostic = outcome.diagnostics.find(
+    (item) => item.code === "evidence/file-changed-during-turn",
+  );
+  if (raceDiagnostic) {
+    const changedFiles = (raceDiagnostic.evidence["changedFiles"] as string[] | undefined) ?? [];
+    // performReindex 는 비동기다 — **먼저 실행하고** 결과만 동기 클로저로 넘긴다.
+    const reindexed = await performReindex(store, projectPath, undefined);
+    state.setDirtyEvidenceCount(taskId, reindexed.work.dirtyEvidence.length);
+
+    const restarted = session.restartAfterRace(changedFiles, () => ({
+      baseAnalysisVersion: reindexed.nextVersion,
+      index: reindexed.after.evidence,
+    }));
+    state.emit({
+      type: "validation.failed",
+      taskId,
+      tool: "submit_semantic_patch",
+      diagnostics: restarted.diagnostics,
+    });
+    res.json({
+      ok: false,
+      diagnostics: restarted.diagnostics,
+      ...(restarted.ok ? { baseAnalysisVersion: restarted.value.baseAnalysisVersion } : {}),
+      discardedProposals: session.lastDiscarded,
+    });
+    return;
+  }
+
+  state.emit({ type: "validation.failed", taskId, tool: "submit_semantic_patch", diagnostics: outcome.diagnostics });
+  res.json({ ok: false, diagnostics: outcome.diagnostics });
+});
+
 /** 시험과 진단용 — 이 task 에서 두 증거원이 모두 관측된 tool 들 (B4). */
 app.get("/api/tasks/:taskId/mcp-evidence", (req: Request, res: Response) => {
   const taskId = String(req.params["taskId"]);
@@ -572,16 +771,30 @@ wss.on("connection", (socket) => {
   socket.on("close", unsubscribe);
 });
 
-server.listen(config.port, "127.0.0.1", () => {
-  log(`listening on ${config.baseUrl}`);
-  log(`mcp server = ${mcpServerPath}`);
-});
+/**
+ * `node dist/index.js` 로 직접 실행될 때만 듣기 시작한다.
+ *
+ * 이 모듈을 **import** 만 하는 시험(예: 실제 route handler 를 검증하는 M4 wiring 시험)이
+ * side effect 로 포트를 물게 되면, 그 listener 는 시험이 끝난 뒤에도 살아남아 이벤트 루프를
+ * 막는다 — `server`·`wss` 는 여기서만 만들어지므로 밖에서 닫을 방법도 없다. 표준적인
+ * "entrypoint side effect 를 진입점 검사로 가드한다" 패턴이고, `npm start`/`npm run bridge`
+ * 로 실행하는 정상 경로의 동작은 바뀌지 않는다.
+ */
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
-onShutdown(async () => {
-  log("shutting down");
-  for (const adapter of adapters.values()) await adapter.dispose();
-  server.close();
-  process.exit(0);
-});
+if (isMainModule) {
+  server.listen(config.port, "127.0.0.1", () => {
+    log(`listening on ${config.baseUrl}`);
+    log(`mcp server = ${mcpServerPath}`);
+  });
 
-export { app, config, state };
+  onShutdown(async () => {
+    log("shutting down");
+    for (const adapter of adapters.values()) await adapter.dispose();
+    server.close();
+    process.exit(0);
+  });
+}
+
+export { app, config, server, state };

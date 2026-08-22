@@ -364,3 +364,92 @@ acceptance 2·3을 통과시키는 과정에서 **내가 쓴 검사가 두 번 �
 
 새 검사를 넣을 때는 **실패하는 것을 먼저 확인한다.** 3-1은 인덱싱 안 된 프로젝트로
 `outcome: "unavailable"`이 기록되는 것을, 3-2는 2회차 실행으로 확인했다.
+
+---
+
+## M4 — propose_evidence + AnalyzeTransaction(S2·T3) + Validator ⓪~⑤ + IdentityResolver (완료)
+
+계획 §8이 M4에 요구한 것: acceptance 6·7·8·9·10, 그리고 16·17의 **agent 절반**.
+
+### 완료한 것
+
+- [x] `@onto/protocol` — `SEMANTIC_PATCH_SCHEMA` · `EVIDENCE_PROPOSAL_SCHEMA` (ajv, 한 벌만, A6)
+- [x] `@onto/evidence` — agent evidence relocation (§6.5 S1). 정규화 토큰 지문으로 창을 밀어
+      exact/degraded 매칭을 하고, 모호하면(2개 이상) missing으로 남긴다 (결정론 — 스캔 순서
+      무관). `carryAgentEvidence`가 재인덱싱에 이어 붙는다
+- [x] `@onto/core`
+  - `IdentityResolver` — Concept(exact/정규화 이름 · grounding overlap) · Claim(§6.4 key,
+    predicate는 소문자+공백압축만) · Scenario(이름 · anchor overlap) 후보
+  - `propose_evidence` 검증 — 경로 안전성(A4, symlink 이스케이프 포함) · 파일 실재 · 범위
+    유효 · 지문 계산 · symbolHint 대조(warning) · graph 힌트 해석(warning). id 발급은 전부
+    끝난 뒤에만
+  - `AnalyzeTransaction` / `AnalyzeSession` — S2(제안이 analysisVersion을 올리지 않음) ·
+    T3(race 시 abort → 재인덱싱 → 같은 session에 새 transaction, 재시작 상한 3회)
+  - `applyPatch` / `commitPatch` — Validator ⓪~⑤ 전부, ⑤는 참조 파일만 지금 디스크에서
+    다시 읽어 대조(S3), lock 안에서 커밋과 함께
+- [x] `apps/bridge` — `performReindex`(agent evidence relocation 순서: carryAgentEvidence →
+      diffEvidence → carryMissingEvidence) · task별 `AnalyzeSession` 수명(`BridgeState`) ·
+      `get_evidence`가 pendingEvidence를 봄 · `/internal/propose-evidence` ·
+      `/internal/semantic-patch`(T3 재시작 포함) · stop/turn 종료 시 transaction 폐기 ·
+      `get_concept_context`가 실제 IdentityResolver를 씀
+- [x] `@onto/mcp-server` — `propose_evidence` · `submit_semantic_patch` tool 등록
+- [x] acceptance 6 · 7 · 8 · 9 · 10, 16·17의 agent 절반 — **Core 단위 시험 + mutation
+      check + bridge 통합 시험(m4-wiring.test.mjs) 세 층 모두 통과**
+- [x] `npm run acceptance codex` 실제 codex-cli 0.149.0으로 12/12 — M3 회귀 없음
+
+### 구현 중 고친 것 (계획과 무관한 자체 결함)
+
+이번에도 M2처럼 검사를 먼저 통과시키지 않고 실패하는 상태를 먼저 만들어 확인했다
+(Finding 3 원칙). 그 과정에서 세 가지를 잡았다.
+
+**1. relocation의 창 검색이 지문 파이프라인과 다른 토크나이저를 썼다.** `relocate.ts`가
+독자적인 토크나이저를 갖고 있어 세미콜론·후행 콤마를 다르게 다뤘다 — 창 길이가 지문의
+토큰 수와 어긋나 포매팅만 바뀐 경우에도 relocate가 실패했다. `normalize.ts`에
+`positionedTokens()`를 만들어 지문 계산과 relocation이 **같은 함수**를 쓰게 했다.
+
+**2. degraded 매칭이 자리별 비교라 삽입/삭제에 취약했다.** 식별자 하나가 지워지면 그 뒤가
+전부 밀려 점수가 무너졌다 — 실제 편집은 거의 항상 삽입/삭제를 포함하므로 acceptance 17
+자체가 이 경로로 통과하지 못했다. 다중집합(bag) 겹침으로 바꿨다: 순서를 안 보므로 삽입/삭제에
+강하지만, 무관한 재정렬을 같은 것으로 볼 수 있다는 오차 방향이 생긴다 — 그래서 임계값과
+유일성 요구, `relocationConfidence: "degraded"` 표시로 우회한다.
+
+**3. `diffEvidence`에 `missing`이 이미 채워진 인덱스를 넘기고 있었다.** 순서가
+`carryMissingEvidence` → `diffEvidence`였는데, 그러면 지워진 심볼이 새 인덱스에도
+"존재"하게 되어 `rawHash` 비교가 `unchanged`로 잘못 분류했다 — 근거가 사라졌는데 아무 일도
+없었던 것처럼 보이는, T1이 막으려던 바로 그 조용한 부패였다. `diffEvidence(before, 지금
+실제로 있는 것)` → `carryMissingEvidence(...)` 순서로 고쳤다 (`packages/core/test/_helpers.mjs`,
+`apps/bridge/src/index.ts`의 `performReindex` 모두).
+
+**4. (이전 세션에서 중단된 지점) 성공한 커밋이 transaction을 닫았다.** `commitPatch`가
+`transaction.status = "committed"`를 찍어, 같은 turn 안에서 agent가 커밋 이후 더 제안하고
+더 제출하는 것을 막고 있었다. `AnalyzeTransaction`은 "하나의 patch"가 아니라 "하나의
+analysisVersion"에 묶인다(S2)는 것이 계획의 정의이므로, 성공한 커밋 뒤에도 transaction은
+열린 채로 남아야 한다. `TransactionStatus`를 `"open" | "aborted"`로 좁히고(더 이상
+`"committed"`는 없다), 성공은 `committedGenerations` 배열에만 기록한다. 옛 동작을 재현해
+새로 추가한 시험("성공한 커밋 뒤에도 transaction은 열려 있다")이 그것만 잡고 나머지는
+그대로 통과하는 것을 확인한 뒤 고쳤다.
+
+### mutation check로 확인한 것
+
+M1·M2와 같은 방식 — 메커니즘을 하나씩 되돌려 놓고 **의도한 시험만** 실패하는지 봤다.
+
+- relocation: 지문 대신 원문 바이트 비교 · degraded 임계값을 1보다 크게 · 유일성 요구 제거
+  — 각각 정확히 그것을 시험하는 케이스 하나만 깨졌다
+- Core Validator: ⓪(analysisVersion·semanticVersion 절반을 각각) · ②(evidence 실재 검사,
+  pendingEvidence 조회) · ⑤(커밋 직전 재확인) · S2(제안이 새 analysisVersion을 받게) ·
+  T3(재시작 상한 제거, race 후 pendingEvidence를 조용히 옮겨줌) · R2(경로 escape·줄 범위 검사)
+  — 아홉 가지 모두 대응하는 acceptance/시험만 깨졌다
+- bridge wiring: `no_active_transaction` 가드 제거 · T3 race 감지 제거 · `get_evidence`의
+  pendingEvidence 병합 제거 — 각각 대응하는 통합 시험만 깨졌다
+
+### 미검증으로 남는 것
+
+없음. `codex mcp list`에 이미 M3에서 등록된 `onto`가 있었고, 이 머신에 codex-cli 0.149.0이
+설치되어 있어 **agent-stream 증거까지 포함한 acceptance 2·3을 실제로 재확인했다** (M3와
+동일하게 12/12). M4가 새로 추가한 `propose_evidence`/`submit_semantic_patch`는 acceptance
+2·3의 `REQUIRED_TOOLS`에 들어 있지 않으므로(그 둘은 M3 채널 검증 전용 turn이 부르는 tool이
+아니다), agent가 이 두 tool을 자발적으로 부르는 실제 analyze turn 전체는 M5의 Semantic
+Patch 루프가 붙은 뒤 `npm run eval`로 확인하는 것이 계획의 순서다(§8: M4는 M2·M3가
+필요하고, M5가 Semantic Patch 루프를 붙인다).
+
+Finding 없음 — 계획과 충돌한 것이 없다. 위 네 가지는 전부 자체 구현 결함이었다.

@@ -122,6 +122,8 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence
   · 이 기능은 어떻게 동작하는가 (흐름)            -> get_scenario_context
   · 이걸 고치면 어디에 영향이 가는가              -> get_impact_context (아직 비활성)
+  · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
+  · 만든 의미를 저장하려면                       -> submit_semantic_patch
 
 중요한 규칙:
 
@@ -232,6 +234,135 @@ server.registerTool(
   },
   async ({ anchor, question, hops }) =>
     reply(await callBridge(`/internal/scenario-context${query({ anchor, question, hops })}`)),
+);
+
+// ---------------------------------------------------------------------------
+// 쓰기 tool (§6.5) — 검증은 전부 Core 가 한다. 여기는 loopback 위임만
+// ---------------------------------------------------------------------------
+
+const entityRefSchema = z.union([
+  z.object({ kind: z.literal("file"), filePath: z.string() }),
+  z.object({ kind: z.literal("symbol"), symbolId: z.string() }),
+  z.object({ kind: z.literal("route"), routeKey: z.string() }),
+  z.object({ kind: z.literal("model"), modelKey: z.string() }),
+]);
+
+const graphRoleSchema = z.union([
+  z.object({ role: z.literal("entity"), entity: entityRefSchema, label: z.string() }),
+  z.object({ role: z.literal("link"), from: entityRefSchema, to: entityRefSchema, linkKind: z.string() }),
+]);
+
+server.registerTool(
+  "propose_evidence",
+  {
+    title: "발견한 근거 등록 요청",
+    description:
+      "엔진이 인덱싱하지 못한 근거(switch 로 짜인 상태 기계, 설정이 결정하는 정책, 템플릿 " +
+      "리터럴 route, 주석의 불변식 등)를 발견했을 때 쓴다. **버리지 말고 여기로 등록을 " +
+      "요청하라.** Core 가 그 범위를 직접 읽어 검증한 뒤 id 를 발급한다 — 발급받은 id 에만 " +
+      "grounding 할 수 있다. analyze turn 밖에서 부르면 no_active_transaction 을 돌려준다.",
+    inputSchema: {
+      kind: z.string().describe("evidence kind. 예: policy_note · state_machine · route_pattern"),
+      filePath: z.string().describe("repo-relative POSIX 경로. \"..\"·절대경로·.git 은 거절된다"),
+      location: z.object({
+        startLine: z.number().int().min(1),
+        endLine: z.number().int().min(1).optional(),
+      }),
+      symbolHint: z
+        .string()
+        .optional()
+        .describe("이것이라고 믿는 qualified name. 불일치는 error 가 아니라 warning"),
+      summary: z.string().describe("왜 이것이 근거인가"),
+      confidence: z.number().min(0).max(1).optional(),
+      normalizationProfile: z
+        .enum(["code", "prose"])
+        .optional()
+        .describe("생략하면 확장자로 Core 가 정한다. 주석·문서·설정 범위는 prose 를 권한다"),
+      graph: graphRoleSchema
+        .optional()
+        .describe("Trace 에 표시할 EntityRef 힌트. 해석되지 않으면 근거로는 등록되지만 Trace 에는 나오지 않는다"),
+    },
+  },
+  async (proposal) =>
+    reply(await callBridge("/internal/propose-evidence", { method: "POST", body: JSON.stringify(proposal) })),
+);
+
+const conceptSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  aliases: z.array(z.string()).optional(),
+  hints: z.array(z.string()).optional(),
+  evidenceRefs: z.array(z.string()),
+  intentRefs: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  status: z.enum(["active", "uncertain", "deprecated", "needs_review"]),
+});
+
+const claimSchema = z.object({
+  id: z.string(),
+  subjectConceptId: z.string(),
+  predicate: z.string().describe("자유 문장이다. 미리 정한 관계 종류로 정규화하지 마라"),
+  object: z.union([z.object({ conceptId: z.string() }), z.object({ value: z.string() })]),
+  description: z.string().optional(),
+  semanticHint: z.string().optional(),
+  evidenceRefs: z.array(z.string()),
+  intentRefs: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  status: z.enum(["active", "uncertain", "contradicted", "needs_review"]),
+});
+
+const scenarioEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.enum(["user", "system"]),
+  goal: z.string().optional(),
+  anchorConceptIds: z.array(z.string()),
+  status: z.enum(["active", "uncertain", "deprecated"]),
+});
+
+const groundingUpdateSchema = z.union([
+  z.object({
+    target: z.literal("concept"),
+    conceptId: z.string(),
+    evidenceRefs: z.array(z.string()),
+    confidence: z.number().min(0).max(1).optional(),
+  }),
+  z.object({
+    target: z.literal("claim"),
+    claimId: z.string(),
+    evidenceRefs: z.array(z.string()),
+    confidence: z.number().min(0).max(1).optional(),
+  }),
+]);
+
+server.registerTool(
+  "submit_semantic_patch",
+  {
+    title: "Semantic Patch 제출",
+    description:
+      "Concept·Claim·Scenario 의 추가/갱신/삭제를 하나의 patch 로 제출한다. base 버전이 " +
+      "head 와 다르면 version/stale-base 로 거절되고 그 사이의 SemanticDiff 가 diagnostics 에 " +
+      "함께 온다 — 그것을 보고 rebase 한 뒤 다시 제출하라. 그 외의 실패도 diagnostics 로 " +
+      "돌아오며 같은 turn 에서 고쳐 다시 제출할 수 있다. 새 Concept 를 만들기 전에는 " +
+      "get_concept_context 로 재사용 후보를 먼저 확인하라.",
+    inputSchema: {
+      baseAnalysisVersion: z.number().int().describe("이 turn 시작 시점의 analysisVersion. turn 내내 그대로"),
+      baseSemanticVersion: z.number().int().describe("이 patch 가 기준으로 삼는 semanticVersion"),
+      addedConcepts: z.array(conceptSchema).optional(),
+      updatedConcepts: z.array(conceptSchema).optional(),
+      removedConceptIds: z.array(z.string()).optional(),
+      addedClaims: z.array(claimSchema).optional(),
+      updatedClaims: z.array(claimSchema).optional(),
+      removedClaimIds: z.array(z.string()).optional(),
+      addedScenarios: z.array(scenarioEntrySchema).optional(),
+      updatedScenarios: z.array(scenarioEntrySchema).optional(),
+      removedScenarioIds: z.array(z.string()).optional(),
+      groundingUpdates: z.array(groundingUpdateSchema).optional(),
+    },
+  },
+  async (patch) =>
+    reply(await callBridge("/internal/semantic-patch", { method: "POST", body: JSON.stringify(patch) })),
 );
 
 /**
