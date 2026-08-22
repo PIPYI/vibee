@@ -44,7 +44,11 @@ import {
   searchClaims,
 } from "./memory-api.js";
 import { onShutdown } from "./platform.js";
-import { buildFullAnalyzePrompt, buildIncrementalAnalyzePrompt } from "./prompt.js";
+import {
+  buildFullAnalyzePrompt,
+  buildIncrementalAnalyzePrompt,
+  buildVerifyPrompt,
+} from "./prompt.js";
 import { BridgeState } from "./state.js";
 
 const protoRoot = protoRootFromModule(import.meta.url);
@@ -143,9 +147,48 @@ app.post("/api/project", (req: Request, res: Response) => {
   }
 });
 
+/**
+ * 마지막 도달의 결과 종류를 기록한다.
+ *
+ * **"tool 이 불렸다"와 "tool 이 실제 데이터를 돌려줬다"는 다른 질문이다.** 전자만 보면
+ * `memory_unavailable` 을 받은 turn 도 통과한 것처럼 보인다 — 채널은 돌지만 agent 는
+ * 아무것도 못 본 상태다.
+ */
+function recordOutcome(unavailable: boolean): void {
+  const outcome = unavailable ? "unavailable" : "data";
+  const last = mcpArrivals[mcpArrivals.length - 1];
+  if (last) last.outcome = outcome;
+  // task 에도 남긴다. acceptance 는 **task 범위**의 기록만 본다.
+  state.recordMcpOutcome(outcome);
+}
+
 /** MCP server 가 실제로 우리에게 도달했는가. agent 없이도 이 채널을 관측할 수 있다 (B4). */
 app.get("/api/mcp-arrivals", (_req: Request, res: Response) => {
   res.json({ arrivals: mcpArrivals });
+});
+
+/**
+ * 결정론적 재인덱싱만 (agent turn 없음).
+ *
+ * Trace 는 Evidence 만 있으면 동작하므로(§6.6), agent turn 을 태우지 않고 인덱싱만
+ * 하고 싶은 경우가 실제로 있다 — 프로젝트를 열자마자 코드 구조를 보여줄 때다.
+ */
+app.post("/api/index", async (req: Request, res: Response) => {
+  const body = req.body as { projectPath?: string; gitBase?: string };
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(body?.projectPath ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+  state.setProjectPath(projectPath);
+  try {
+    const prepared = await reindex(projectPath, "index-only", body.gitBase);
+    res.json(prepared.summary);
+  } catch (error) {
+    res.status(500).json({ error: asMessage(error) });
+  }
 });
 
 app.post("/api/analyze", async (req: Request, res: Response) => {
@@ -311,6 +354,60 @@ async function runTask(
   }
 }
 
+/**
+ * MCP 채널 검증 (acceptance 2·3).
+ *
+ * 분석과 분리한다 — 이것이 증명하려는 것은 **의미 품질이 아니라 배선**이다.
+ * agent 가 tool 을 실제로 부르고(`agent-stream`), 그 호출이 우리에게 도달하는지
+ * (`bridge-endpoint`)만 본다.
+ */
+app.post("/api/verify", async (req: Request, res: Response) => {
+  const body = req.body as { agent: AgentId; projectPath?: string; model?: string; effort?: string };
+  const adapter = adapters.get(body?.agent);
+  if (!adapter) {
+    res.status(400).json({ error: `지원하지 않는 agent: ${String(body?.agent)}` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "이미 실행 중인 task 가 있습니다." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(body.projectPath ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const ready = await adapter.checkReady();
+  if (!ready.installed) {
+    res.status(412).json({ error: ready.message ?? "agent 를 쓸 수 없습니다." });
+    return;
+  }
+
+  state.setProjectPath(projectPath);
+  const taskId = randomUUID();
+  const prompt = buildVerifyPrompt(projectPath);
+
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    mode: "chat",
+    prompt,
+    status: "starting",
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.effort ? { effort: body.effort } : {}),
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId });
+  void runTask(adapter, taskId, projectPath, prompt, "chat", body as AnalyzeRequest);
+});
+
 app.post("/api/tasks/:taskId/stop", async (req: Request, res: Response) => {
   const taskId = String(req.params["taskId"]);
   const task = state.getTask(taskId);
@@ -369,7 +466,7 @@ function requireToken(req: Request, res: Response, next: () => void): void {
  * task 에 묶어서만 기록하면 **agent 없이는 이 채널을 검증할 수 없다.** 채널이 도는지와
  * agent 가 그것을 부르는지는 다른 질문이므로 따로 관측할 수 있어야 한다.
  */
-const mcpArrivals: Array<{ tool: string; at: string }> = [];
+const mcpArrivals: Array<{ tool: string; at: string; outcome?: "data" | "unavailable" }> = [];
 
 function recordArrival(tool: string): void {
   mcpArrivals.push({ tool, at: new Date().toISOString() });
@@ -382,6 +479,7 @@ function recordArrival(tool: string): void {
 app.get("/internal/memory", requireToken, (req: Request, res: Response) => {
   recordArrival("get_project_semantic_memory");
   const loaded = loadState(state.getProjectPath());
+  recordOutcome(isUnavailable(loaded));
   if (isUnavailable(loaded)) {
     res.json(loaded);
     return;
@@ -393,6 +491,7 @@ app.post("/internal/evidence", requireToken, (req: Request, res: Response) => {
   recordArrival("get_evidence");
   const projectPath = state.getProjectPath();
   const loaded = loadState(projectPath);
+  recordOutcome(isUnavailable(loaded));
   if (isUnavailable(loaded)) {
     res.json(loaded);
     return;

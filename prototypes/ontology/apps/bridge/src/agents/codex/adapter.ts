@@ -35,6 +35,58 @@ const APPROVAL_POLICY = {
   },
 } as const;
 
+/**
+ * granular 승인 정책은 이 capability 를 선언해야 쓸 수 있다.
+ *
+ * spike 당시(0.148)에는 요구되지 않았는데 이후 CLI 가 바뀌었다 — 선언하지 않으면
+ * `thread/start` 가 `askForApproval.granular requires experimentalApi capability (-32600)`
+ * 로 거부한다. **이번에도 스키마가 아니라 요구 조건이 바뀐 것**이고, 타입 검사로는 잡히지
+ * 않는 종류다(§8).
+ *
+ * `npm run codex:probe` 로 codex-cli 0.149.0 에서 이 형태가 맞다고 확인했다 —
+ * 최상위 `experimentalApi`, `capabilities.experimental`, `clientCapabilities.experimentalApi`
+ * 는 모두 거부되었다.
+ */
+const CLIENT_CAPABILITIES = { experimentalApi: true } as const;
+
+/**
+ * granular 이 거부되었는가.
+ *
+ * 이때 **조용히 `"never"` 로 물러서지 않는다.** 0.148 은 `"never"` 를 "MCP 호출도 거부"로
+ * 해석했다(Finding 4). 물러서면 tool 이 한 번도 돌지 않는데 turn 은 성공한 것처럼 끝난다 —
+ * 정확히 우리가 막으려는 조용한 실패다. 그래서 무엇이 왜 안 되는지 말하고 멈춘다.
+ */
+function isGranularRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("granular") || message.includes("experimentalApi");
+}
+
+/**
+ * `thread/start` 응답에서 thread id 를 꺼낸다.
+ *
+ * **왜 방어적으로 꺼내는가.** 응답 모양을 `{ threadId }` 로 가정하고 그냥 읽었더니
+ * 값이 `undefined` 가 되어 JSON 에서 통째로 빠졌고, 그 다음 `turn/start` 가
+ * `invalid type: map, expected a sequence` 로 실패했다 — **input 필드를 가리키는 오류였다.**
+ * 진짜 원인은 threadId 였는데 메시지는 엉뚱한 곳을 가리켰고, 그만큼 진단이 늦어졌다.
+ *
+ * 그래서 후보를 훑되, 못 찾으면 **받은 것을 그대로 보여주며 즉시 실패한다.**
+ * undefined 를 다음 호출로 흘려보내지 않는다.
+ */
+function extractThreadId(result: unknown): string {
+  const record = (result ?? {}) as Record<string, unknown>;
+  const nested = (record["thread"] ?? {}) as Record<string, unknown>;
+  const candidate =
+    record["threadId"] ?? record["thread_id"] ?? record["id"] ?? nested["id"] ?? nested["threadId"];
+
+  if (typeof candidate === "string" && candidate.length > 0) return candidate;
+
+  throw new Error(
+    "codex `thread/start` 응답에서 thread id 를 찾지 못했습니다. " +
+      `받은 것: ${JSON.stringify(result)}\n` +
+      "`npm run codex:probe` 로 이 CLI 의 응답 모양을 확인하세요.",
+  );
+}
+
 type TurnHandle = { threadId: string; turnId?: string };
 
 export class CodexAdapter implements AgentAdapter {
@@ -75,6 +127,8 @@ export class CodexAdapter implements AgentAdapter {
     if (this.initialized) return;
     await this.ensureClient().call("initialize", {
       clientInfo: { name: "onto-bridge", version: "0.1.0" },
+      // granular 승인 정책의 전제 조건이다. 선언하지 않으면 thread/start 가 거부한다.
+      capabilities: CLIENT_CAPABILITIES,
     });
     this.ensureClient().notify("initialized", {});
     this.initialized = true;
@@ -125,12 +179,27 @@ export class CodexAdapter implements AgentAdapter {
     let threadId = this.threadByProject.get(input.projectPath);
     const resumed = threadId !== undefined;
     if (!threadId) {
-      const started = (await this.ensureClient().call("thread/start", {
-        cwd: input.projectPath,
-        approvalPolicy: APPROVAL_POLICY,
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.projectPath] },
-      })) as { threadId: string };
-      threadId = started.threadId;
+      let started: unknown;
+      try {
+        started = await this.ensureClient().call("thread/start", {
+          cwd: input.projectPath,
+          approvalPolicy: APPROVAL_POLICY,
+          // `sandboxPolicy` 는 여기 없다 — ThreadStartParams 에는 `sandbox?: SandboxMode` 뿐이고
+          // 정책 객체는 TurnStartParams 에 있다. 여기 넘기면 **조용히 무시된다** (Finding 2).
+        });
+      } catch (error) {
+        if (isGranularRejection(error)) {
+          throw new Error(
+            "이 Codex 버전이 granular 승인 정책을 받아들이지 않습니다: " +
+              `${error instanceof Error ? error.message : String(error)}\n` +
+              "포괄적 값(\"never\")으로 물러서지 않습니다 — 그러면 MCP tool 호출이 조용히 " +
+              "거부되어 turn 은 성공한 것처럼 끝납니다.\n" +
+              "`npm run codex:probe` 로 이 CLI 가 요구하는 capability 형태를 확인하세요.",
+          );
+        }
+        throw error;
+      }
+      threadId = extractThreadId(started);
       this.threadByProject.set(input.projectPath, threadId);
     }
 
@@ -143,9 +212,13 @@ export class CodexAdapter implements AgentAdapter {
 
     const turn = (await this.ensureClient().call("turn/start", {
       threadId,
-      input: { text: input.prompt },
+      // **시퀀스다.** `{ text }` 를 보내면 `invalid type: map, expected a sequence` 로
+      // 거부된다. `type` 은 필수다 — 빠뜨리면 `missing field type` (Finding 2).
+      input: [{ type: "text", text: input.prompt }],
       cwd: input.projectPath,
       approvalPolicy: APPROVAL_POLICY,
+      // 쓰기 범위 제한은 **여기서만** 걸린다. thread/start 에 넘기면 무시된다.
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.projectPath] },
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
     })) as { turnId?: string };

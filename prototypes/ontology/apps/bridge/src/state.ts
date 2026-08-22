@@ -66,6 +66,21 @@ export class BridgeState {
     this.tasks.get(target)?.mcpCalls.push({ tool, at: new Date().toISOString(), source });
   }
 
+  /** 마지막 bridge-endpoint 호출의 결과를 기록한다. **task 에 묶인다** — 전역 목록으로
+   * 판정하면 다른 실행의 호출까지 세어 결과가 오염된다. */
+  recordMcpOutcome(outcome: "data" | "unavailable"): void {
+    const taskId = this.activeTaskId;
+    if (!taskId) return;
+    const calls = this.tasks.get(taskId)?.mcpCalls;
+    if (!calls) return;
+    for (let index = calls.length - 1; index >= 0; index -= 1) {
+      if (calls[index]!.source === "bridge-endpoint") {
+        calls[index]!.outcome = outcome;
+        return;
+      }
+    }
+  }
+
   /** 이 task에서 두 증거원이 모두 관측된 tool들. acceptance 2·3이 이것을 본다. */
   toolsWithBothSources(taskId: string): string[] {
     const task = this.tasks.get(taskId);

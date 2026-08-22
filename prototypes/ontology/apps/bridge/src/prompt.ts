@@ -112,3 +112,27 @@ export function describeSession(preview: string): string {
   if (text.startsWith("아래는 이 프로젝트의 Evidence Index 요약")) return "분석 (index-only arm)";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
+
+/**
+ * 채널 검증 전용 프롬프트 (acceptance 2·3).
+ *
+ * **의미를 만들지 않는다.** `submit_semantic_patch` 는 M4 에서 붙으므로, 그 전에 분석
+ * 프롬프트를 쓰면 agent 가 만들 수는 있는데 낼 곳이 없어 혼란스러운 결과를 낸다.
+ *
+ * 이 프롬프트가 증명하려는 것은 하나다 — **agent 가 MCP tool 을 실제로 부르는가, 그리고
+ * 그 호출이 bridge 에 도달하는가.** 그래서 두 tool 을 명시적으로 지시하고 끝낸다.
+ * spike 가 확인했듯 agent 는 MCP 를 자발적으로 부르지 않는다(§6.5).
+ */
+export function buildVerifyPrompt(projectPath: string): string {
+  return [
+    "MCP 연결을 확인하는 중이다. 코드를 고치지 마라. 파일을 쓰지 마라.",
+    `프로젝트 경로: ${projectPath}`,
+    "",
+    "정확히 이 순서로 하라:",
+    "1. `get_project_semantic_memory` 를 부른다 (인자 없이).",
+    "2. `get_evidence` 를 `{ \"kind\": \"symbol\" }` 로 부른다.",
+    "3. 두 응답에서 본 것을 3줄 이내로 요약하고 끝낸다.",
+    "",
+    "tool 을 부르지 못했다면 그 사실과 오류 메시지를 그대로 보고하라. 지어내지 마라.",
+  ].join("\n");
+}

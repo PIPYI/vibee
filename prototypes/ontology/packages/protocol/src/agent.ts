@@ -49,6 +49,11 @@ export type McpCallRecord = {
   tool: string;
   at: string;
   source: McpCallSource;
+  /**
+   * `bridge-endpoint` 호출에만 붙는다. **"불렸다"와 "데이터를 돌려줬다"는 다른 질문이다** —
+   * 전자만 보면 `memory_unavailable` 을 받은 turn 도 통과한 것처럼 보인다.
+   */
+  outcome?: "data" | "unavailable";
 };
 
 /**

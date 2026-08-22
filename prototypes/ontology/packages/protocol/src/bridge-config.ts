@@ -65,8 +65,19 @@ export function loadBridgeConfig(protoRoot: string): BridgeConfig {
     token ??= saved.token;
   }
 
+  /**
+   * env 로 완전히 지정되었으면 **디스크에 쓰지 않는다.**
+   *
+   * 그러지 않으면 시험이나 일회성 실행이 개발자의 공유 설정(포트·토큰)을 조용히 덮어쓴다.
+   * 실제로 시험 실행이 bridge 포트를 바꿔 버린 적이 있다.
+   */
+  const fullyFromEnv =
+    process.env.ONTO_BRIDGE_TOKEN !== undefined && process.env.ONTO_BRIDGE_PORT !== undefined;
+
   if (!token) {
     token = randomBytes(24).toString("hex");
+  }
+  if (!fullyFromEnv && !existsSync(configPath)) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(configPath, `${JSON.stringify({ port, token }, null, 2)}\n`, { mode: 0o600 });
   }

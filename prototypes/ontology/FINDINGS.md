@@ -142,18 +142,9 @@ Finding 없음 — 계획과 충돌한 것이 없다.
 | `bridge-endpoint` | agent가 띄운 별도 프로세스가 실제로 bridge에 도달했다 | **검증됨** — `apps/bridge/test/mcp-channel.test.mjs`가 MCP server를 진짜 자식 프로세스로 띄우고 stdio MCP 프로토콜로 `get_evidence`를 호출해, 그것이 loopback HTTP로 bridge에 닿는 것을 확인한다 |
 | `agent-stream` | Codex/Claude가 그 호출을 보고했다 | **미검증** — CLI 필요 |
 
-검증 절차 (CLI가 있는 머신에서):
-
-```bash
-npm i -g @openai/codex && codex login          # 또는
-npm i -g @anthropic-ai/claude-code && claude
-npm run build && npm run bridge                # 창 1
-# 창 2에서 POST /api/analyze → GET /api/tasks/<id>/mcp-evidence
-# toolsWithBothSources 가 비어 있지 않아야 acceptance 2·3 통과
-```
-
-`GET /api/tasks/:taskId/mcp-evidence`가 두 증거원을 따로 보여주도록 만들어 두었으므로,
-CLI가 있는 머신에서는 즉시 확인할 수 있다.
+검증 절차는 `TESTING.md`에 있다. 요약하면 `npm run mcp:register`(Codex만) →
+`npm run bridge` → `npm run acceptance`이고, 두 증거원을 **따로** 보고하므로
+한쪽만 PASS인 것이 곧 진단이 된다.
 
 ### 완료한 것
 
@@ -184,3 +175,192 @@ CLI가 있는 머신에서는 즉시 확인할 수 있다.
 - Stop → `task.interrupted` (acceptance 20).
 
 Finding 없음 — 계획과 충돌한 것이 없다. 위는 환경 제약이지 설계 문제가 아니다.
+
+### M3 마무리 — 사용자 검증을 위해 추가한 것
+
+`agent-stream` 절반을 사용자가 확인할 수 있게 하려면 빠진 것이 있었다.
+
+- `scripts/register-codex-mcp.mjs` · `unregister` · `mcp-status` — Codex 전역 등록.
+  **`~/.codex/config.toml`을 직접 편집하지 않는다** — 형식이 버전마다 바뀔 수 있고 사용자의
+  다른 설정을 망가뜨릴 수 있으므로 CLI가 자기 파일을 소유하게 두고, 실패하면 수동 등록용
+  TOML을 그대로 출력한다.
+- `scripts/create-fixture.mjs` — 팔로우/승인 도메인의 작은 앱. P0~P2를 전부 덮고 도메인
+  용어가 분명해 사람이 눈으로 채점할 수 있다.
+- `scripts/acceptance.mjs` — 두 증거원을 **따로** 검사한다. 한쪽만 PASS인 것이 가장 중요한
+  진단이므로 합쳐서 보고하지 않는다.
+- `POST /api/verify` — **채널 검증 전용 turn.** `submit_semantic_patch`가 M4라서, 분석
+  프롬프트를 그대로 쓰면 agent가 의미를 만들어 놓고 낼 곳이 없어 혼란스러운 결과를 낸다.
+  이 경로는 tool 두 개를 부르고 요약만 시킨다 — 증명하려는 것이 의미 품질이 아니라 배선이다.
+
+### 시험이 잡아낸 것 (두 번째)
+
+`loadBridgeConfig`가 env로 완전히 지정된 경우에도 디스크에 설정을 **썼다.** 그 결과
+`mcp-channel.test.mjs`가 쓰는 시험용 포트(43871)가 `.onto/bridge.json`에 새어 들어가
+개발자의 bridge 포트를 조용히 바꿔 놓았다. `npm run mcp:status`를 돌려 보고 발견했다.
+
+env로 완전히 지정되면 쓰지 않도록 고쳤다. 시험이 공유 상태를 오염시키는 종류의 결함이라
+그대로 두면 "왜 갑자기 등록이 안 맞지"로 나타났을 것이다.
+
+---
+
+## Finding 1 — granular 승인 정책이 `experimentalApi` capability를 요구하게 되었다
+
+### 관찰
+
+사용자 머신(macOS, codex 설치됨)에서 `npm run acceptance codex` 실행:
+
+```text
+[PASS] 프로젝트를 선택했다
+[PASS] verify turn 을 시작했다
+[FAIL] task 가 오류 없이 끝났다 — askForApproval.granular requires experimentalApi capability (code -32600)
+[FAIL] get_project_semantic_memory — agent 스트림 증거
+[FAIL] get_evidence — bridge 도달 증거
+...
+2/9 (codex)
+```
+
+MCP 등록 자체는 정상이었다 (`codex mcp list`에 `onto`가 `enabled`로 보였다).
+`thread/start`가 거부되어 turn이 아예 시작되지 못했으므로 tool 호출이 하나도 없었다.
+
+### 계획의 어느 부분과 충돌하는가
+
+충돌하지 않는다. implementation_plan §6.9의 **B3**는 여전히 옳다 —
+`approvalPolicy: {granular: {mcp_elicitations: true}}`를 쓰라는 지시는 유지된다.
+빠진 것은 그 정책의 **전제 조건**이었다: `initialize`에서 `experimentalApi` capability를
+선언해야 한다. byoa spike(codex 0.148) 당시에는 요구되지 않았다.
+
+이것은 §8이 예고한 종류의 파손이다 — **스키마가 아니라 요구 조건이 바뀌었고, 타입 검사로는
+잡히지 않는다.** spike에서 두 번(Finding 1·4) 같은 계열의 파손을 겪었다.
+
+### 적용한 수정
+
+1. `initialize`에 `capabilities: { experimentalApi: true }`를 실는다.
+2. 그래도 거부되면 **조용히 물러서지 않고 명확히 실패한다.**
+
+두 번째가 중요하다. 포괄적 값(`"never"`)으로 물러서는 것이 자연스러워 보이지만,
+spike Finding 4가 확인했듯 0.148은 `"never"`를 "MCP 호출도 거부"로 해석했다. 물러서면
+**tool이 한 번도 돌지 않는데 turn은 성공한 것처럼 끝난다** — 정확히 우리가 막으려는
+조용한 실패다. 그래서 무엇이 왜 안 되는지 말하고 멈추며, `npm run codex:probe`를 가리킨다.
+
+### 추가한 진단 도구
+
+`scripts/codex-probe.mjs` (`npm run codex:probe`).
+
+capability의 정확한 형태를 **추측하지 않기 위해** 만들었다. 이 스크립트는
+(1) codex 버전을 기록하고 (2) `codex app-server generate-ts`로 프로토콜 스키마를 받아
+`experimentalApi` · `ClientCapabilities` · `AskForApproval` · `granular` 심볼을 찾고
+(3) capability 선언 형태 네 가지를 **실제로 시도해** 어느 것이 통하는지 보고한다.
+
+CLI가 또 바뀌었을 때 가장 먼저 돌릴 것이다. §8의 "rollout 파일을 먼저 본다"와 같은 목적이다.
+
+### 확인됨 (codex-cli 0.149.0, `npm run codex:probe`)
+
+```ts
+export type InitializeCapabilities = { experimentalApi: boolean, ... };
+```
+
+`capabilities.experimentalApi = true` 만 통한다. 최상위 `experimentalApi`,
+`capabilities.experimental`, `clientCapabilities.experimentalApi` 는 모두 거부되었다.
+
+---
+
+## Finding 2 — 0.149 프로토콜 확인 결과와, 오류 메시지가 가리킨 엉뚱한 곳
+
+### 관찰
+
+capability 를 고친 뒤 다음 오류가 났다.
+
+```text
+[FAIL] task 가 오류 없이 끝났다 — Invalid request: invalid type: map, expected a sequence (code -32600)
+```
+
+`invalid type: map, expected a sequence` 는 `turn/start` 의 `input` 을 가리키는 것처럼 보였다.
+실제로 `input` 도 틀려 있었지만 **그것이 원인의 전부가 아니었다.**
+
+프로브에서 `input: [{type:"text", text}]` 로 고치자 오류가
+`missing field \`threadId\`` 로 바뀌었다 — threadId 를 분명히 넘기고 있었는데도.
+`thread/start` 의 raw 응답을 찍어 보니 이유가 드러났다.
+
+```json
+{"thread":{"id":"01a0276f-...","sessionId":"...","path":"...","cwd":"..."}, "model":"gpt-5.6-sol", ...}
+```
+
+**`{ threadId }` 가 아니라 `{ thread: { id } }` 였다.** `started.threadId` 가 `undefined` 가
+되어 JSON 에서 통째로 빠졌고, serde 는 타입 오류(`input` 이 map)를 **먼저** 만나 그것만
+보고했다. `missing field` 는 맵을 다 소비한 뒤에야 보고되므로, `input` 을 고치기 전까지
+진짜 원인이 보이지 않았다.
+
+### 교훈
+
+**`undefined` 를 다음 호출로 흘려보내면 오류 메시지가 엉뚱한 곳을 가리킨다.**
+`extractThreadId()` 를 두어 후보 위치를 훑되, 못 찾으면 받은 응답을 그대로 보여주며
+즉시 실패하게 했다. 그랬다면 첫 실행에서 "thread id 를 찾지 못했습니다: {...}" 가 나왔을 것이다.
+
+### 확인된 0.149.0 프로토콜 사실
+
+| | 확인된 형태 |
+|---|---|
+| `initialize` | `{ clientInfo, capabilities: { experimentalApi: true } }` |
+| `thread/start` 응답 | `{ thread: { id, sessionId, path, cwd, ... }, model, ... }` |
+| `turn/start` input | `Array<UserInput>`, `UserInput = { type: "text", text }` — `type` 필수 |
+| `AskForApproval` | `"untrusted" \| "on-request" \| { granular: {...} } \| "never"` |
+
+### 함께 드러난 것 — `sandboxPolicy` 가 조용히 무시되고 있었다
+
+`thread/start` raw 응답에 `sandbox.writableRoots` 가 **비어 있었다.**
+`sandboxPolicy: { type: "workspaceWrite", writableRoots: [projectPath] }` 를 넘겼는데도.
+
+스키마를 보면 이유가 분명하다 — `ThreadStartParams` 에는 `sandboxPolicy` 가 **없다**
+(`sandbox?: SandboxMode` 뿐이다). 정책 객체는 `TurnStartParams.sandboxPolicy` 에 있다.
+알 수 없는 필드는 조용히 버려지므로 **쓰기 범위를 제한하려던 의도가 그대로 사라졌다.**
+
+`turn/start` 로 옮겼다. 이것은 acceptance 를 통과시키는 것과 무관한 수정이지만, 조용히
+무시되는 보안 파라미터를 그대로 둘 수 없다 — 정확히 우리가 경계하는 "조용한 성공"이다.
+
+### 결과 — acceptance 2·3 통과 (codex-cli 0.149.0)
+
+```text
+12/12 (codex)   3회 연속 재현
+```
+
+`agent-stream`과 `bridge-endpoint` 두 증거원이 `get_project_semantic_memory`와
+`get_evidence` 양쪽에서 모두 관측되었다. **M3의 정의된 게이트가 통과했다.**
+
+`sandboxPolicy`를 `turn/start`로 옮긴 뒤에도 통과하므로, 그 수정이 승인 경로를 깨뜨리지
+않는다는 것도 함께 확인되었다.
+
+---
+
+## Finding 3 — 검사가 두 번 거짓 통과했다
+
+acceptance 2·3을 통과시키는 과정에서 **내가 쓴 검사가 두 번 잘못 통과했다.** 통과 자체보다
+이것이 더 중요한 기록이다.
+
+### 3-1. 증거의 부재를 증거로 썼다
+
+처음 acceptance는 두 증거원만 봤다. 그런데 `/api/verify`는 인덱싱을 하지 않으므로 agent가
+받은 것은 evidence가 아니라 `memory_unavailable`이었다. **채널은 돌지만 agent는 아무것도
+못 본 상태**인데 9/9로 통과했다.
+
+"실제 데이터를 돌려줬다" 검사를 더했는데, 그것을 `outcome === "unavailable"`이 **없으면**
+통과하도록 썼다. 옛 bridge 프로세스가 살아 있어 그 필드 자체가 없던 실행에서 **전부
+`undefined`였고 그래서 통과했다.** 인덱싱이 FAIL인데 데이터 검사는 PASS인 모순된 출력이
+나온 뒤에야 알아차렸다.
+
+→ `outcome === "data"`를 **긍정으로 요구**하도록 고쳤다.
+
+### 3-2. 검사 범위가 task에 묶여 있지 않았다
+
+고친 검사가 1회차는 통과하고 **2회차에 `data=5/2`로 실패했다.** 전역 도달 목록을 보고
+있어서 이전 실행과 내가 손으로 돌린 curl 호출까지 세고 있었다.
+
+→ `McpCallRecord.outcome`으로 옮겨 **task 범위**로 만들었다. 3회 연속 12/12를 확인했다.
+
+### 교훈
+
+두 번 다 같은 모양이다 — **검사가 실제로 무엇을 확인하는지보다 통과 여부를 먼저 봤다.**
+"두 증거원이 있다"는 채널이 돈다는 뜻이지 데이터가 흐른다는 뜻이 아니고, "나쁜 값이 없다"는
+좋은 값이 있다는 뜻이 아니며, 전역 카운터는 이번 실행을 말해 주지 않는다.
+
+새 검사를 넣을 때는 **실패하는 것을 먼저 확인한다.** 3-1은 인덱싱 안 된 프로젝트로
+`outcome: "unavailable"`이 기록되는 것을, 3-2는 2회차 실행으로 확인했다.
