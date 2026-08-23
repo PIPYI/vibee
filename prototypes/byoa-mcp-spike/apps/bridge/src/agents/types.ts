@@ -28,8 +28,13 @@ export type StartTaskInput = {
  * `task`만 코드를 쓴다. 나머지 둘은 읽기 전용이고 프로젝트 문서를 싣지 않는다.
  *
  * - `interview` — 무엇을 만들지 정하는 대화 (docs/requirements_flow.md §4)
- * - `task`      — 바이브코딩. 하네스가 실려야 맞는 유일한 mode
+ * - `task`      — **acceptance 검증 장치.** 제품 경로가 아니다 (아래)
  * - `review`    — 저장된 DEC/RULE과 diff를 대조한다 (§3.3). 고치지 않고 보고만 한다
+ *
+ * `task`는 Phase A/B가 "브라우저 프롬프트가 로컬 agent의 turn이 되고 agent가 지정된
+ * 디렉터리에서 실제로 파일을 고치는가"를 확인하려고 만든 것이다. 제품에서 코드를 쓰는
+ * 주체는 사용자가 옆 창에서 돌리는 자기 agent이고, 이 앱은 그 프롬프트를 건넬 뿐이다
+ * (docs/BYOA_MCP_INTEGRATION_SPIKE.md §1.2). **이 mode 위에 제품 기능을 쌓지 않는다.**
  */
 export type TaskMode = "task" | "interview" | "review";
 

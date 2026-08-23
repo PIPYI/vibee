@@ -637,8 +637,20 @@ permission 규칙으로 한다"고 안내한다.
 Claude는 막지 않는다.
 
 `permissionMode: "bypassPermissions"`를 쓰면 더 편했겠지만 쓰지 않았다 — 그쪽이 격차를 더
-벌린다. 제품에서 이 격차를 메우려면 SDK의 `sandbox: { enabled: true }`(bubblewrap 등 OS 격리)를
-켜는 방향을 검토해야 하며, 이 spike 범위에서는 검증하지 않았다.
+벌린다.
+
+#### 이 격차는 `task` mode에만 있다 (2026-08-23)
+
+**제품 격차가 아니라 spike 전용 격차다.** 위험은 agent가 파일을 쓸 수 있을 때만 생기고,
+그것은 `mode: "task"` 하나뿐이다. 인터뷰와 리뷰는 `tools: []`라 Write·Edit·Bash 자체가 없다.
+
+그리고 `task` mode는 **Agent Control 채널이 살아 있는지 보려고 만든 검증 장치**이지 제품
+경로가 아니다 (`docs/BYOA_MCP_INTEGRATION_SPIKE.md` §1.2 — 코드를 쓰는 turn은 이 앱이
+돌리지 않는다). 제품에서 코드를 쓰는 주체는 사용자가 옆 창에서 돌리는 자기 agent이고,
+우리가 쓰는 파일은 인계 산출물과 `.project-intel/`뿐이다.
+
+따라서 SDK의 `sandbox: { enabled: true }`(bubblewrap 등 OS 격리)를 검토할 일은 acceptance를
+계속 이 형태로 돌릴 때뿐이다. 제품이 이 격차를 물려받지는 않는다.
 
 #### Is this a prototype bug or provider limitation?
 
@@ -1180,6 +1192,8 @@ turn이 append 됐다.
 - **윈도우 실기 검증** — Finding 9. 코드는 고쳤으나 실제 윈도우에서 돌려보지 못했다.
   Node.js + Codex CLI + Claude Code를 윈도우에 설치하고 `npm run acceptance`를 통과시켜야 한다.
 - **Claude의 Bash 쓰기 범위 제한** — Finding 6. OS 샌드박스 검토는 하지 않았다.
+  **제품 격차는 아니다** — 위험은 `task` mode에만 있고 그것은 acceptance 검증 장치다
+  (Finding 6의 "이 격차는 task mode에만 있다").
 - **acceptance에 Stop 시나리오가 없다** — Finding 7이 자동 검증을 빠져나간 이유다. 두 provider
   모두 Stop은 수동으로만 확인했다. 회귀 게이트에 넣는 편이 낫다.
 - **Node.js 20+ 확인** — Phase B는 Node v18.19.1에서 검증했다. bridge·MCP server·acceptance는
