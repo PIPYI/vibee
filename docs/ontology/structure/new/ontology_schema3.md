@@ -286,8 +286,15 @@ type SequenceIR = {
   triggeredByEdgeId: string;             // WorkflowEdge.id 역참조 (breadcrumb)
   participants: ScenarioParticipant[];   // 기존 타입 재사용
   messages: SequenceMessage[];
-  activations?: ScenarioActivation[];    // 기존 타입 재사용 (schema2 §5)
-  phases?: ScenarioPhase[];              // 기존 타입 재사용, labelTerms 분절에 쓴다
+  /**
+   * 기존 타입 재사용 (schema2 §5). **주의**: `ScenarioActivation.fromStepId`/`toStepId`는
+   * 원래 `ScenarioStep.id`를 가리켰지만, `SequenceIR`에는 `steps[]`가 없다 — `messages[]`가
+   * 유일한 순서 있는 단위이므로 여기서는 `SequenceMessage.id`를 가리키는 것으로 해석한다
+   * (validator가 이렇게 검증한다).
+   */
+  activations?: ScenarioActivation[];
+  /** 기존 타입 재사용, labelTerms 분절에 쓴다. fromStepId/toStepId 해석은 activations와 같다 */
+  phases?: ScenarioPhase[];
   evidenceRefs: string[];
   confidence?: number;
 };
@@ -492,10 +499,9 @@ IR 필드에서 직접 온다 — 별도의 문자열 필드(archify의 `sources
 
 ## 9. 다음 구현 단계에서 손댈 지점 — 진행 상태
 
-이번 문서의 1차 실행 범위는 설계였고, 후속 세션에서 **Stage 1~4 파이프라인 배선과 그 기반
-타입/검증 계층(대략 "M14+M15")**을 구현했다. 웹 UI(M16, §1의 상태 머신·탭·Passport 패널)는
-아직 손대지 않았다 — 이 파이프라인이 실제로 `AnalysisBundle`을 만들어야 붙일 수 있는
-다음 단계다.
+이번 문서의 1차 실행 범위는 설계였고, 후속 세션에서 **Stage 1~4 파이프라인 배선(M14+M15)**과
+**웹 UI 재구성(M16)**을 순서대로 구현했다. `docs/ontology/structure/new/`가 곧 이 작업의
+FINDINGS 역할을 겸한다 — 별도 파일을 새로 만들지 않고 이 절에 상태를 이어 적는다.
 
 **완료됨**:
 
@@ -545,15 +551,55 @@ IR 필드에서 직접 온다 — 별도의 문자열 필드(archify의 `sources
   Assembly 프롬프트 시험 추가. 전체 251개 통과, `npm run typecheck`/`npm run build` 클린
   (workspace 6개 전부, `apps/web` 포함).
 
-**아직 손대지 않음 (M16)**:
+**M16 완료됨 (웹 UI 재구성)**:
 
-- `prototypes/ontology/apps/web/src/Shell.tsx`, `App.tsx`, `RuntimeConsole.tsx` — 최상위
-  tablist 제거, 콘솔을 Analyzing 인라인 뷰 + Diagnostics Drawer로 재배치(§2.3), 아키텍처/
-  워크플로우 2탭 + Passport 우측 패널(§7) + 엣지 라벨 클릭 시퀀스 렌더러(§3.4).
-- `/api/views`(overview/scenario) 및 관련 `viewCache` 경로 폐기 — 웹 UI가 `AnalysisBundle`로
-  완전히 옮겨간 뒤에만 안전하다.
+- `Shell.tsx`/`RuntimeConsole.tsx`는 삭제했다 — 최상위 tablist(I17의 "화면을 언제나
+  공유하지 않는다")를 없애고, `main.tsx`가 `App.tsx`를 직접 렌더한다.
+- `App.tsx`를 schema3 §2.1의 상태 머신(`no-project → indexing → ready → analyzing →
+  analyzed`)으로 전면 재작성했다. 프로젝트를 열면 `POST /api/index` 직후
+  `GET /api/analysis-bundle`을 먼저 시도해, 이미 분석된 프로젝트는 재분석 없이 바로
+  `analyzed`로 진입한다(§5.4의 "재요청 없음"을 첫 화면에도 적용).
+- `AnalyzingConsole.tsx` — `PhaseStepper`(실제로 emit되는 `analysis.progress`/
+  `task.started` 신호만으로 4단계: 인덱싱/의미 이해/조립/완료를 표시, §2.2)와
+  `DiagnosticsDrawer`(기본 접힘, `RuntimeConsole.describeEvent`류 로그 라인을 이식 — MCP
+  두 증거원 테이블·generation 이력 테이블까지의 완전한 기능 동등성은 아니고 이벤트 로그로
+  축약했다, §2.3)를 새로 만들었다. `analyzing`과 `analyzed` 화면 양쪽에서 재사용한다.
+- `ArchitectureView.tsx` + `layout/architectureLayout.ts` — component를 connections 기반
+  rank로 배치(A7 재확인, IR에 좌표 없음), `boundaries[]`는 member의 계산된 bounding box를
+  감싸는 배경 박스로 그린다. `presentationType`은 `pt-dot` 색으로만 표시한다(§4).
+- `WorkflowView.tsx` + `layout/workflowLayout.ts` — `scenarioLayout.ts`(삭제됨)와 같은
+  DFS back-edge 판정을 `WorkflowEdge`에 맞게 다시 짰다. `mainPath`를 강조선으로,
+  `sequenceRef`가 있는 edge 라벨만 클릭 가능하게(`▶` 표시) 만들었다(§3.4).
+- `SequenceView.tsx` — `SequenceMessage.order`를 정수 전순서로 받아 행을 배정한다.
+  activation/phase의 `fromStepId`/`toStepId`는 `SequenceMessage.id`를 가리키는 것으로
+  렌더도 해석한다(validator와 일치, §3.5).
+- `Passport.tsx` — §7 표 그대로 설명/in-out/연관 코드 파일(`EvidenceList` 재사용)/관계
+  목록을 렌더한다. in/out의 "더보기"는 `entityRef`가 `symbol`/`file`일 때만
+  `requestView({viewKind:"reachability"})`를 그 자리에서 호출한다 — `route`/`model`
+  entity는 `ViewAnchor`가 지원하지 않아 드릴다운을 제공하지 않는다(구현 중 발견한 타입
+  경계, 문서에 없던 지점).
+- 삭제: `OverviewView.tsx`/`ScenarioView.tsx`/`StepDetail.tsx`/`EvidenceExplorer.tsx`/
+  `layout/scenarioLayout.ts`와 그 테스트 — 새 상태 머신이 더 이상 부르지 않는 화면이라
+  코드베이스에 죽은 채로 남기지 않았다. `api.ts`의 `fullMemory`/`memoryDigest`/`fetchView`/
+  `pollView`/`isTerminal`/`taskMcpEvidence`도 같은 이유로 제거했다. `requestView`(Passport의
+  reachability drill-down)와 `queryEvidence`(Grounding.tsx)는 유지했다.
+- 시험: `apps/web/test/architectureLayout.test.mjs`(5), `apps/web/test/workflowLayout.test.mjs`
+  (5) 신설, `scenarioLayout.test.mjs`는 대상 모듈과 함께 삭제. 전체 259개 통과,
+  `npm run typecheck`/`npm run build`(vite build 포함) 클린. bridge를 실제로 띄워
+  `/api/project` → `/api/index` → `GET /api/analysis-bundle`(412 → 404) 응답을 curl로
+  라이브 확인했다 — `/api/analyze`(codex CLI 설치되어 있음)를 실제로 태우는 end-to-end
+  검증은 LLM 비용이 들어 사용자 확인 없이 실행하지 않았다.
+
+**아직 손대지 않음**:
+
+- `/api/views`(overview/scenario) 및 관련 `viewCache` 경로 폐기 — 이제 웹 UI가 그 경로를
+  더 이상 부르지 않으므로 안전하게 폐기할 수 있지만, 되돌리기 어려운 API 축소라 별도 확인
+  후 진행하는 편이 낫다.
 - `CanonicalScenarioEntry`에 `workflowNodeRefs`/`workflowEdgeRefs` 추가(§6.2의 확인 필요
   지점) — 아직 미착수.
+- 실제 agent(codex)로 `/api/analyze` 전체 파이프라인을 끝까지 돌려 만들어진 진짜
+  `AnalysisBundle`을 웹 UI에서 확인하는 end-to-end 검증 — 다음으로 자연스럽게 이어지는
+  단계다.
 
 ---
 

@@ -5,18 +5,20 @@
  * 실패는 전부 `Diagnostic[]`로 돌아온다(A3). `AnalysisBundle`은 `SemanticStore`에 커밋되는
  * 대상이므로(schema3 §5.4) 여기를 통과한 것만 generation에 실린다.
  *
- * **traceLinkRefs의 해석** — schema3 §3.2는 `ArchitectureConnection.traceLinkRefs`를
- * "Stage 1 골격 엣지 롤업"이라고만 적었고, 골격 엣지 자체에는 별도 id가 없다(`TraceLink`는
- * `(fromId, toId, kind)`로만 식별된다, `trace.ts`). 그래서 여기서는 그 엣지를 뒷받침하는
- * **link-role Evidence.id**를 안정적인 참조 대상으로 쓴다. 이것은 schema3 문서에 명시되지
- * 않은 설계 판단이다 — Stage 3 프롬프트(§9, 후속 세션)가 실제로 이 규약대로 traceLinkRefs를
- * 채우는지 그때 다시 맞춰봐야 한다.
+ * **traceLinkRefs의 해석** (schema3 §3.2에 명문화됨) — 골격 엣지 자체에는 별도 id가 없다
+ * (`TraceLink`는 `(fromId, toId, kind)`로만 식별된다, `trace.ts`). 그래서 그 엣지를 뒷받침하는
+ * **link-role Evidence.id**를 안정적인 참조 대상으로 쓴다.
  *
- * **I20의 WorkflowEdge 적용** — I20 문장은 "ArchitectureConnection/WorkflowEdge는 반드시
- * Stage 1 골격 엣지(traceLinkRefs)로 뒷받침되어야 한다"고 하지만, §3.3의 `WorkflowEdge` 타입
- * 자체에는 `traceLinkRefs` 필드가 없다(schema3 원문의 불일치로 보인다). 그래서 WorkflowEdge는
- * 자신의 `evidenceRefs`가 present Evidence를 가리키고 비어 있지 않은지로만 검사한다 —
- * `traceLinkRefs` 부분집합 검사는 필드가 있는 `ArchitectureConnection`에만 적용한다.
+ * **I20은 `ArchitectureConnection`에만 적용된다** (schema3 §3.3, §5.5에 명문화됨) —
+ * `WorkflowEdge`에는 애초에 `traceLinkRefs` 필드가 없다. 하나의 워크플로우 전이가 여러 골격
+ * hop을 압축할 수 있기 때문이다. `WorkflowEdge`는 자신의 `evidenceRefs`가 present Evidence를
+ * 가리키고 비어 있지 않은지로만 검사한다.
+ *
+ * **SequenceIR의 activation/phase가 재사용하는 `fromStepId`/`toStepId`** — `ScenarioIR`에서는
+ * `ScenarioStep.id`를 가리키지만, `SequenceIR`에는 `steps[]`가 없다(`messages[]`가 유일한
+ * 순서 있는 단위다). 그래서 여기서는 **`SequenceMessage.id`**를 가리키는 것으로 해석해
+ * 참조 무결성을 검사한다 — schema3 문서가 필드명 재사용만 말하고 대상을 규정하지 않은
+ * 지점이라 여기서 확정했다.
  */
 import type {
   AnalysisBundle,
@@ -333,12 +335,26 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
       requireGrounded(message.evidenceRefs, mBase, "bundle/message-ungrounded");
     }
 
+    // SequenceIR에는 ScenarioIR의 steps[]가 없다 — activation/phase가 재사용하는
+    // ScenarioActivation/ScenarioPhase의 fromStepId/toStepId는 여기서 **SequenceMessage.id**를
+    // 가리키는 것으로 해석한다(messages가 SequenceIR의 유일한 순서 있는 단위다). schema3
+    // §3.5는 이 필드명 재사용을 명시했지만 SequenceIR 맥락에서의 대상은 규정하지 않았다 —
+    // 이 해석을 여기서 확정한다.
     for (const [aIndex, activation] of (sequence.activations ?? []).entries()) {
       const aBase = `${base}/activations/${aIndex}`;
       checkEvidenceRefs(activation.evidenceRefs, `${aBase}/evidenceRefs`);
       if (!participantIds.has(activation.participantId)) {
         diagnostics.push(
           unknownRef("bundle/unknown-participant", `${aBase}/participantId`, activation.participantId, "participants[].id 중 하나를 쓴다"),
+        );
+      }
+      for (const [field, value] of [
+        ["fromStepId", activation.fromStepId],
+        ["toStepId", activation.toStepId],
+      ] as const) {
+        if (messageIds.has(value)) continue;
+        diagnostics.push(
+          unknownRef("bundle/unknown-message", `${aBase}/${field}`, value, "messages[].id 중 하나를 쓴다"),
         );
       }
     }
@@ -349,6 +365,15 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
       if (phaseIds.has(phase.id)) diagnostics.push(duplicateId(phBase, phase.id));
       phaseIds.add(phase.id);
       checkEvidenceRefs(phase.evidenceRefs, `${phBase}/evidenceRefs`);
+      for (const [field, value] of [
+        ["fromStepId", phase.fromStepId],
+        ["toStepId", phase.toStepId],
+      ] as const) {
+        if (messageIds.has(value)) continue;
+        diagnostics.push(
+          unknownRef("bundle/unknown-message", `${phBase}/${field}`, value, "messages[].id 중 하나를 쓴다"),
+        );
+      }
     }
 
     checkEvidenceRefs(sequence.evidenceRefs, `${base}/evidenceRefs`);

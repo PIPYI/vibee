@@ -294,3 +294,39 @@ test("중복 id는 거절된다", () => {
   const result = validate(bundle);
   assert.ok(codesOf(result.diagnostics).includes("bundle/duplicate-id"));
 });
+
+// ---------------------------------------------------------------------------
+// SequenceIR의 activation/phase — fromStepId/toStepId는 SequenceMessage.id를 가리킨다
+// (schema3 §3.5, steps[]가 없으므로 messages[]가 유일한 순서 있는 단위)
+// ---------------------------------------------------------------------------
+
+test("activation.fromStepId/toStepId가 실재하지 않는 message를 가리키면 거절된다", () => {
+  const bundle = bundleWithEdge("seq-1", [
+    sequenceOf("seq-1", "edge-1", {
+      activations: [{ participantId: "p1", fromStepId: "m-없음", toStepId: "m1", evidenceRefs: [EV_LINK.id] }],
+    }),
+  ]);
+  const result = validate(bundle);
+  assert.ok(codesOf(result.diagnostics).includes("bundle/unknown-message"));
+});
+
+test("phase.fromStepId/toStepId가 실재하지 않는 message를 가리키면 거절된다", () => {
+  const bundle = bundleWithEdge("seq-1", [
+    sequenceOf("seq-1", "edge-1", {
+      phases: [{ id: "ph-1", label: "요청", fromStepId: "m1", toStepId: "m-없음", evidenceRefs: [EV_LINK.id] }],
+    }),
+  ]);
+  const result = validate(bundle);
+  assert.ok(codesOf(result.diagnostics).includes("bundle/unknown-message"));
+});
+
+test("activation/phase가 실재하는 message.id를 가리키면 통과한다", () => {
+  const bundle = bundleWithEdge("seq-1", [
+    sequenceOf("seq-1", "edge-1", {
+      activations: [{ participantId: "p1", fromStepId: "m1", toStepId: "m1", evidenceRefs: [EV_LINK.id] }],
+      phases: [{ id: "ph-1", label: "요청", fromStepId: "m1", toStepId: "m1", evidenceRefs: [EV_LINK.id] }],
+    }),
+  ]);
+  const result = validate(bundle);
+  assert.deepEqual(result.diagnostics, []);
+});

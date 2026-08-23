@@ -7,17 +7,12 @@
 import type {
   AgentId,
   AgentReadiness,
+  AnalysisBundle,
   CachedView,
-  EvidenceIndex,
-  GroundingStore,
   HealthResponse,
-  McpCallRecord,
   OverviewIR,
-  ProjectState,
   ReachabilityIR,
   ScenarioIR,
-  SemanticMemory,
-  SemanticVersion,
   TaskState,
   TraceIR,
   ViewAnchor,
@@ -78,34 +73,6 @@ export function analyze(
 
 export function stopTask(taskId: string): Promise<{ ok: true } | { error: string }> {
   return postJson(`/api/tasks/${taskId}/stop`, {});
-}
-
-export type MemoryDigest = {
-  generation: number;
-  analysisVersion: number;
-  semanticVersion: number;
-  semanticReconciledAnalysisVersion: number;
-  reconcileCurrent: boolean;
-  counts: { concepts: number; claims: number; canonicalScenarios: number; evidence: number };
-  evidenceByKind: Record<string, number>;
-  topConcepts: Array<{ id: string; name: string; status: string; evidenceCount: number }>;
-  canonicalScenarios: Array<{ id: string; name: string; type: "user" | "system" }>;
-};
-export function memoryDigest(): Promise<MemoryDigest | Unavailable> {
-  return getJson("/api/memory");
-}
-
-export type FullMemory = {
-  generation: number;
-  project: ProjectState;
-  memory: SemanticMemory;
-  evidence: EvidenceIndex;
-  grounding: GroundingStore;
-  /** M13 Runtime Console — generation 이력. store가 이미 들고 있는 것을 그대로 내보낸다. */
-  versions: SemanticVersion[];
-};
-export function fullMemory(): Promise<FullMemory | Unavailable> {
-  return getJson("/api/memory?detail=full");
 }
 
 /** `describeEvidence`(bridge)가 만드는 모양. 실재 `Evidence`의 부분집합 + 렌더용 파생 필드. */
@@ -170,40 +137,28 @@ export type ViewsPostResponse =
   | { viewKind: "overview" | "scenario"; taskId: string }
   | { error: string };
 
+/**
+ * schema3 §6.2 — Overview/Scenario 경로는 웹 UI가 더 이상 부르지 않는다(§9). Reachability는
+ * `Passport.tsx`의 온디맨드 drill-down으로 여전히 쓰인다(§7). Trace는 아직 프론트에서
+ * 쓰지 않지만 엔드포인트는 살아 있다.
+ */
 export function requestView(request: ViewsRequest): Promise<ViewsPostResponse> {
   return postJson("/api/views", request);
 }
 
-export type ViewsGetResponse =
-  | { status: "starting" | "running" }
-  | { status: "completed" | "interrupted" | "error"; view: CachedView<OverviewIR | ScenarioIR> }
-  | { status: string; error: string };
-
-export function fetchView(taskId: string): Promise<ViewsGetResponse> {
-  return getJson(`/api/views/${taskId}`);
-}
-
-export function isTerminal(status: string): boolean {
-  return status !== "starting" && status !== "running";
-}
-
-/** view turn 이 끝날 때까지 짧은 간격으로 다시 묻는다. bridge 는 이미 taskId 로 상태를 노출한다. */
-export async function pollView(taskId: string, intervalMs = 800): Promise<ViewsGetResponse> {
-  for (;;) {
-    const result = await fetchView(taskId);
-    if (isTerminal(result.status)) return result;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Runtime Console (schema2 §3, M13) — onto 자신의 telemetry. Project Reader와
-// 화면을 공유하지 않는다(I17)지만 API는 같은 bridge를 쓴다.
+// AnalysisBundle (schema3 §5.4) — 아키텍처/워크플로우/시퀀스 한 벌.
 // ---------------------------------------------------------------------------
 
-export type TaskMcpEvidence = { taskId: string; calls: McpCallRecord[]; toolsWithBothSources: string[] };
-export function taskMcpEvidence(taskId: string): Promise<TaskMcpEvidence | { error: string }> {
-  return getJson(`/api/tasks/${taskId}/mcp-evidence`);
+export type AnalysisBundleResponse = { bundle: AnalysisBundle } | { error: string };
+
+/**
+ * HEAD generation의 `analysis-bundle.json`을 읽기만 한다 — **LLM turn을 절대 열지 않는다**.
+ * 탭 전환(아키텍처 ↔ 워크플로우)마다 이걸 다시 불러도 재분석이 일어나지 않는다.
+ */
+export function fetchAnalysisBundle(projectPath?: string): Promise<AnalysisBundleResponse> {
+  const qs = projectPath ? `?projectPath=${encodeURIComponent(projectPath)}` : "";
+  return getJson(`/api/analysis-bundle${qs}`);
 }
 
 export type { AgentReadiness };

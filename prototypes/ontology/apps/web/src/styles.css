@@ -106,18 +106,6 @@ button:disabled {
   color: var(--bad);
 }
 
-.breadcrumb {
-  padding: 6px 16px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-}
-.breadcrumb button {
-  border: none;
-  background: none;
-  padding: 2px 4px;
-  color: var(--accent);
-}
-
 .app-main {
   flex: 1;
   display: flex;
@@ -134,52 +122,98 @@ button:disabled {
   color: var(--dim);
 }
 
-/* Overview */
-.overview-areas {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  margin-top: 12px;
-}
-.overview-area {
-  min-width: 240px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-}
-.overview-area h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-}
-.overview-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* Ready / Analyzing 화면 (schema3 §2.1) */
+.ready-pane,
+.analyzing-pane {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 14px;
+  padding-top: 40px;
+  max-width: 640px;
 }
-.overview-item {
-  width: 100%;
-  text-align: left;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-.pill {
-  font-size: 11px;
-  color: var(--accent);
-}
-.overview-connections {
-  margin-top: 20px;
-}
-.overview-connections ul {
-  padding-left: 18px;
+.analyze-cta {
+  font-size: 15px;
+  padding: 10px 20px;
 }
 
-/* Scenario / Trace canvas */
+/* Phase Stepper (schema3 §2.2, 기본 노출) */
+.phase-stepper {
+  list-style: none;
+  display: flex;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+.phase-step {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  padding: 8px 6px;
+  border-bottom: 3px solid var(--border);
+  color: var(--dim);
+}
+.phase-step-done {
+  border-bottom-color: var(--good);
+  color: var(--text);
+}
+.phase-step-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+.phase-step-failed {
+  border-bottom-color: var(--bad);
+  color: var(--bad);
+}
+
+/* Diagnostics Drawer (schema3 §2.2~§2.3, 기본 접힘) */
+.diagnostics-drawer {
+  margin-top: 16px;
+  width: 100%;
+}
+.diagnostics-drawer-toggle {
+  font-size: 12px;
+  background: none;
+  border: none;
+  color: var(--dim);
+  padding: 0;
+}
+.diagnostics-drawer-toggle:hover {
+  color: var(--accent);
+}
+.diagnostics-drawer-body {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: #12151b;
+}
+
+/* 아키텍처/워크플로우 탭 (schema3 §2.1) */
+.tab-switch {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.tab-switch button {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.tab-switch button[aria-selected="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Diagram canvas (Architecture/Workflow/Sequence/Trace/Reachability 공유) */
 .scenario-canvas-wrap {
   overflow: auto;
   border: 1px solid var(--border);
@@ -203,15 +237,13 @@ button:disabled {
   stroke: var(--warn);
   stroke-dasharray: 5 3;
 }
-.edge-branch {
-  stroke: var(--accent);
+.edge-return {
+  stroke-dasharray: 3 3;
+  opacity: 0.75;
 }
 .edge-label {
   fill: var(--dim);
   font-size: 11px;
-}
-.edge-label-back {
-  fill: var(--warn);
 }
 
 .scenario-step,
@@ -230,12 +262,6 @@ button:disabled {
   overflow: hidden;
   text-align: left;
 }
-.scenario-step-entry {
-  border-color: var(--good);
-}
-.scenario-step-outcome {
-  border-color: var(--accent);
-}
 .scenario-step-label,
 .trace-entity-label {
   font-size: 12px;
@@ -248,21 +274,13 @@ button:disabled {
   font-size: 10px;
   color: var(--dim);
   text-transform: uppercase;
-}
-.branch-mark {
-  color: var(--accent);
-  font-size: 12px;
-  margin-right: 4px;
+  display: flex;
+  align-items: center;
 }
 .scc-mark {
   font-size: 11px;
   color: var(--warn);
   margin-left: auto;
-}
-.state-change-note {
-  font-size: 10px;
-  color: var(--warn);
-  line-height: 1.3;
 }
 
 .scenario-legend {
@@ -278,12 +296,6 @@ button:disabled {
   margin-right: 4px;
   vertical-align: middle;
 }
-.legend-entry {
-  background: var(--good);
-}
-.legend-outcome {
-  background: var(--accent);
-}
 .legend-back {
   background: var(--warn);
 }
@@ -293,7 +305,128 @@ button:disabled {
   font-size: 13px;
 }
 
-/* Evidence */
+/* presentationType 축 — View 레이어 전용, SemanticConcept에는 없다 (schema3 §4) */
+.pt-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.pt-external {
+  background: #9aa5b1;
+}
+.pt-frontend {
+  background: #5b8cff;
+}
+.pt-backend {
+  background: #4caf7d;
+}
+.pt-database {
+  background: #d9a441;
+}
+.pt-queue {
+  background: #c77dff;
+}
+.pt-security {
+  background: #e05a5a;
+}
+.pt-job {
+  background: #3fb6c9;
+}
+.pt-cloud {
+  background: #7ea6ff;
+}
+.pt-unknown {
+  background: #5a6270;
+}
+
+/* ArchitectureView (schema3 §3.2) */
+.arch-boundary {
+  fill: rgba(91, 140, 255, 0.04);
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+.arch-boundary-label {
+  fill: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.arch-component-sublabel {
+  font-size: 10px;
+}
+.arch-legend-item {
+  margin-right: 12px;
+  white-space: nowrap;
+}
+.arch-edge-async {
+  stroke-dasharray: 4 3;
+}
+.arch-edge-data {
+  stroke: var(--good);
+}
+.arch-edge-control {
+  stroke: var(--warn);
+}
+
+/* WorkflowView (schema3 §3.3~§3.4) */
+.workflow-node-main {
+  border-color: var(--accent);
+}
+.workflow-edge-main {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.workflow-edge-error {
+  stroke: var(--bad);
+}
+.workflow-edge-async {
+  stroke-dasharray: 4 3;
+}
+.workflow-edge-return {
+  stroke-dasharray: 3 3;
+  opacity: 0.75;
+}
+.workflow-edge-label-clickable {
+  fill: var(--accent);
+  cursor: pointer;
+}
+.workflow-edge-label-clickable:hover {
+  text-decoration: underline;
+}
+
+/* SequenceView (schema3 §3.4~§3.5) */
+.sequence-view h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.sequence-lifeline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.sequence-activation {
+  fill: var(--accent);
+  opacity: 0.35;
+}
+.sequence-panel {
+  width: 420px;
+}
+.phase-band {
+  fill: rgba(91, 140, 255, 0.05);
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+.phase-band-label {
+  fill: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Evidence (Grounding.tsx, §6.10) */
 .evidence-list {
   display: flex;
   flex-direction: column;
@@ -380,29 +513,7 @@ button:disabled {
   color: var(--dim);
 }
 
-/* Explorer */
-.explorer-columns {
-  display: flex;
-  gap: 30px;
-  margin-top: 10px;
-}
-.explorer-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  max-height: 60vh;
-  overflow: auto;
-}
-.explorer-list button {
-  border: none;
-  background: none;
-  color: var(--accent);
-  padding: 3px 0;
-  font-size: 12px;
-  text-align: left;
-}
-
-/* Step detail side panel */
+/* Passport 우측 패널 (schema3 §7) */
 .step-detail {
   width: 320px;
   flex-shrink: 0;
@@ -418,6 +529,8 @@ button:disabled {
 .step-detail-header h3 {
   margin: 0;
   font-size: 14px;
+  display: flex;
+  align-items: center;
 }
 .close-button {
   border: none;
@@ -450,15 +563,81 @@ button:disabled {
   padding: 2px 10px;
   font-size: 12px;
 }
-
-/* Log footer */
-.app-log {
-  border-top: 1px solid var(--border);
-  padding: 6px 16px;
-  max-height: 110px;
-  overflow: auto;
-  font-family: ui-monospace, monospace;
+.passport-io-label {
+  margin: 8px 0 2px;
   font-size: 11px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.passport-io-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.passport-io-row {
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.passport-io-kind {
+  font-size: 10px;
+  color: var(--dim);
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 5px;
+}
+.passport-io-drilldown {
+  flex-basis: 100%;
+}
+.passport-io-more {
+  font-size: 11px;
+  padding: 2px 6px;
+  margin-top: 2px;
+}
+.passport-io-result {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #12151b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.passport-relationship-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.passport-relationship {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  border: none;
+  background: none;
+  padding: 3px 0;
+  color: var(--text);
+}
+.passport-relationship:hover {
+  color: var(--accent);
+}
+.passport-sequence-open {
+  font-size: 11px;
+  margin-left: 16px;
+  padding: 2px 6px;
+}
+
+/* Footer */
+.app-footer {
+  padding: 4px 16px;
+  font-size: 11px;
+  border-top: 1px solid var(--border);
 }
 .log-line {
   padding: 1px 0;
@@ -623,210 +802,4 @@ button:disabled {
   stroke: var(--accent);
   stroke-width: 6;
   pointer-events: none;
-}
-
-/* Scenario M11 — activation bar / phase band / return transition (schema2 §5) */
-.phase-band {
-  fill: rgba(91, 140, 255, 0.05);
-  stroke: var(--border);
-  stroke-dasharray: 4 4;
-}
-.phase-band-label {
-  fill: var(--dim);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.activation-bar {
-  fill: var(--accent);
-  opacity: 0.35;
-}
-.edge-return {
-  stroke-dasharray: 3 3;
-  opacity: 0.75;
-}
-
-/* Reachability entry point (M12, schema2 §6) */
-.reachability-buttons {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-.reachability-buttons button {
-  flex: 1;
-  font-size: 11px;
-}
-
-/* Shell — surface switcher (schema2 §3, I17) */
-.shell {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-.surface-switch {
-  display: flex;
-  gap: 4px;
-  padding: 6px 16px;
-  background: #0a0c10;
-  border-bottom: 1px solid var(--border);
-}
-.surface-switch button {
-  border: 1px solid transparent;
-  background: none;
-  padding: 5px 12px;
-  border-radius: 6px 6px 0 0;
-  font-size: 12px;
-  color: var(--dim);
-}
-.surface-switch button[aria-selected="true"] {
-  color: var(--text);
-  background: var(--bg);
-  border-color: var(--border);
-  border-bottom-color: var(--bg);
-  margin-bottom: -1px;
-}
-.shell .app {
-  flex: 1;
-  min-height: 0;
-}
-
-/* Runtime Console (M13, schema2 §3) */
-.console-subtitle {
-  margin-left: 8px;
-  font-size: 11px;
-}
-.console-body {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 220px 1fr 300px;
-  gap: 0;
-  overflow: hidden;
-}
-.console-tasks,
-.console-detail,
-.console-versions {
-  overflow: auto;
-  padding: 12px 14px;
-}
-.console-tasks {
-  border-right: 1px solid var(--border);
-}
-.console-versions {
-  border-left: 1px solid var(--border);
-}
-.console-tasks h2,
-.console-detail h2,
-.console-versions h2 {
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-.console-detail h3 {
-  font-size: 12px;
-  color: var(--dim);
-  text-transform: uppercase;
-  margin: 16px 0 6px;
-}
-.console-task-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.console-task {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  text-align: left;
-  font-size: 11px;
-  padding: 6px 8px;
-}
-.console-task-selected {
-  border-color: var(--accent);
-}
-.console-status {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  display: inline-block;
-}
-.console-status-starting,
-.console-status-running {
-  color: var(--accent);
-  background: rgba(91, 140, 255, 0.15);
-}
-.console-status-completed {
-  color: var(--good);
-  background: rgba(76, 175, 125, 0.15);
-}
-.console-status-interrupted {
-  color: var(--warn);
-  background: rgba(217, 164, 65, 0.15);
-}
-.console-status-error {
-  color: var(--bad);
-  background: rgba(224, 90, 90, 0.15);
-}
-.console-fields {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 3px 10px;
-  font-size: 12px;
-}
-.console-fields dt {
-  color: var(--dim);
-}
-.console-error {
-  color: var(--bad);
-}
-.console-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-.console-table th,
-.console-table td {
-  text-align: left;
-  padding: 3px 6px;
-  border-bottom: 1px solid var(--border);
-}
-.console-source-agent {
-  color: var(--accent);
-}
-.console-source-bridge {
-  color: var(--good);
-}
-.console-both-sources {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--good);
-}
-.console-diagnostics-entry {
-  margin-bottom: 8px;
-  font-size: 11px;
-}
-.console-diagnostics-entry ul {
-  margin: 3px 0 0 16px;
-  padding: 0;
-}
-.console-diag-error {
-  color: var(--bad);
-}
-.console-diag-warning {
-  color: var(--warn);
-}
-.console-log {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-  max-height: 220px;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px;
-  margin-top: 4px;
 }

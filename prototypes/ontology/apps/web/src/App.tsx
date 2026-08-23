@@ -1,32 +1,38 @@
 /**
- * 셸 — 프로젝트 선택, agent 실행, WS 로그, 그리고 Progressive Disclosure의 네비게이션
- * (§41: Overview item → Scenario / Scenario step → StepDetail → "실제 코드 보기" → Trace).
+ * 메인 화면 (schema3 §1~§2). 상태 전이:
+ *
+ * ```text
+ * NoProject → (프로젝트 열기) → Indexing → Ready(분석 시작 CTA, 이미 분석된 적 있으면 바로 Analyzed)
+ * Ready → (분석 시작) → Analyzing(실시간 상황판, 별도 콘솔 탭 없음) → Analyzed(아키텍처/워크플로우 탭)
+ * Analyzed → 블록 클릭 → Passport 우측 패널 / 엣지 라벨 클릭 → 같은 자리에 Sequence
+ * ```
+ *
+ * **탭 전환·블록 클릭·엣지 클릭은 재요청을 만들지 않는다** — 전부 이미 받아온
+ * `AnalysisBundle`(§5.4)에 대한 로컬 상태 변경이다. `POST /api/analyze` 한 번만 호출한다.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type {
   AgentId,
-  OverviewIR,
-  ReachabilityIR,
-  ScenarioIR,
-  ScenarioStep,
-  TraceIR,
-  ViewAnchor,
-  ViewFreshness,
+  AnalysisBundle,
+  ArchitectureComponent,
+  SequenceIR,
+  WorkflowEdge,
+  WorkflowNode,
 } from "@onto/protocol";
 
 import * as api from "./api.js";
-import { EvidenceExplorer } from "./components/EvidenceExplorer.js";
-import { OverviewView, type OverviewItemSelection } from "./components/OverviewView.js";
-import { ReachabilityView } from "./components/ReachabilityView.js";
-import { ScenarioView } from "./components/ScenarioView.js";
-import { StepDetail } from "./components/StepDetail.js";
-import { TraceView } from "./components/TraceView.js";
+import { ArchitectureView } from "./components/ArchitectureView.js";
+import { DiagnosticsDrawer, PhaseStepper, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
+import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
+import { SequenceView } from "./components/SequenceView.js";
 import { ViewerShell, type ViewerNode } from "./components/ViewerShell.js";
+import { WorkflowView } from "./components/WorkflowView.js";
 import { useAgentEvents } from "./ws.js";
 
-type Panel = "explorer" | "overview" | "scenario" | "trace" | "reachability";
-type LogLine = { seq: number; text: string; tone: "info" | "good" | "bad" | "mcp" };
+type Screen = "no-project" | "indexing" | "ready" | "analyzing" | "analyzed";
+type Tab = "architecture" | "workflow";
+type PassportTarget = { tab: Tab; id: string };
 
 function short(id: string): string {
   return id.slice(0, 8);
@@ -39,27 +45,21 @@ export function App(): React.JSX.Element {
   const [projectPathInput, setProjectPathInput] = useState("");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [indexStats, setIndexStats] = useState<api.IndexResponse | null>(null);
 
-  const [memory, setMemory] = useState<api.FullMemory | null>(null);
+  const [screen, setScreen] = useState<Screen>("no-project");
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
-  const [panel, setPanel] = useState<Panel>("explorer");
-  const [overview, setOverview] = useState<OverviewIR | null>(null);
-  const [scenario, setScenario] = useState<ScenarioIR | null>(null);
-  const [trace, setTrace] = useState<TraceIR | null>(null);
-  const [reachability, setReachability] = useState<ReachabilityIR | null>(null);
-  const [scenarioFreshness, setScenarioFreshness] = useState<ViewFreshness | undefined>(undefined);
-  const [overviewFreshness, setOverviewFreshness] = useState<ViewFreshness | undefined>(undefined);
-  const [traceKey, setTraceKey] = useState(0);
-  const [reachabilityKey, setReachabilityKey] = useState(0);
-  const [crumbs, setCrumbs] = useState<Array<{ label: string; panel: Panel }>>([]);
-  const [selectedStep, setSelectedStep] = useState<ScenarioStep | null>(null);
-
-  const [viewLoading, setViewLoading] = useState(false);
-  const [viewError, setViewError] = useState<string | null>(null);
-
-  const [running, setRunning] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [pipelinePhase, setPipelinePhase] = useState<PipelinePhase>("indexing");
+  const [pipelineFailed, setPipelineFailed] = useState(false);
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+
+  const [bundle, setBundle] = useState<AnalysisBundle | null>(null);
+  const [tab, setTab] = useState<Tab>("architecture");
+  const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
+  const [sequenceView, setSequenceView] = useState<SequenceIR | null>(null);
 
   useEffect(() => {
     void api.health().then((h) => setAgents(h.agents));
@@ -71,300 +71,191 @@ export function App(): React.JSX.Element {
     });
   }, []);
 
-  const refreshMemory = useCallback(async () => {
-    const result = await api.fullMemory();
-    if (!api.isUnavailable(result)) setMemory(result);
-    else setMemory(null);
-    return result;
+  const push = useCallback((seq: number, text: string, tone: LogLine["tone"] = "info") => {
+    setLines((prev) => (prev.some((line) => line.seq === seq) ? prev : [...prev, { seq, text, tone }]));
   }, []);
 
-  const conceptNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const concept of memory?.memory.concepts ?? []) map.set(concept.id, concept.name);
-    return map;
-  }, [memory]);
-  const claimById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const claim of memory?.memory.claims ?? []) map.set(claim.id, claim.predicate);
-    return map;
-  }, [memory]);
-  const resolveConceptName = useCallback((id: string) => conceptNameById.get(id) ?? id, [conceptNameById]);
-  const resolveClaimPredicate = useCallback((id: string) => claimById.get(id), [claimById]);
+  const loadBundle = useCallback(async (path: string): Promise<boolean> => {
+    const result = await api.fetchAnalysisBundle(path);
+    if ("error" in result) {
+      setBundle(null);
+      return false;
+    }
+    setBundle(result.bundle);
+    return true;
+  }, []);
 
   const stream = useAgentEvents((event, envelope) => {
-    const push = (text: string, tone: LogLine["tone"] = "info") =>
-      setLines((prev) => (prev.some((line) => line.seq === envelope.seq) ? prev : [...prev, { seq: envelope.seq, text, tone }]));
-
     switch (event.type) {
       case "task.started":
-        setRunning(true);
-        push(`turn 시작 — ${event.mode}`, "good");
+        setPipelinePhase("semantic-memory");
+        push(envelope.seq, `turn 시작 — ${event.mode}`, "good");
         break;
       case "analysis.progress":
-        push(event.message);
+        if (event.phase === "assembly") setPipelinePhase("assembly");
+        push(envelope.seq, event.message);
         break;
       case "agent.action.started":
-        push(`▶ ${event.name}`);
+        push(envelope.seq, `▶ ${event.name}`);
         break;
       case "mcp.tool.called":
-        push(`MCP ${event.tool} [${event.source}]`, "mcp");
+        push(envelope.seq, `MCP ${event.tool} [${event.source}]`, "mcp");
         break;
       case "memory.patched":
-        push(`Semantic Memory 갱신 — ${event.summary}`, "good");
+        push(envelope.seq, `Semantic Memory 갱신 — ${event.summary}`, "good");
         break;
-      case "view.ready":
-        push(`View 완료 — ${event.viewKind}`, "good");
+      case "bundle.ready":
+        push(envelope.seq, `AnalysisBundle 커밋 — generation ${event.generation}`, "good");
         break;
       case "validation.failed":
-        push(`검증 실패 — ${event.tool}`, "bad");
+        push(envelope.seq, `검증 실패 — ${event.tool}`, "bad");
         break;
       case "task.completed":
-        setRunning(false);
-        push("turn 완료", "good");
+        setPipelinePhase("done");
+        push(envelope.seq, "분석 완료", "good");
+        void (async () => {
+          const path = projectPath;
+          if (!path) return;
+          const ok = await loadBundle(path);
+          setScreen(ok ? "analyzed" : "ready");
+          if (!ok) setAnalyzeError("분석은 끝났지만 AnalysisBundle을 읽지 못했습니다.");
+        })();
         break;
       case "task.interrupted":
-        setRunning(false);
-        push("turn 중단됨", "bad");
+        setPipelineFailed(true);
+        push(envelope.seq, "분석이 중단되었습니다", "bad");
+        setAnalyzeError("분석이 중단되었습니다.");
+        setScreen("ready");
         break;
       case "task.error":
-        setRunning(false);
-        push(`turn 오류 — ${event.message}`, "bad");
+        setPipelineFailed(true);
+        push(envelope.seq, `분석 오류 — ${event.message}`, "bad");
+        setAnalyzeError(event.message);
+        setScreen("ready");
         break;
       default:
         break;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   });
 
   const selectProject = useCallback(async () => {
     setProjectError(null);
+    setAnalyzeError(null);
     const selected = await api.selectProject(projectPathInput.trim());
     if ("error" in selected) {
       setProjectError(selected.error);
       return;
     }
     setProjectPath(selected.projectPath);
-    setOverview(null);
-    setScenario(null);
-    setTrace(null);
-    setCrumbs([]);
+    setBundle(null);
+    setPassportTarget(null);
+    setSequenceView(null);
+    setScreen("indexing");
 
-    // Trace는 인덱싱만으로 바로 보인다 (§6.6) — agent turn을 기다리지 않는다.
     const indexed = await api.indexOnly(selected.projectPath);
     if ("error" in indexed) {
       setProjectError(indexed.error);
+      setScreen("no-project");
       return;
     }
-    const loaded = await refreshMemory();
-    if (!api.isUnavailable(loaded) && loaded.memory.concepts.length > 0) {
-      setPanel("overview");
-      void loadOverview(selected.projectPath);
-    } else {
-      setPanel("explorer");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectPathInput, refreshMemory]);
+    setIndexStats(indexed);
 
-  const loadOverview = useCallback(
-    async (path = projectPath) => {
-      if (!path) return;
-      setViewLoading(true);
-      setViewError(null);
-      const result = await api.requestView({ viewKind: "overview", agent, projectPath: path });
-      await resolveViewResult(result, (ir, freshness) => {
-        setOverview(ir as OverviewIR);
-        setOverviewFreshness(freshness);
-        setPanel("overview");
-        setCrumbs([{ label: "Overview", panel: "overview" }]);
-      });
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    },
-    [agent, projectPath],
-  );
+    const hasBundle = await loadBundle(selected.projectPath);
+    setScreen(hasBundle ? "analyzed" : "ready");
+  }, [projectPathInput, loadBundle]);
 
-  const loadScenario = useCallback(
-    async (anchor: ViewAnchor, label: string) => {
-      if (!projectPath) return;
-      setViewLoading(true);
-      setViewError(null);
-      const result = await api.requestView({ viewKind: "scenario", anchor, agent, projectPath });
-      await resolveViewResult(result, (ir, freshness) => {
-        setScenario(ir as ScenarioIR);
-        setScenarioFreshness(freshness);
-        setSelectedStep(null);
-        setPanel("scenario");
-        setCrumbs((prev) => [...prev.slice(0, 1), { label, panel: "scenario" }]);
-      });
-    },
-    [agent, projectPath],
-  );
-
-  const loadTrace = useCallback(
-    async (anchor: ViewAnchor, label: string, fromScenario: boolean) => {
-      if (!projectPath) return;
-      setViewLoading(true);
-      setViewError(null);
-      const result = await api.requestView({ viewKind: "trace", anchor, projectPath });
-      setViewLoading(false);
-      if ("error" in result) {
-        setViewError(result.error);
-        return;
-      }
-      if (result.viewKind === "trace") {
-        setTrace(result.ir);
-        setTraceKey((prev) => prev + 1);
-        setPanel("trace");
-        setCrumbs((prev) => [...(fromScenario ? prev : prev.slice(0, 1)), { label, panel: "trace" }]);
-      }
-    },
-    [projectPath],
-  );
-
-  /** schema2 §6, M12 — Trace와 같은 결정론적 투영이라 agent turn을 기다리지 않는다. */
-  const loadReachability = useCallback(
-    async (anchor: ViewAnchor, direction: "upstream" | "downstream", label: string, fromScenario: boolean) => {
-      if (!projectPath) return;
-      setViewLoading(true);
-      setViewError(null);
-      const result = await api.requestView({ viewKind: "reachability", anchor, reachDirection: direction, projectPath });
-      setViewLoading(false);
-      if ("error" in result) {
-        setViewError(result.error);
-        return;
-      }
-      if (result.viewKind === "reachability") {
-        setReachability(result.ir);
-        setReachabilityKey((prev) => prev + 1);
-        setPanel("reachability");
-        setCrumbs((prev) => [...(fromScenario ? prev : prev.slice(0, 1)), { label, panel: "reachability" }]);
-      }
-    },
-    [projectPath],
-  );
-
-  /** overview/scenario 공통 — 캐시면 즉시, turn이면 완료까지 기다린다. */
-  async function resolveViewResult(
-    result: api.ViewsPostResponse,
-    onReady: (ir: OverviewIR | ScenarioIR, freshness: ViewFreshness) => void,
-  ): Promise<void> {
-    if ("error" in result) {
-      setViewLoading(false);
-      setViewError(result.error);
-      return;
-    }
-    if (result.viewKind === "trace" || result.viewKind === "reachability") {
-      // 이 함수는 overview/scenario turn 결과만 다룬다 — loadTrace/loadReachability는
-      // 결정론적 투영이라 이 함수를 거치지 않고 직접 처리한다. 타입 좁히기용 가드일 뿐이다.
-      setViewLoading(false);
-      return;
-    }
-    if ("cached" in result) {
-      setViewLoading(false);
-      onReady(result.view.ir, result.view.freshness);
-      return;
-    }
-    setTaskId(result.taskId);
-    const final = await api.pollView(result.taskId);
-    setViewLoading(false);
-    if ("view" in final) {
-      onReady(final.view.ir, final.view.freshness);
-    } else if ("error" in final) {
-      setViewError(final.error);
-    } else {
-      setViewError(`turn이 ${final.status} 상태로 끝났습니다.`);
-    }
-  }
+  const selectTab = useCallback((next: Tab) => {
+    setTab(next);
+    setPassportTarget(null);
+    setSequenceView(null);
+  }, []);
 
   const runAnalyze = useCallback(async () => {
     if (!projectPath) return;
+    setAnalyzeError(null);
+    setPipelineFailed(false);
+    setPipelinePhase("indexing");
     setLines([]);
+    setDiagnosticsOpen(false);
     const result = await api.analyze(agent, projectPath);
     if ("error" in result) {
-      setViewError(result.error);
+      setAnalyzeError(result.error);
       return;
     }
     setTaskId(result.taskId);
-    setRunning(true);
+    setScreen("analyzing");
   }, [agent, projectPath]);
 
-  // analyze turn이 끝나면 memory를 다시 읽고 Overview를 새로 청한다.
-  useEffect(() => {
-    if (running || !taskId) return;
-    void (async () => {
-      const loaded = await refreshMemory();
-      if (!api.isUnavailable(loaded) && loaded.memory.concepts.length > 0 && panel === "explorer") {
-        void loadOverview();
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running]);
+  const componentById = new Map<string, ArchitectureComponent>((bundle?.architecture.components ?? []).map((c) => [c.id, c]));
+  const nodeById = new Map<string, WorkflowNode>((bundle?.workflow.nodes ?? []).map((n) => [n.id, n]));
 
-  const onSelectOverviewItem = useCallback(
-    (item: OverviewItemSelection) => {
-      // 이 item이 conceptRefs 없이 scenarioRefs만 가리키는 경우가 실제로 있다 — agent가
-      // "여기서 시나리오를 보라"는 뜻으로 scenarioRefs만 채우고 자기 conceptRefs는
-      // 비워 두는 것도 유효한 OverviewIR이다(schema가 허용한다). 그럴 때는 이미 읽어 둔
-      // CanonicalScenarioEntry.anchorConceptIds에서 anchor를 빌려 쓴다 — scenario id 자체는
-      // ViewAnchor로 못 쓴다(get_scenario_context가 Concept anchor만 받는다).
-      const scenarioId = item.scenarioRefs[0];
-      const scenario = scenarioId ? memory?.memory.canonicalScenarios.find((s) => s.id === scenarioId) : undefined;
-      const conceptId = item.conceptRefs[0] ?? scenario?.anchorConceptIds[0];
-      if (!conceptId) return;
-      void loadScenario({ kind: "concept", conceptId }, item.label);
-    },
-    [loadScenario, memory],
-  );
-
-  const onSelectStep = useCallback((step: ScenarioStep) => {
-    setSelectedStep(step);
-  }, []);
-
-  const onViewTraceFromStep = useCallback(async () => {
-    if (!selectedStep) return;
-    const conceptId = selectedStep.conceptRefs[0];
-    if (conceptId) {
-      await loadTrace({ kind: "concept", conceptId }, `Trace: ${selectedStep.label}`, true);
-      return;
+  const passportData = ((): { subject: PassportSubject; relationships: PassportRelationship[] } | null => {
+    if (!passportTarget || !bundle) return null;
+    if (passportTarget.tab === "architecture") {
+      const component = componentById.get(passportTarget.id);
+      if (!component) return null;
+      const relationships: PassportRelationship[] = bundle.architecture.connections
+        .filter((c) => c.from === passportTarget.id || c.to === passportTarget.id)
+        .map((c) => {
+          const outgoing = c.from === passportTarget.id;
+          const counterpartId = outgoing ? c.to : c.from;
+          return {
+            id: c.id,
+            label: c.label,
+            direction: outgoing ? "out" : "in",
+            counterpartId,
+            counterpartLabel: componentById.get(counterpartId)?.label ?? counterpartId,
+          };
+        });
+      return { subject: component, relationships };
     }
-    // Concept가 없으면 evidence에서 symbol/file을 뽑아 anchor로 쓴다.
-    const firstEvidenceId = selectedStep.evidenceRefs[0];
-    if (!firstEvidenceId) return;
-    const evidence = await api.queryEvidence({ ids: [firstEvidenceId] });
-    if (api.isUnavailable(evidence) || evidence.evidence.length === 0) return;
-    const item = evidence.evidence[0]!;
-    if (item.symbolId) await loadTrace({ kind: "symbol", symbolId: item.symbolId }, `Trace: ${selectedStep.label}`, true);
-    else if (item.filePath) await loadTrace({ kind: "file", filePath: item.filePath }, `Trace: ${selectedStep.label}`, true);
-  }, [selectedStep, loadTrace]);
+    const node = nodeById.get(passportTarget.id);
+    if (!node) return null;
+    const relationships: PassportRelationship[] = bundle.workflow.edges
+      .filter((e) => e.from === passportTarget.id || e.to === passportTarget.id)
+      .map((e) => {
+        const outgoing = e.from === passportTarget.id;
+        const counterpartId = outgoing ? e.to : e.from;
+        return {
+          id: e.id,
+          label: e.label,
+          direction: outgoing ? "out" : "in",
+          counterpartId,
+          counterpartLabel: nodeById.get(counterpartId)?.label ?? counterpartId,
+          ...(e.sequenceRef ? { sequenceRef: e.sequenceRef } : {}),
+        };
+      });
+    return { subject: node, relationships };
+  })();
 
-  /** onViewTraceFromStep과 같은 anchor 해석 — Trace와 Reachability는 같은 종류의 질문이다. */
-  const onViewReachabilityFromStep = useCallback(
-    async (direction: "upstream" | "downstream") => {
-      if (!selectedStep) return;
-      const label = direction === "upstream" ? "업스트림" : "다운스트림";
-      const conceptId = selectedStep.conceptRefs[0];
-      if (conceptId) {
-        await loadReachability({ kind: "concept", conceptId }, direction, `${label}: ${selectedStep.label}`, true);
-        return;
-      }
-      const firstEvidenceId = selectedStep.evidenceRefs[0];
-      if (!firstEvidenceId) return;
-      const evidence = await api.queryEvidence({ ids: [firstEvidenceId] });
-      if (api.isUnavailable(evidence) || evidence.evidence.length === 0) return;
-      const item = evidence.evidence[0]!;
-      if (item.symbolId) {
-        await loadReachability({ kind: "symbol", symbolId: item.symbolId }, direction, `${label}: ${selectedStep.label}`, true);
-      } else if (item.filePath) {
-        await loadReachability({ kind: "file", filePath: item.filePath }, direction, `${label}: ${selectedStep.label}`, true);
-      }
+  const openSequence = useCallback(
+    (sequenceRef: string) => {
+      const sequence = bundle?.sequences.find((s) => s.id === sequenceRef);
+      if (!sequence) return;
+      setSequenceView(sequence);
+      setPassportTarget(null);
     },
-    [selectedStep, loadReachability],
+    [bundle],
   );
 
-  const goToCrumb = (index: number): void => {
-    const crumb = crumbs[index];
-    if (!crumb) return;
-    setCrumbs((prev) => prev.slice(0, index + 1));
-    setPanel(crumb.panel);
-  };
+  const onSelectEdge = useCallback(
+    (edge: WorkflowEdge) => {
+      if (edge.sequenceRef) openSequence(edge.sequenceRef);
+    },
+    [openSequence],
+  );
+
+  const architectureNodes: ViewerNode[] = (bundle?.architecture.components ?? []).map((c) => ({
+    id: c.id,
+    label: c.label,
+    ...(c.sublabel ? { sublabel: c.sublabel } : {}),
+  }));
+  const workflowNodes: ViewerNode[] = (bundle?.workflow.nodes ?? []).map((n) => ({
+    id: n.id,
+    label: n.label,
+    ...(n.sublabel ? { sublabel: n.sublabel } : {}),
+  }));
 
   return (
     <div className="app">
@@ -391,10 +282,12 @@ export function App(): React.JSX.Element {
             </option>
           ))}
         </select>
-        <button type="button" onClick={() => void runAnalyze()} disabled={!projectPath || running}>
-          {running ? "실행 중…" : "Analyze"}
-        </button>
-        {running && taskId && (
+        {(screen === "ready" || screen === "analyzed") && (
+          <button type="button" onClick={() => void runAnalyze()}>
+            {screen === "analyzed" ? "다시 분석" : "분석 시작"}
+          </button>
+        )}
+        {screen === "analyzing" && taskId && (
           <button type="button" onClick={() => void api.stopTask(taskId)}>
             중지
           </button>
@@ -403,101 +296,111 @@ export function App(): React.JSX.Element {
 
       {projectError && <p className="error-banner">{projectError}</p>}
 
-      {crumbs.length > 0 && (
-        <nav className="breadcrumb">
-          {crumbs.map((crumb, index) => (
-            <span key={index}>
-              {index > 0 && " › "}
-              <button type="button" onClick={() => goToCrumb(index)}>
-                {crumb.label}
-              </button>
-            </span>
-          ))}
-        </nav>
-      )}
-
       <main className="app-main">
-        <section className="view-pane">
-          {!projectPath && <p className="dim">프로젝트를 먼저 열어 주세요.</p>}
-          {projectPath && viewLoading && <p className="dim">View를 만드는 중…</p>}
-          {viewError && <p className="error-banner">{viewError}</p>}
+        {screen === "no-project" && (
+          <section className="view-pane">
+            <p className="dim">프로젝트를 먼저 열어 주세요.</p>
+          </section>
+        )}
 
-          {projectPath && !viewLoading && panel === "explorer" && (
-            <EvidenceExplorer
-              onSelectFile={(filePath) => void loadTrace({ kind: "file", filePath }, filePath, false)}
-              onSelectSymbol={(symbolId) => void loadTrace({ kind: "symbol", symbolId }, symbolId, false)}
-            />
-          )}
-          {!viewLoading && panel === "overview" && overview && (
-            <>
-              {overviewFreshness === "needs_review" && (
+        {screen === "indexing" && (
+          <section className="view-pane">
+            <p className="dim">인덱싱하는 중…</p>
+          </section>
+        )}
+
+        {screen === "ready" && (
+          <section className="view-pane ready-pane">
+            {analyzeError && <p className="error-banner">{analyzeError}</p>}
+            {indexStats && (
+              <p className="dim">
+                analysisVersion {indexStats.analysisVersion} · 새 근거 {indexStats.workSetSize.ungroundedAppearedEvidence}개 ·
+                재검토 대상 {indexStats.workSetSize.dirtyEvidence}개
+              </p>
+            )}
+            <button type="button" className="primary-button analyze-cta" onClick={() => void runAnalyze()}>
+              {analyzeError ? "다시 시도" : "분석 시작"} →
+            </button>
+          </section>
+        )}
+
+        {screen === "analyzing" && (
+          <section className="view-pane analyzing-pane">
+            <PhaseStepper phase={pipelinePhase} failed={pipelineFailed} />
+            <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
+          </section>
+        )}
+
+        {screen === "analyzed" && bundle && (
+          <>
+            <section className="view-pane analyzed-pane">
+              <nav className="tab-switch" role="tablist" aria-label="분석 결과 탭">
+                <button type="button" role="tab" aria-selected={tab === "architecture"} onClick={() => selectTab("architecture")}>
+                  아키텍처
+                </button>
+                <button type="button" role="tab" aria-selected={tab === "workflow"} onClick={() => selectTab("workflow")}>
+                  워크플로우
+                </button>
+              </nav>
+              {bundle.freshness === "needs_review" && (
                 <p className="freshness-banner">
-                  코드가 바뀌었지만 이 화면은 아직 최신이 아닙니다 — 여전히 읽을 수 있습니다.
+                  코드가 바뀌었지만 이 화면은 아직 최신이 아닙니다 — 여전히 읽을 수 있습니다. "다시 분석"으로 갱신하세요.
                 </p>
               )}
-              <OverviewView ir={overview} onSelectItem={onSelectOverviewItem} />
-            </>
-          )}
-          {!viewLoading && panel === "scenario" && scenario && (
-            <ViewerShell
-              viewKind="scenario"
-              viewKey={scenario.id}
-              nodes={scenario.steps.map((step): ViewerNode => ({ id: step.id, label: step.label }))}
-              freshness={scenarioFreshness}
-              freshnessNote="코드가 새 근거를 만들었을 수 있습니다"
-            >
-              <ScenarioView ir={scenario} onSelectStep={onSelectStep} resolveConceptName={resolveConceptName} />
-            </ViewerShell>
-          )}
-          {!viewLoading && panel === "trace" && trace && (
-            <ViewerShell
-              viewKind="trace"
-              viewKey={`trace-${traceKey}`}
-              nodes={trace.codeEntities.map((entity): ViewerNode => ({
-                id: entity.id,
-                label: entity.label,
-                sublabel: entity.filePath,
-              }))}
-            >
-              <TraceView ir={trace} />
-            </ViewerShell>
-          )}
-          {!viewLoading && panel === "reachability" && reachability && (
-            <ViewerShell
-              viewKind="reachability"
-              viewKey={`reachability-${reachabilityKey}`}
-              nodes={reachability.nodes.map((node): ViewerNode => ({
-                id: node.id,
-                label: node.label,
-                sublabel: node.filePath,
-              }))}
-            >
-              <ReachabilityView ir={reachability} />
-            </ViewerShell>
-          )}
-        </section>
+              {tab === "architecture" && (
+                <ViewerShell viewKind="architecture" viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`} nodes={architectureNodes}>
+                  <ArchitectureView
+                    ir={bundle.architecture}
+                    onSelectComponent={(id) => {
+                      setSequenceView(null);
+                      setPassportTarget({ tab: "architecture", id });
+                    }}
+                  />
+                </ViewerShell>
+              )}
+              {tab === "workflow" && (
+                <ViewerShell viewKind="workflow" viewKey={`wf-${bundle.analysisVersion}-${bundle.semanticVersion}`} nodes={workflowNodes}>
+                  <WorkflowView
+                    ir={bundle.workflow}
+                    onSelectNode={(id) => {
+                      setSequenceView(null);
+                      setPassportTarget({ tab: "workflow", id });
+                    }}
+                    onSelectEdge={onSelectEdge}
+                  />
+                </ViewerShell>
+              )}
 
-        {selectedStep && scenario && (
-          <StepDetail
-            step={selectedStep}
-            ir={scenario}
-            resolveConceptName={resolveConceptName}
-            resolveClaimPredicate={resolveClaimPredicate}
-            onViewTrace={() => void onViewTraceFromStep()}
-            onViewReachability={(direction) => void onViewReachabilityFromStep(direction)}
-            onClose={() => setSelectedStep(null)}
-          />
+              <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
+            </section>
+
+            {sequenceView && (
+              <aside className="step-detail sequence-panel">
+                <div className="step-detail-header">
+                  <h3>시퀀스</h3>
+                  <button type="button" className="close-button" onClick={() => setSequenceView(null)} aria-label="닫기">
+                    ×
+                  </button>
+                </div>
+                <SequenceView ir={sequenceView} />
+              </aside>
+            )}
+
+            {!sequenceView && passportData && projectPath && (
+              <Passport
+                subject={passportData.subject}
+                relationships={passportData.relationships}
+                projectPath={projectPath}
+                onClose={() => setPassportTarget(null)}
+                onSelectRelated={(id) => setPassportTarget({ tab, id })}
+                onOpenSequence={openSequence}
+              />
+            )}
+          </>
         )}
       </main>
 
-      <footer className="app-log">
-        {lines.slice(-8).map((line) => (
-          <div key={line.seq} className={`log-line log-${line.tone}`}>
-            {line.text}
-          </div>
-        ))}
-        {taskId && <div className="log-line dim">task {short(taskId)}</div>}
-      </footer>
+      {taskId && <div className="app-footer dim">task {short(taskId)}</div>}
     </div>
   );
 }
