@@ -62,10 +62,27 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 - **Layout**: `.viewer-canvas`에 은은한 dot-grid 배경(`radial-gradient` 반복 패턴)을 추가해 그래프 캔버스에 좌표 감각을 줬다. boundary는 기존 파란빛 점선 대신 amber 점선 + 라벨로 바꿨다.
 - **Focus 색**: `[data-focus-state="match"]`/`"dim"`인 엣지에 색(mint/gray)을 더했다 — 여전히 종류가 아니라 focus 상태가 근거이므로 기존 I16("색은 종류가 아니라 focus 상태에서만 온다")을 위반하지 않는다.
 
+## 4-1. 전체 구조 탭 — 구조적 노드 클러스터링
+
+브라우저로 실제 chungnam 데이터를 열어보니 §3의 crossing 최소화·장애물 회피를 다 적용해도 19개 컴포넌트·41개 connection을 전부 그리면 라벨이 겹쳐 한눈에 안 들어왔다. 원인은 렌더러 품질이 아니라 **큐레이션 없이 원본 그래프를 통째로 그린다**는 것이었다 — 구성 개요 탭은 rank 재해석으로 이미 큐레이션돼 있는데 전체 구조 탭만 빠져 있었다.
+
+**처음 시도(반려)**: "같은 tier 안에서 이웃 집합이 완전히 동일한 노드만 합친다"는 exact-match 방식을 생각했지만, 실제 데이터에서 화면들은 공통 서비스 몇 개는 같이 부르면서도 나머지 연결은 조금씩 갈려서 완전히 똑같은 경우가 드물어 대응 범위가 너무 좁다는 지적을 받았다. §2(구성 개요 티어링)는 rank를 재사용할 뿐 새 알고리즘이 필요 없었지만, **클러스터링은 실제로 새로운 그래프 알고리즘이 필요하다** — 다만 AI/스키마가 아니라 순수 그래프 유사도 알고리즘이라는 점은 같다.
+
+**최종 알고리즘 — `layout/architectureClustering.ts`**: 같은 tier(§2와 동일한 rank 재해석) 안의 모든 노드 쌍에 대해 이웃 집합(진입+진출 연결 대상)의 Jaccard 유사도(`|A∩B|/|A∪B|`)를 계산하고, `SIMILARITY_THRESHOLD`(0.6) 이상인 쌍끼리 엣지를 이은 유사도 그래프에서 Union-Find로 connected component를 구해 클러스터로 삼는다. 완전히 동일하지 않아도 충분히 비슷하면 전이적으로 묶인다. 클러스터 크기가 `MIN_CLUSTER_SIZE`(3) 미만이면 합치지 않는다.
+
+**실측 검증(chungnam 실제 번들)**: 19개 컴포넌트·41개 connection → **9개 노드·10개 connection**으로 줄었다.
+- `cluster:screen:1`(화면 9개): `bus-stop-detail, complete-screen, history-screen, home-screen, mission-detail-screen, missions-tab, progress-screen, recommend-screen, verify-screen` — 나머지 화면 3개(`badges-screen`, `ranking-screen`, `agent-showcase`)는 이웃 집합이 충분히 달라 threshold 미달로 남았다.
+- `cluster:core:0`(핵심 서비스 3개): `location-map-service, mission-catalog-service, mission-progress-service` — 거의 같은 화면 집합에서 호출받아 유사도가 높았다. `reward-services`는 호출 경로가 달라 남았다.
+- exact-match였다면 이 정도 축소는 나오지 않았을 것 — threshold 기반 유사도가 실제로 필요했다는 게 이 실측으로 확인됐다.
+
+**펼치기(확정: 전체 구조 안에서 바로 펼치기)**: `ArchitectureGraph`가 `expandedMemberIds: Set<string>`(원본 컴포넌트 id, 클러스터 id 아님) 로컬 state를 갖는다. 렌더링마다 `computeClusteredArchitectureIR(ir, { excludeFromClustering: expandedMemberIds })`를 다시 호출 — 이미 펼친 컴포넌트는 유사도 계산에서 빠져 원본 그대로 나온다. 클러스터 노드 클릭 시 그 클러스터의 원본 멤버 id를 `expandedMemberIds`에 더한다(클러스터 id 자체가 재호출마다 바뀔 수 있어 안정적인 원본 id로 추적한다). 접기는 그룹별이 아니라 "펼친 항목 접기" 버튼 하나로 전체를 되돌린다(단순화). 클러스터 노드는 클릭해도 `onSelectComponent`(Passport 패널)를 열지 않는다 — 클러스터는 특정 컴포넌트가 아니므로 펼쳐서 개별 노드가 나온 뒤에만 동작한다. 전부 로컬 state라 API 재요청이 없다("탭 전환은 API를 안 부른다"가 "펼치기/접기도 API를 안 부른다"로 확장).
+
+**알려진 한계(이번 패스에서 손대지 않음)**: `ViewerShell`의 "찾기"(finder)는 `ArchitectureView`가 전달하는 원본 컴포넌트 목록 전체를 검색 대상으로 보여준다. 검색 결과를 클릭했을 때 그 컴포넌트가 아직 접힌 클러스터 안에 있으면 `ViewerShell`이 DOM에서 `[data-node-id]`를 찾지 못해 포커스 이동이 조용히 무시된다(에러는 안 남). `ViewerShell`은 focus 상태를 전적으로 내부에서 관리하고(I14) 외부 개입 지점이 없어서, 이걸 고치려면 `ViewerShell`(WorkflowView 등 다른 뷰도 공유)에 focus-intercept 훅을 추가해야 한다 — 이번 클러스터링 패스의 범위를 벗어나 후속 과제로 남긴다.
+
 ## 유지 / 폐기
 
 **유지**: `computeArchitectureLayout`/`computeWorkflowLayout`의 rank 계산 골격, `edgeRouting.ts`의 port-spread·elbow 라우팅·라벨 겹침 해소, `ViewerShell`의 pan/zoom/finder/radar, Passport 패널 연결(변경 없음).
 
-**신규(이번 v2)**: `layout/architectureComposition.ts`, `components/ArchitectureComposition.tsx`, `ArchitectureView.tsx`의 서브탭 구조, `edgeRouting.ts`의 crossing 최소화/장애물 회피, `workflowLayout.ts`의 `laneSlot`.
+**신규(이번 v2)**: `layout/architectureComposition.ts`, `components/ArchitectureComposition.tsx`, `ArchitectureView.tsx`의 서브탭 구조, `edgeRouting.ts`의 crossing 최소화/장애물 회피, `workflowLayout.ts`의 `laneSlot`, `layout/architectureClustering.ts`(Jaccard+Union-Find 구조적 클러스터링)와 전체 구조 탭의 펼치기 인터랙션.
 
-**후속(다음 v2 단계, 아직 안 함)**: Workflow/Sequence 뷰어의 시각적 리디자인 — 이번 패스는 아키텍처 뷰어에 한정했다.
+**후속(다음 v2 단계, 아직 안 함)**: Workflow/Sequence 뷰어의 시각적 리디자인 — 이번 패스는 아키텍처 뷰어에 한정했다. `ViewerShell` 찾기(finder)가 접힌 클러스터 안의 노드를 자동으로 펼쳐서 포커스하도록 하는 것(§4-1의 "알려진 한계" 참고).

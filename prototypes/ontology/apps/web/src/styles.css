@@ -1,21 +1,40 @@
 :root {
-  --bg: #0a0c11;
-  --panel: #151821;
-  --border: #262c3a;
-  --text: #e6e8ec;
-  --dim: #8a90a0;
-  --accent: #5b8cff;
+  /* v2 UI 리디자인 — Linear 레퍼런스(근-흑색 캔버스 + 단일 인디고 악센트 + Inter). 사용자가
+     레퍼런스로 확정(2026-08-24). 채도 있는 색은 의미 축(good/bad/warn, presentationType,
+     boundary)에만 남기고 나머지는 무채색 + 악센트 하나로 정리한다. */
+  --bg: #08090a;
+  --panel: #101114;
+  --panel-2: #16171b;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: rgba(255, 255, 255, 0.92);
+  --dim: rgba(255, 255, 255, 0.52);
+  --accent: #7170ff;
+  --accent-rgb: 113, 112, 255;
+  --accent-soft: rgba(113, 112, 255, 0.14);
   --good: #4caf7d;
-  --bad: #e05a5a;
+  --bad: #e0605a;
   --warn: #d9a441;
-  --edge-color: #5a6270;
+  --edge-color: #565c6b;
   /* v2: 그래프 뷰 전용 토큰 — boundary·엣지 강조는 종류가 아니라 focus 상태에서만 온다(I16) */
   --boundary: #d9a441;
-  --boundary-bg: rgba(217, 164, 65, 0.05);
+  --boundary-bg: rgba(217, 164, 65, 0.06);
   --edge-match: #4fd1a0;
-  --edge-dim: #333a48;
-  --grid-dot: rgba(255, 255, 255, 0.045);
-  font-family: -apple-system, "Segoe UI", "Pretendard", sans-serif;
+  --edge-dim: #2a2d35;
+  --grid-dot: rgba(255, 255, 255, 0.05);
+  --font-sans: "Inter", -apple-system, "Segoe UI", "Pretendard", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv01", "ss03";
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-sans);
+  font-weight: 590;
+  letter-spacing: -0.01em;
 }
 
 * {
@@ -192,12 +211,12 @@ button:disabled {
   margin-top: 8px;
   max-height: 260px;
   overflow: auto;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
-  background: #12151b;
+  background: var(--panel-2);
 }
 
 /* 아키텍처/워크플로우 탭 (schema3 §2.1) */
@@ -217,6 +236,7 @@ button:disabled {
 .tab-switch button[aria-selected="true"] {
   color: var(--text);
   border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* Diagram canvas (Architecture/Workflow/Sequence/Trace/Reachability 공유) */
@@ -251,6 +271,10 @@ button:disabled {
   fill: var(--dim);
   font-size: 11px;
 }
+.edge-label-bg {
+  fill: var(--bg);
+  fill-opacity: 0.92;
+}
 
 .scenario-step,
 .trace-entity {
@@ -263,7 +287,7 @@ button:disabled {
   gap: 2px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: #1f232c;
+  background: var(--panel-2);
   border: 1.5px solid var(--border);
   overflow: hidden;
   text-align: left;
@@ -396,6 +420,18 @@ button:disabled {
 }
 .arch-component-sublabel {
   font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+/* v2: 박스 높이를 늘린 만큼 라벨은 2줄까지 감싸 보여준다(잘려서 안 보이는 문제 대응) */
+.arch-component .trace-entity-label {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.25;
 }
 .arch-legend-item {
   margin-right: 12px;
@@ -409,6 +445,34 @@ button:disabled {
 }
 .arch-edge-control {
   stroke: var(--warn);
+}
+
+/* 전체 구조 탭 노드 클러스터링 (v2 §4-1) */
+.arch-component-cluster {
+  border-style: dashed;
+  border-color: var(--boundary);
+  background: var(--boundary-bg);
+  cursor: pointer;
+}
+.arch-cluster-count {
+  margin-left: 4px;
+  font-weight: 700;
+  color: var(--boundary);
+}
+.arch-collapse-all {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.arch-collapse-all:hover {
+  color: var(--text);
+  border-color: var(--boundary);
 }
 
 /* ArchitectureView 서브탭 (v2 §1) */
@@ -497,7 +561,7 @@ button:disabled {
   width: 100%;
   padding: 10px 12px;
   border-radius: 10px;
-  background: #1f232c;
+  background: var(--panel-2);
   border: 1.5px solid var(--border);
   text-align: left;
   transition: border-color 0.12s ease, transform 0.12s ease;
@@ -560,7 +624,7 @@ button:disabled {
   width: 420px;
 }
 .phase-band {
-  fill: rgba(91, 140, 255, 0.05);
+  fill: rgba(var(--accent-rgb), 0.06);
   stroke: var(--border);
   stroke-dasharray: 4 4;
 }
@@ -636,7 +700,7 @@ button:disabled {
 .evidence-detail {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
-  background: #12151b;
+  background: var(--panel-2);
 }
 .evidence-summary {
   margin: 0 0 6px;
@@ -645,6 +709,7 @@ button:disabled {
 }
 .evidence-source {
   margin: 0;
+  font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
   overflow-x: auto;
@@ -748,7 +813,7 @@ button:disabled {
 .passport-io-result {
   margin-top: 4px;
   padding: 6px 8px;
-  background: #12151b;
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 6px;
 }
@@ -893,7 +958,7 @@ button:disabled {
   max-height: 320px;
   display: flex;
   flex-direction: column;
-  background: #12151b;
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -923,7 +988,7 @@ button:disabled {
   font-size: 12px;
 }
 .viewer-finder-results button:hover {
-  background: rgba(91, 140, 255, 0.12);
+  background: rgba(var(--accent-rgb), 0.14);
 }
 
 /* Semantic Radar */
@@ -934,7 +999,7 @@ button:disabled {
   z-index: 5;
   width: 200px;
   height: 140px;
-  background: #0c0e12;
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
@@ -953,7 +1018,7 @@ button:disabled {
   fill-opacity: 0.9;
 }
 .radar-viewport {
-  fill: rgba(91, 140, 255, 0.12);
+  fill: rgba(var(--accent-rgb), 0.14);
   stroke: var(--accent);
   stroke-width: 6;
   pointer-events: none;
