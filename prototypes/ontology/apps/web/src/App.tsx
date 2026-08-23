@@ -4,18 +4,28 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { AgentId, OverviewIR, ScenarioIR, ScenarioStep, TraceIR, ViewAnchor, ViewFreshness } from "@onto/protocol";
+import type {
+  AgentId,
+  OverviewIR,
+  ReachabilityIR,
+  ScenarioIR,
+  ScenarioStep,
+  TraceIR,
+  ViewAnchor,
+  ViewFreshness,
+} from "@onto/protocol";
 
 import * as api from "./api.js";
 import { EvidenceExplorer } from "./components/EvidenceExplorer.js";
 import { OverviewView, type OverviewItemSelection } from "./components/OverviewView.js";
+import { ReachabilityView } from "./components/ReachabilityView.js";
 import { ScenarioView } from "./components/ScenarioView.js";
 import { StepDetail } from "./components/StepDetail.js";
 import { TraceView } from "./components/TraceView.js";
 import { ViewerShell, type ViewerNode } from "./components/ViewerShell.js";
 import { useAgentEvents } from "./ws.js";
 
-type Panel = "explorer" | "overview" | "scenario" | "trace";
+type Panel = "explorer" | "overview" | "scenario" | "trace" | "reachability";
 type LogLine = { seq: number; text: string; tone: "info" | "good" | "bad" | "mcp" };
 
 function short(id: string): string {
@@ -36,9 +46,11 @@ export function App(): React.JSX.Element {
   const [overview, setOverview] = useState<OverviewIR | null>(null);
   const [scenario, setScenario] = useState<ScenarioIR | null>(null);
   const [trace, setTrace] = useState<TraceIR | null>(null);
+  const [reachability, setReachability] = useState<ReachabilityIR | null>(null);
   const [scenarioFreshness, setScenarioFreshness] = useState<ViewFreshness | undefined>(undefined);
   const [overviewFreshness, setOverviewFreshness] = useState<ViewFreshness | undefined>(undefined);
   const [traceKey, setTraceKey] = useState(0);
+  const [reachabilityKey, setReachabilityKey] = useState(0);
   const [crumbs, setCrumbs] = useState<Array<{ label: string; panel: Panel }>>([]);
   const [selectedStep, setSelectedStep] = useState<ScenarioStep | null>(null);
 
@@ -207,6 +219,28 @@ export function App(): React.JSX.Element {
     [projectPath],
   );
 
+  /** schema2 §6, M12 — Trace와 같은 결정론적 투영이라 agent turn을 기다리지 않는다. */
+  const loadReachability = useCallback(
+    async (anchor: ViewAnchor, direction: "upstream" | "downstream", label: string, fromScenario: boolean) => {
+      if (!projectPath) return;
+      setViewLoading(true);
+      setViewError(null);
+      const result = await api.requestView({ viewKind: "reachability", anchor, reachDirection: direction, projectPath });
+      setViewLoading(false);
+      if ("error" in result) {
+        setViewError(result.error);
+        return;
+      }
+      if (result.viewKind === "reachability") {
+        setReachability(result.ir);
+        setReachabilityKey((prev) => prev + 1);
+        setPanel("reachability");
+        setCrumbs((prev) => [...(fromScenario ? prev : prev.slice(0, 1)), { label, panel: "reachability" }]);
+      }
+    },
+    [projectPath],
+  );
+
   /** overview/scenario 공통 — 캐시면 즉시, turn이면 완료까지 기다린다. */
   async function resolveViewResult(
     result: api.ViewsPostResponse,
@@ -217,7 +251,9 @@ export function App(): React.JSX.Element {
       setViewError(result.error);
       return;
     }
-    if (result.viewKind === "trace") {
+    if (result.viewKind === "trace" || result.viewKind === "reachability") {
+      // 이 함수는 overview/scenario turn 결과만 다룬다 — loadTrace/loadReachability는
+      // 결정론적 투영이라 이 함수를 거치지 않고 직접 처리한다. 타입 좁히기용 가드일 뿐이다.
       setViewLoading(false);
       return;
     }
@@ -298,6 +334,30 @@ export function App(): React.JSX.Element {
     if (item.symbolId) await loadTrace({ kind: "symbol", symbolId: item.symbolId }, `Trace: ${selectedStep.label}`, true);
     else if (item.filePath) await loadTrace({ kind: "file", filePath: item.filePath }, `Trace: ${selectedStep.label}`, true);
   }, [selectedStep, loadTrace]);
+
+  /** onViewTraceFromStep과 같은 anchor 해석 — Trace와 Reachability는 같은 종류의 질문이다. */
+  const onViewReachabilityFromStep = useCallback(
+    async (direction: "upstream" | "downstream") => {
+      if (!selectedStep) return;
+      const label = direction === "upstream" ? "업스트림" : "다운스트림";
+      const conceptId = selectedStep.conceptRefs[0];
+      if (conceptId) {
+        await loadReachability({ kind: "concept", conceptId }, direction, `${label}: ${selectedStep.label}`, true);
+        return;
+      }
+      const firstEvidenceId = selectedStep.evidenceRefs[0];
+      if (!firstEvidenceId) return;
+      const evidence = await api.queryEvidence({ ids: [firstEvidenceId] });
+      if (api.isUnavailable(evidence) || evidence.evidence.length === 0) return;
+      const item = evidence.evidence[0]!;
+      if (item.symbolId) {
+        await loadReachability({ kind: "symbol", symbolId: item.symbolId }, direction, `${label}: ${selectedStep.label}`, true);
+      } else if (item.filePath) {
+        await loadReachability({ kind: "file", filePath: item.filePath }, direction, `${label}: ${selectedStep.label}`, true);
+      }
+    },
+    [selectedStep, loadReachability],
+  );
 
   const goToCrumb = (index: number): void => {
     const crumb = crumbs[index];
@@ -402,6 +462,19 @@ export function App(): React.JSX.Element {
               <TraceView ir={trace} />
             </ViewerShell>
           )}
+          {!viewLoading && panel === "reachability" && reachability && (
+            <ViewerShell
+              viewKind="reachability"
+              viewKey={`reachability-${reachabilityKey}`}
+              nodes={reachability.nodes.map((node): ViewerNode => ({
+                id: node.id,
+                label: node.label,
+                sublabel: node.filePath,
+              }))}
+            >
+              <ReachabilityView ir={reachability} />
+            </ViewerShell>
+          )}
         </section>
 
         {selectedStep && scenario && (
@@ -411,6 +484,7 @@ export function App(): React.JSX.Element {
             resolveConceptName={resolveConceptName}
             resolveClaimPredicate={resolveClaimPredicate}
             onViewTrace={() => void onViewTraceFromStep()}
+            onViewReachability={(direction) => void onViewReachabilityFromStep(direction)}
             onClose={() => setSelectedStep(null)}
           />
         )}

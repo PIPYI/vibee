@@ -645,3 +645,188 @@ button:disabled {
   stroke-dasharray: 3 3;
   opacity: 0.75;
 }
+
+/* Reachability entry point (M12, schema2 §6) */
+.reachability-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.reachability-buttons button {
+  flex: 1;
+  font-size: 11px;
+}
+
+/* Shell — surface switcher (schema2 §3, I17) */
+.shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.surface-switch {
+  display: flex;
+  gap: 4px;
+  padding: 6px 16px;
+  background: #0a0c10;
+  border-bottom: 1px solid var(--border);
+}
+.surface-switch button {
+  border: 1px solid transparent;
+  background: none;
+  padding: 5px 12px;
+  border-radius: 6px 6px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.surface-switch button[aria-selected="true"] {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border);
+  border-bottom-color: var(--bg);
+  margin-bottom: -1px;
+}
+.shell .app {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Runtime Console (M13, schema2 §3) */
+.console-subtitle {
+  margin-left: 8px;
+  font-size: 11px;
+}
+.console-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 220px 1fr 300px;
+  gap: 0;
+  overflow: hidden;
+}
+.console-tasks,
+.console-detail,
+.console-versions {
+  overflow: auto;
+  padding: 12px 14px;
+}
+.console-tasks {
+  border-right: 1px solid var(--border);
+}
+.console-versions {
+  border-left: 1px solid var(--border);
+}
+.console-tasks h2,
+.console-detail h2,
+.console-versions h2 {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.console-detail h3 {
+  font-size: 12px;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin: 16px 0 6px;
+}
+.console-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.console-task {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.console-task-selected {
+  border-color: var(--accent);
+}
+.console-status {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  display: inline-block;
+}
+.console-status-starting,
+.console-status-running {
+  color: var(--accent);
+  background: rgba(91, 140, 255, 0.15);
+}
+.console-status-completed {
+  color: var(--good);
+  background: rgba(76, 175, 125, 0.15);
+}
+.console-status-interrupted {
+  color: var(--warn);
+  background: rgba(217, 164, 65, 0.15);
+}
+.console-status-error {
+  color: var(--bad);
+  background: rgba(224, 90, 90, 0.15);
+}
+.console-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  font-size: 12px;
+}
+.console-fields dt {
+  color: var(--dim);
+}
+.console-error {
+  color: var(--bad);
+}
+.console-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.console-table th,
+.console-table td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.console-source-agent {
+  color: var(--accent);
+}
+.console-source-bridge {
+  color: var(--good);
+}
+.console-both-sources {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--good);
+}
+.console-diagnostics-entry {
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.console-diagnostics-entry ul {
+  margin: 3px 0 0 16px;
+  padding: 0;
+}
+.console-diag-error {
+  color: var(--bad);
+}
+.console-diag-warning {
+  color: var(--warn);
+}
+.console-log {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  margin-top: 4px;
+}

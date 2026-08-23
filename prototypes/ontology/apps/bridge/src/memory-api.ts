@@ -7,8 +7,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { SemanticStore, conceptCandidates, describeCandidate, type LoadedState } from "@onto/core";
-import type { Evidence } from "@onto/protocol";
+import { SemanticStore, conceptCandidates, describeCandidate, projectReachability, type LoadedState } from "@onto/core";
+import type { Evidence, SemanticMemory, ViewAnchor } from "@onto/protocol";
 
 export type Unavailable = { error: "memory_unavailable"; reason: string; next_step: string };
 
@@ -331,5 +331,48 @@ export function scenarioContext(
     claims: memory.claims.filter((item) => claimIds.includes(item.id)).map(summarizeClaim),
     evidenceRefs: [...evidenceRefs].sort(),
     counts: { concepts: conceptIds.length, claims: claimIds.length, evidence: evidenceRefs.size },
+  };
+}
+
+/**
+ * anchor 문자열을 ViewAnchor로 푼다. Concept id/name을 먼저 본다 — scenarioContext와
+ * 같은 우선순위다. symbolId는 `path#name` 모양을 갖는다는 관례를 쓰고, 그 외는 file로 본다.
+ */
+function resolveAnchorString(memory: SemanticMemory, anchor: string): ViewAnchor | undefined {
+  const trimmed = anchor.trim();
+  if (!trimmed) return undefined;
+  const concept = memory.concepts.find((item) => item.id === trimmed || item.name === trimmed);
+  if (concept) return { kind: "concept", conceptId: concept.id };
+  if (trimmed.includes("#")) return { kind: "symbol", symbolId: trimmed };
+  return { kind: "file", filePath: trimmed };
+}
+
+/**
+ * anchor에서 한 방향으로 도달 가능한 것 (schema2 §6, `get_impact_context`).
+ *
+ * Trace(§6.6 R4)와 같은 이유로 Core가 결정론적으로 투영한다 — AI가 만들지 않는다.
+ * **인과를 주장하지 않는다** — "인덱싱된 관계로 여기에 닿는다"만 답한다. archify가 스스로
+ * 그은 경계와 같다: "authored reachability, not impact, blast radius, breakage, or runtime
+ * causality."
+ */
+export function impactContext(
+  state: LoadedState,
+  query: { anchor: string; direction: "upstream" | "downstream"; hops?: number },
+): Record<string, unknown> {
+  const resolved = resolveAnchorString(state.memory, query.anchor);
+  if (!resolved) return { found: false, anchor: query.anchor };
+  const hops = Math.min(query.hops ?? 3, 6);
+  const ir = projectReachability(state.evidence, resolved, query.direction, {
+    hops,
+    memory: state.memory,
+    grounding: state.grounding,
+  });
+  if (ir.nodes.length === 0) return { found: false, anchor: query.anchor };
+  return {
+    found: true,
+    ...ir,
+    note:
+      "이것은 authored reachability다 — 인덱싱된 관계를 따라 도달 가능하다는 뜻이지, " +
+      "실행 시 영향이나 인과를 보장하지 않는다.",
   };
 }

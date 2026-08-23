@@ -17,6 +17,14 @@ export {
   type TraceOptions,
 } from "./trace.js";
 export {
+  projectReachability,
+  type ReachabilityDirection,
+  type ReachabilityIR,
+  type ReachabilityLink,
+  type ReachabilityNode,
+  type ReachabilityOptions,
+} from "./reachability.js";
+export {
   REUSE_SUGGESTION_THRESHOLD,
   claimCandidates,
   claimKeyOf,

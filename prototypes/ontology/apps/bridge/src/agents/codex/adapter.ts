@@ -210,7 +210,13 @@ export class CodexAdapter implements AgentAdapter {
       this.turnResolvers.set(input.taskId, resolve);
     });
 
-    const turn = (await this.ensureClient().call("turn/start", {
+    // `turn/start`의 응답은 `{ turnId }`가 아니라 `{ turn: { id, ... } }`다 — codex-cli
+    // 0.149.0의 실제 프로토콜을 `codex app-server generate-ts`로 직접 확인해 고쳤다
+    // (Finding 1·2와 같은 이유로, 추측 대신 실측했다). 이전 코드는 `turn.turnId`가 항상
+    // undefined라 activeTurns에 turnId가 안 실렸고, 그래서 `turn/interrupt`가 필수
+    // 필드 `turnId` 없이 나가 codex-cli에게 거부됐다 — stopTask가 조용히 실패하고
+    // 있었다(acceptance 20이 실제로 검증된 적이 없어 드러나지 않았다).
+    const response = (await this.ensureClient().call("turn/start", {
       threadId,
       // **시퀀스다.** `{ text }` 를 보내면 `invalid type: map, expected a sequence` 로
       // 거부된다. `type` 은 필수다 — 빠뜨리면 `missing field type` (Finding 2).
@@ -221,8 +227,9 @@ export class CodexAdapter implements AgentAdapter {
       sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.projectPath] },
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
-    })) as { turnId?: string };
-    this.activeTurns.set(input.taskId, { threadId, ...(turn.turnId ? { turnId: turn.turnId } : {}) });
+    })) as { turn?: { id?: string } };
+    const turnId = response.turn?.id;
+    this.activeTurns.set(input.taskId, { threadId, ...(turnId ? { turnId } : {}) });
 
     try {
       return await outcome;

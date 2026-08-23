@@ -22,6 +22,7 @@ import {
   commitPatch,
   hasError,
   initialProjectState,
+  projectReachability,
   projectTrace,
   validateViewIR,
   type LoadedState,
@@ -60,6 +61,7 @@ import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter } from "./agents/types.js";
 import {
   conceptContext,
+  impactContext,
   isUnavailable,
   loadState,
   memoryDigest,
@@ -636,7 +638,12 @@ function withCurrentFreshness(
  */
 app.post("/api/views", async (req: Request, res: Response) => {
   const body = req.body as ViewsRequestBody;
-  if (body?.viewKind !== "trace" && body?.viewKind !== "overview" && body?.viewKind !== "scenario") {
+  if (
+    body?.viewKind !== "trace" &&
+    body?.viewKind !== "overview" &&
+    body?.viewKind !== "scenario" &&
+    body?.viewKind !== "reachability"
+  ) {
     res.status(400).json({ error: `지원하지 않는 viewKind: ${String(body?.viewKind)}` });
     return;
   }
@@ -669,6 +676,25 @@ app.post("/api/views", async (req: Request, res: Response) => {
       grounding: head.grounding,
     });
     res.json({ viewKind: "trace", ir });
+    return;
+  }
+
+  // --- Reachability — Trace와 같은 이유로 Core가 동기로 투영한다 (schema2 §6, I15) ------
+  if (body.viewKind === "reachability") {
+    if (!body.anchor) {
+      res.status(400).json({ error: "viewKind \"reachability\" 는 anchor 가 필요합니다." });
+      return;
+    }
+    if (body.reachDirection !== "upstream" && body.reachDirection !== "downstream") {
+      res.status(400).json({ error: 'viewKind "reachability" 는 reachDirection("upstream"|"downstream")이 필요합니다.' });
+      return;
+    }
+    const ir = projectReachability(head.evidence, body.anchor, body.reachDirection, {
+      ...(body.scope?.hops !== undefined ? { hops: body.scope.hops } : {}),
+      memory: head.memory,
+      grounding: head.grounding,
+    });
+    res.json({ viewKind: "reachability", ir });
     return;
   }
 
@@ -856,6 +882,24 @@ app.get("/internal/scenario-context", requireToken, (req: Request, res: Response
   res.json(
     scenarioContext(loaded, {
       anchor: String(req.query["anchor"] ?? ""),
+      ...(req.query["hops"] ? { hops: Number(req.query["hops"]) } : {}),
+    }),
+  );
+});
+
+/** `get_impact_context` (schema2 §6) — M12에서 활성화되었다. Reachability의 bounded 조회 판. */
+app.get("/internal/impact-context", requireToken, (req: Request, res: Response) => {
+  recordArrival("get_impact_context");
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const direction = req.query["direction"] === "upstream" ? "upstream" : "downstream";
+  res.json(
+    impactContext(loaded, {
+      anchor: String(req.query["anchor"] ?? ""),
+      direction,
       ...(req.query["hops"] ? { hops: Number(req.query["hops"]) } : {}),
     }),
   );

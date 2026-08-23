@@ -190,12 +190,36 @@ test("reconcile 상태가 digest 에 실린다 (V1)", async () => {
   assert.equal(digest.reconcileCurrent, false);
 });
 
-test("get_impact_context 는 자리만 있고 not_enabled 를 돌려준다", async () => {
+test("get_impact_context 는 M12(schema2 §6)에서 활성화된 authored reachability다", async () => {
   const payload = await withMcpClient(async (client) =>
-    payloadOf(await client.callTool({ name: "get_impact_context", arguments: {} })),
+    payloadOf(
+      await client.callTool({
+        name: "get_impact_context",
+        arguments: { anchor: "src/follow.js#requestFollow", direction: "downstream" },
+      }),
+    ),
   );
-  assert.equal(payload.error, "not_enabled");
-  assert.ok(payload.next_step, "무엇을 대신 하라는 안내가 있어야 한다");
+  assert.equal(payload.found, true);
+  assert.equal(payload.anchor, "symbol:src/follow.js#requestFollow");
+  assert.equal(payload.direction, "downstream");
+  assert.ok(
+    payload.nodes.some((node) => node.id === "symbol:src/follow.js#requestFollow" && node.hop === 0),
+    `anchor 자신이 hop 0으로 나와야 한다: ${JSON.stringify(payload.nodes)}`,
+  );
+  // impact/인과가 아니라 authored reachability임을 응답 자체가 밝힌다.
+  assert.match(payload.note, /authored reachability/);
+});
+
+test("get_impact_context 는 찾을 수 없는 anchor에 대해 found:false를 준다 (아무것도 안 지어낸다)", async () => {
+  const payload = await withMcpClient(async (client) =>
+    payloadOf(
+      await client.callTool({
+        name: "get_impact_context",
+        arguments: { anchor: "src/없음.js#없음", direction: "downstream" },
+      }),
+    ),
+  );
+  assert.equal(payload.found, false);
 });
 
 test("토큰이 없으면 bridge 가 거부한다", async () => {

@@ -11,10 +11,13 @@ import type {
   EvidenceIndex,
   GroundingStore,
   HealthResponse,
+  McpCallRecord,
   OverviewIR,
   ProjectState,
+  ReachabilityIR,
   ScenarioIR,
   SemanticMemory,
+  SemanticVersion,
   TaskState,
   TraceIR,
   ViewAnchor,
@@ -98,6 +101,8 @@ export type FullMemory = {
   memory: SemanticMemory;
   evidence: EvidenceIndex;
   grounding: GroundingStore;
+  /** M13 Runtime Console — generation 이력. store가 이미 들고 있는 것을 그대로 내보낸다. */
+  versions: SemanticVersion[];
 };
 export function fullMemory(): Promise<FullMemory | Unavailable> {
   return getJson("/api/memory?detail=full");
@@ -152,12 +157,15 @@ export type ViewsRequest = {
   anchor?: ViewAnchor;
   question?: string;
   scope?: { hops?: number; direction?: "both" | "outgoing" | "incoming" };
+  /** schema2 §6 — viewKind가 "reachability"일 때만 쓴다. */
+  reachDirection?: "upstream" | "downstream";
   agent?: AgentId;
   projectPath?: string;
 };
 
 export type ViewsPostResponse =
   | { viewKind: "trace"; ir: TraceIR }
+  | { viewKind: "reachability"; ir: ReachabilityIR }
   | { viewKind: "overview" | "scenario"; cached: true; view: CachedView<OverviewIR | ScenarioIR> }
   | { viewKind: "overview" | "scenario"; taskId: string }
   | { error: string };
@@ -186,6 +194,16 @@ export async function pollView(taskId: string, intervalMs = 800): Promise<ViewsG
     if (isTerminal(result.status)) return result;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime Console (schema2 §3, M13) — onto 자신의 telemetry. Project Reader와
+// 화면을 공유하지 않는다(I17)지만 API는 같은 bridge를 쓴다.
+// ---------------------------------------------------------------------------
+
+export type TaskMcpEvidence = { taskId: string; calls: McpCallRecord[]; toolsWithBothSources: string[] };
+export function taskMcpEvidence(taskId: string): Promise<TaskMcpEvidence | { error: string }> {
+  return getJson(`/api/tasks/${taskId}/mcp-evidence`);
 }
 
 export type { AgentReadiness };

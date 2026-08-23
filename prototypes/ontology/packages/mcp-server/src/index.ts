@@ -121,7 +121,7 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 어떤 주장들이 있는가                         -> search_claims
   · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence
   · 이 기능은 어떻게 동작하는가 (흐름)            -> get_scenario_context
-  · 이걸 고치면 어디에 영향이 가는가              -> get_impact_context (아직 비활성)
+  · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
 
@@ -398,26 +398,31 @@ server.registerTool(
 );
 
 /**
- * Impact View는 이번 범위 밖이다 (§4).
+ * Authored reachability (schema2 §6, M12) — **Impact가 아니다.** archify가 스스로 그은
+ * 경계를 그대로 따른다: 이 tool이 답하는 것은 "인덱싱된 관계를 따라 여기서 저기에 닿는가"
+ * 뿐이다. "이걸 고치면 무엇이 깨지는가"(실행 시 인과)는 답하지 않는다 — 인덱서가 못 본
+ * 관계(동적 디스패치·설정·문자열 키)는 결과에 없다.
  *
- * tool을 아예 없애지 않고 **자리를 남긴다** — agent가 물어봤을 때 "없다"가 아니라
- * "아직 켜지지 않았다"를 알려 주는 편이 정직하고, 나중에 붙일 자리도 분명해진다.
+ * Trace(§6.6 R4)와 같은 이유로 **결정론적으로 투영**한다 — AI가 만들지 않는다.
  */
 server.registerTool(
   "get_impact_context",
   {
-    title: "Impact 맥락 (아직 비활성)",
+    title: "Authored Reachability",
     description:
-      "이 프로토타입에서는 아직 켜지지 않았다. 호출하면 not_enabled를 돌려준다. " +
-      "영향 범위를 물어보면 대신 get_evidence와 Trace로 근거를 직접 따라가라.",
-    inputSchema: { anchor: z.string().optional() },
+      "anchor에서 한 방향으로 인덱싱된 관계를 따라 도달 가능한 code entity를 bounded하게 " +
+      "돌려준다. direction: \"downstream\"은 anchor가 무엇으로 이어지는가, \"upstream\"은 " +
+      "무엇이 anchor로 이어지는가. **이것은 authored reachability이지 impact가 아니다** — " +
+      "실행 시 영향·인과를 주장하지 않는다. anchor는 Concept id/name, symbolId(path#name " +
+      "모양), 또는 file path.",
+    inputSchema: {
+      anchor: z.string(),
+      direction: z.enum(["upstream", "downstream"]),
+      hops: z.number().int().min(1).max(6).optional(),
+    },
   },
-  async () =>
-    reply({
-      error: "not_enabled",
-      next_step:
-        "Impact View는 이 프로토타입 범위 밖입니다. get_evidence 로 근거를 직접 따라가세요.",
-    }),
+  async ({ anchor, direction, hops }) =>
+    reply(await callBridge(`/internal/impact-context${query({ anchor, direction, hops })}`)),
 );
 
 const transport = new StdioServerTransport();

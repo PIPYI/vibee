@@ -472,7 +472,7 @@ export type SemanticDiffSummary = {
 // View (§18~§39 / A7 · S4 · U2 · V2)
 // ---------------------------------------------------------------------------
 
-export type ViewKind = "overview" | "scenario" | "trace";
+export type ViewKind = "overview" | "scenario" | "trace" | "reachability";
 
 /** 시작점을 미리 고정하지 않는다 (§19, I13). */
 export type ViewAnchor =
@@ -483,7 +483,7 @@ export type ViewAnchor =
   | { kind: "intent"; intentId: string };
 
 export type ViewScope = {
-  /** Trace 전용. entity hop 수 */
+  /** Trace·Reachability 공통. entity hop 수 */
   hops?: number;
   /** Trace 전용. 기본은 양방향이되 **link의 실제 방향은 보존한다** (V-clarify) */
   direction?: "both" | "outgoing" | "incoming";
@@ -494,6 +494,12 @@ export type ViewRequest = {
   anchor?: ViewAnchor;
   question?: string;
   scope?: ViewScope;
+  /**
+   * schema2 §6. Reachability 전용 — Trace의 `scope.direction`("both"|"outgoing"|"incoming")과는
+   * 다른 축이다. Reachability는 항상 한 방향만 걷는다: upstream(무엇이 여기로 이어지는가) /
+   * downstream(여기서 무엇으로 이어지는가). 두 방향을 섞지 않는다.
+   */
+  reachDirection?: "upstream" | "downstream";
 };
 
 /**
@@ -706,4 +712,46 @@ export type TraceLink = {
   /** hop 비교 — **레이아웃 전용** */
   nonForward?: boolean;
   selfLoop?: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Reachability (schema2 §6, M12) — **Impact가 아니다.**
+// ---------------------------------------------------------------------------
+
+/**
+ * archify가 스스로 그은 경계를 그대로 따른다: "call it authored reachability, not impact,
+ * blast radius, breakage, or runtime causality." 이 IR이 보장하는 것은 **"인덱싱된 관계를
+ * 따라 여기서 저기에 닿는다"**뿐이다. Trace(§37)처럼 **AI가 만들지 않는다** — Core가
+ * `buildEvidenceGraph`에서 결정론적으로 투영한다(R4와 같은 이유).
+ */
+export type ReachabilityDirection = "upstream" | "downstream";
+
+export type ReachabilityNode = {
+  /** entityKey */
+  id: string;
+  kind: EntityRef["kind"];
+  label: string;
+  /** anchor로부터의 최단 hop. 0은 anchor 자신이다 */
+  hop: number;
+  filePath?: string;
+  symbolId?: string;
+  /** 역 grounding으로 닿은 의미. 계산 시 memory를 안 넘기면 항상 빈 배열이다 */
+  conceptRefs: string[];
+};
+
+export type ReachabilityLink = {
+  fromId: string;
+  toId: string;
+  kind: string;
+  evidenceRefs: string[];
+};
+
+export type ReachabilityIR = {
+  /** 요청한 anchor를 사람이 읽을 문자열로. BFS가 우연히 처음 찾은 entity가 아니다 */
+  anchor: string;
+  direction: ReachabilityDirection;
+  nodes: ReachabilityNode[];
+  links: ReachabilityLink[];
+  /** hop 경계에서 잘렸다면 그 hop. Trace의 truncatedAtHop과 같은 의미다 */
+  truncatedAtHop?: number;
 };
