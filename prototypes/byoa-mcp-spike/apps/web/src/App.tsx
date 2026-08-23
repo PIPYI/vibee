@@ -219,6 +219,19 @@ export function App() {
             })
             .catch(() => undefined);
           break;
+        case "app.drift":
+          // 결론이 도착했는데 화면이 조용하면 "리뷰가 돌지 않았다"와 구분되지 않는다.
+          // 판정을 여기서 다시 하지 않는다 — 리포트에 담긴 것을 그대로 보여준다.
+          if (event.report.findings.length === 0) {
+            push("드리프트 없음 — 기준을 모두 확인했고 어긋난 것이 없습니다", "good");
+          } else {
+            for (const finding of event.report.findings) {
+              const where = finding.files.length > 0 ? finding.files.join(", ") : "(파일 미지정)";
+              const guess = finding.confidence === "low" ? " (추정)" : "";
+              push(`⚠ ${finding.criterionId} 깨짐 — ${where}${guess}: ${finding.detail}`, "bad");
+            }
+          }
+          break;
         case "app.question":
           setQuestion(event.question);
           setAnswer("");
