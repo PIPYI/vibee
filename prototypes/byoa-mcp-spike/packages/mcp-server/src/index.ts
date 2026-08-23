@@ -336,19 +336,20 @@ server.registerTool(
   {
     title: "Get what to review",
     description:
-      "Return the change to review and the criteria to check it against: `diff` (produced by " +
-      "the app, so you do not need to run git), `changedFiles`, and `criteria` -- the " +
-      "decisions (DEC) and rules (RULE) recorded for this project. These criteria are the " +
-      "ONLY thing to check. General code review is not what this is for.",
+      "Return the commits to review and the criteria to check them against. `commits` is " +
+      "oldest-first, each with its own `diff` (produced by the app, so you do not need to run " +
+      "git), and `criteria` holds the decisions (DEC) and rules (RULE) recorded for this " +
+      "project. Those criteria are the ONLY thing to check. General code review is not what " +
+      "this is for.",
     inputSchema: {},
   },
   async () => {
     const context = await bridgeFetch<ReviewContext>("/internal/review-context");
     log(
       "get_review_context ->",
-      `base ${context.base},`,
-      `files ${context.changedFiles.length},`,
-      `criteria ${context.criteria.length}${context.truncated ? ", diff truncated" : ""}`,
+      `commits ${context.commits.length},`,
+      `criteria ${context.criteria.length}`,
+      context.commits.some((c) => c.truncated) ? "(일부 diff 잘림)" : "",
     );
     return {
       content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
@@ -362,15 +363,17 @@ server.registerTool(
   {
     title: "Report drift against the project's decisions",
     description:
-      "Report which recorded decisions or rules this change breaks. Call this EXACTLY ONCE " +
-      "per review, including when nothing is broken -- pass an empty `findings` array in that " +
-      "case. An empty report is a normal, expected outcome; reporting things that are not in " +
-      "`criteria` is not. Do not modify any file: you are reporting, not fixing.",
+      "Report which recorded decisions or rules the reviewed commits break. Call this EXACTLY " +
+      "ONCE per review -- one call covering ALL commits, including when nothing is broken " +
+      "(pass an empty `findings` array). An empty report is a normal, expected outcome; " +
+      "reporting things that are not in `criteria` is not. Do not modify any file: you are " +
+      "reporting, not fixing.",
     inputSchema: {
       findings: z
         .array(
           z.object({
-            criterionId: z.string().describe("The id from `criteria` that this change breaks"),
+            commit: z.string().describe("The sha from `commits` where this broke"),
+            criterionId: z.string().describe("The id from `criteria` that this commit breaks"),
             files: z.array(z.string()).describe("Where it broke, relative to the project"),
             detail: z.string().describe("One sentence: what in the change contradicts it"),
             confidence: z
@@ -378,7 +381,7 @@ server.registerTool(
               .describe('"high" if you can see it in the diff, "low" if you are inferring'),
           }),
         )
-        .describe("Empty when the change breaks nothing. That is the common case"),
+        .describe("Empty when the commits break nothing. That is the common case"),
       summary: z.string().describe("One paragraph on what you checked and what you concluded"),
     },
   },
@@ -388,7 +391,11 @@ server.registerTool(
       method: "POST",
       body: JSON.stringify(report),
     });
-    log("report_drift ->", `${report.findings.length} finding(s)`, report.findings.map((f) => f.criterionId).join(", "));
+    log(
+      "report_drift ->",
+      `${report.findings.length} finding(s)`,
+      report.findings.map((f) => `${f.criterionId}@${f.commit.slice(0, 7)}`).join(", "),
+    );
     return {
       content: [
         {

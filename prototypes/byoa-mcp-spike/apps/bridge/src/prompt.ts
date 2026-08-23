@@ -91,8 +91,12 @@ export function buildSpikePrompt(userPrompt: string): string {
  *
  * 검증하려는 가설은 두 개이고, 어려운 쪽은 두 번째다.
  *
- * 1. 위반이 있는 diff에서 **어느 기준이** 깨졌는지 짚어내는가.
- * 2. 위반이 없는 diff에서 **조용히 있는가.**
+ * 1. 위반이 있는 커밋에서 **어느 기준이** 깨졌는지 짚어내는가.
+ * 2. 위반이 없는 커밋에서 **조용히 있는가.**
+ *
+ * 리뷰 단위는 커밋 하나다. 한 세션이 여러 커밋을 훑되 **각 커밋을 그 커밋의 diff로만**
+ * 판정한다 — 뒤 커밋이 앞 커밋의 위반을 물려받지 않고, 앞 커밋이 뒤의 수정으로 면제되지도
+ * 않는다. 그래야 한 번 본 커밋의 판정이 영원히 유효하고, 다시 볼 이유가 없어진다.
  *
  * 그래서 프롬프트가 유도하지 않도록 조심한다. "무엇이 잘못됐는지 찾아라"고 하면 모델은
  * 웬만하면 무언가를 찾아낸다. 찾는 일이 아니라 **대조하는 일**로 지시하고, 아무것도 없을
@@ -107,21 +111,27 @@ export function buildReviewPrompt(): string {
     "You are inside the BYOA MCP integration spike.",
     "",
     "Do this, in order:",
-    "1. Call `get_review_context` (server: byoa-spike). It returns the diff and `criteria` —",
-    "   the decisions and rules recorded for this project.",
-    "2. For EACH criterion, decide whether the diff breaks it. Work criterion by criterion,",
-    "   not file by file.",
-    "3. Call `report_drift` (server: byoa-spike) exactly once, then end your turn.",
+    "1. Call `get_review_context` (server: byoa-spike). It returns `commits` (oldest first,",
+    "   each with its own diff) and `criteria` — the decisions and rules recorded for this",
+    "   project.",
+    "2. Go through the commits in order. For each one, check every criterion against that",
+    "   commit's diff. Work criterion by criterion, not file by file.",
+    "3. Call `report_drift` (server: byoa-spike) ONCE for all of them, then end your turn.",
     "",
     "What counts as a finding:",
-    "- ONLY a criterion from `criteria` that this diff actually breaks. Quote its id.",
+    "- ONLY a criterion from `criteria` that a commit actually breaks. Quote its id and the",
+    "  sha of the commit it broke in.",
+    "- Judge each commit by its OWN diff. A later commit does not inherit a violation from an",
+    "  earlier one, and an earlier one is not excused by a later fix.",
     "- Not bugs. Not style. Not missing tests. Not things you would have done differently.",
     "  Those may be real, but they are not what this check is for, and reporting them here",
     "  makes the result useless.",
-    "- If the diff is unrelated to every criterion, that is the normal case. Report zero",
+    "- If the commits are unrelated to every criterion, that is the normal case. Report zero",
     "  findings. You must still call `report_drift` with an empty `findings` array — silence",
     "  and 'checked, nothing broken' must be distinguishable.",
     "- Use confidence \"low\" when you are inferring rather than seeing it in the diff.",
+    "- A commit whose diff is marked `truncated: true` was cut for size. Do not read that as",
+    "  'nothing else is there'; say so in the summary if it mattered.",
     "",
     "Do NOT change any file. You are not fixing anything; you are reporting. The user's own",
     "agent will do the fixing, with a prompt this app hands them.",

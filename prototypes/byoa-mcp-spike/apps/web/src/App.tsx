@@ -228,7 +228,8 @@ export function App() {
             for (const finding of event.report.findings) {
               const where = finding.files.length > 0 ? finding.files.join(", ") : "(파일 미지정)";
               const guess = finding.confidence === "low" ? " (추정)" : "";
-              push(`⚠ ${finding.criterionId} 깨짐 — ${where}${guess}: ${finding.detail}`, "bad");
+              // 커밋을 함께 보여준다. 고칠 대상을 찾는 첫 단서가 "어느 커밋에서 들어왔나"다.
+              push(`⚠ ${finding.criterionId} 깨짐 — ${short(finding.commit)} ${where}${guess}: ${finding.detail}`, "bad");
             }
           }
           break;

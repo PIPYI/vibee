@@ -176,15 +176,45 @@ export type DesignDoc = {
  * 쓰기 권한도 필요 없다.
  */
 export type ReviewContext = {
-  /** 어디부터의 변경인가. git ref 원문. */
-  base: string;
-  changedFiles: string[];
-  /** `git diff <base> --` 결과. 너무 크면 잘리고 `truncated`가 참이 된다. */
-  diff: string;
-  truncated: boolean;
+  /** 오래된 것부터. 한 세션이 여러 커밋을 훑는다. */
+  commits: ReviewCommit[];
   /** 지켜야 할 것 전부. DEC과 RULE을 한 목록으로 준다 — agent에게는 둘 다 "정한 것"이다. */
   criteria: ReviewCriterion[];
+  /** 상한에 걸려 이번 리뷰에서 빠진 커밋 수. 0이 아니면 화면이 그 사실을 말해야 한다. */
+  skipped: number;
 };
+
+/**
+ * 리뷰의 단위는 **커밋 하나**다.
+ *
+ * 커밋은 변하지 않으므로 한 번 본 커밋을 다시 볼 이유가 없다. 범위(`base..HEAD`)를 통째로
+ * 보면 커밋이 하나 늘 때마다 앞의 것까지 다시 읽게 되어 비용이 커밋 수만큼 곱해진다.
+ *
+ * 리포트의 수명 문제도 여기서 풀린다. 코드를 고치면 **새 커밋**이 생기고 그것이 다음 리뷰
+ * 대상이 되므로, 지난 코멘트를 다시 계산하거나 상태를 뒤집을 일이 없다.
+ */
+export type ReviewCommit = {
+  sha: string;
+  subject: string;
+  author: string;
+  /** ISO 8601. */
+  at: string;
+  changedFiles: string[];
+  /** 이 커밋 하나의 diff. 너무 크면 잘리고 `truncated`가 참이 된다. */
+  diff: string;
+  truncated: boolean;
+};
+
+/** 어디부터 볼지를 무엇이 정했는가. 화면이 사용자에게 그대로 말해 준다. */
+export type ReviewStart =
+  /** 마지막으로 리뷰한 커밋 다음부터. */
+  | "last-review"
+  /** `.project-intel/design.json`이 들어온 커밋부터 — 설계보다 앞선 커밋은 판정 대상이 아니다. */
+  | "design"
+  /** 설계가 아직 커밋되지 않은 경우의 안전판. */
+  | "recent"
+  /** 호출자가 직접 지정했다. */
+  | "explicit";
 
 export type ReviewCriterion = {
   /** DEC-… 또는 RULE-… . 리포트가 이 id를 되짚는다. */
@@ -197,6 +227,8 @@ export type ReviewCriterion = {
 
 /** agent가 `report_drift`로 되돌려 보내는 판정 하나. */
 export type DriftFinding = {
+  /** **어느 커밋에서** 깨졌는가. `ReviewContext.commits`에 있는 sha여야 한다. */
+  commit: string;
   /** 어긋난 기준의 id. `ReviewContext.criteria`에 있는 것이어야 한다. */
   criterionId: string;
   /** 어디서 깨졌는가. 프로젝트 기준 상대 경로. */
@@ -459,18 +491,46 @@ export type StartTaskResponse = {
 export type StartReviewRequest = {
   agent: AgentId;
   projectPath: string;
-  /** 어디부터의 변경을 볼지. git ref. 생략하면 `HEAD~1`. */
-  base?: string;
+  /**
+   * 이 ref **다음** 커밋부터 본다. 생략하면 bridge가 정한다 — 마지막 리뷰 지점, 없으면
+   * 설계가 들어온 커밋, 그것도 없으면 최근 것들 (`ReviewStart`).
+   */
+  since?: string;
   model?: string;
   effort?: string;
 };
 
 export type StartReviewResponse = {
   taskId: string;
-  base: string;
-  changedFiles: string[];
+  /** 이번에 볼 커밋들. 오래된 것부터. */
+  commits: Array<{ sha: string; subject: string }>;
+  /** 어디부터 볼지를 무엇이 정했는지. */
+  start: ReviewStart;
+  /** 상한에 걸려 빠진 커밋 수. */
+  skipped: number;
   /** 기준이 하나도 없으면 리뷰가 성립하지 않는다. 그 사실을 조용히 넘기지 않는다. */
   criteriaCount: number;
+};
+
+/**
+ * `.project-intel/reviews.json`. **어디까지 봤는지**가 남는 곳이다.
+ *
+ * 이것이 없으면 켤 때마다 처음부터 다시 본다. 커밋은 변하지 않으므로 한 번 본 것을
+ * 다시 볼 이유가 없고, 다시 보면 비용만 커밋 수만큼 곱해진다.
+ */
+export type ReviewLog = {
+  /** 마지막으로 리뷰가 끝난 커밋. 다음 리뷰는 이 다음부터 본다. */
+  lastReviewedSha: string | null;
+  runs: ReviewRun[];
+};
+
+export type ReviewRun = {
+  at: string;
+  agent: AgentId;
+  /** 이번 run이 본 커밋들. 오래된 것부터. */
+  commits: string[];
+  findings: DriftFinding[];
+  summary: string;
 };
 
 /**

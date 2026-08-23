@@ -242,6 +242,7 @@ const rentals = new Map();`,
   );
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", "Charge the rental fee when the rental completes"]);
+  return git(dir, ["rev-parse", "HEAD"]).trim();
 }
 
 /**
@@ -283,11 +284,19 @@ export function summarize(item) {
   write(dir, "README.md", "# 동네 대여\n\n같은 동네 주민끼리 안 쓰는 물건을 빌려주는 앱.\n\n## 실행\n\n    node src/index.js\n");
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-q", "-m", "Add item list filters and a title helper"]);
+  return git(dir, ["rev-parse", "HEAD"]).trim();
 }
 
-/** 워킹 트리가 깨끗한지. 리뷰 turn이 파일을 건드렸는지 보는 근거다. */
-export function isClean(dir) {
-  return git(dir, ["status", "--porcelain"]).trim() === "";
+/**
+ * 리뷰 turn이 **코드**를 건드렸는지. `.project-intel/`은 제외한다 — 거기에 리뷰 기록을
+ * 남기는 것은 우리 bridge가 하는 정상 동작이지 agent가 파일을 고친 것이 아니다.
+ */
+export function isCodeClean(dir) {
+  return git(dir, ["status", "--porcelain"])
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .every((line) => line.includes(".project-intel/"));
 }
 
 export { DESIGN };

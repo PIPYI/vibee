@@ -30,7 +30,10 @@ import {
   type ReportDriftInput,
   type ResumeSessionRequest,
   type ResetSessionRequest,
+  type ReviewCommit,
   type ReviewCriterion,
+  type ReviewLog,
+  type ReviewStart,
   type ShowResultInput,
   type StartReviewRequest,
   type StartTaskRequest,
@@ -322,33 +325,34 @@ app.post("/api/review", async (req: Request, res: Response) => {
     return;
   }
 
-  const base = body.base?.trim() || "HEAD~1";
-  let changedFiles: string[];
-  let diff: string;
+  let start: ReviewStart;
+  let commits: ReviewCommit[];
+  let skipped: number;
   try {
-    changedFiles = await gitLines(projectPath, ["diff", "--name-only", base, "--"]);
-    diff = await gitOutput(projectPath, ["diff", base, "--"]);
+    const resolved = await resolveReviewStart(projectPath, body.since);
+    start = resolved.start;
+    ({ commits, skipped } = await collectCommits(projectPath, resolved.since));
   } catch (error) {
-    res.status(400).json({ error: `git diff failed for base "${base}": ${asMessage(error)}` });
+    res.status(400).json({ error: `git log failed: ${asMessage(error)}` });
     return;
   }
 
-  const truncated = diff.length > MAX_DIFF_CHARS;
-  state.startReview({
-    base,
-    changedFiles,
-    diff: truncated ? `${diff.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : diff,
-    truncated,
-    criteria,
-  });
+  if (commits.length === 0) {
+    // 볼 것이 없는 것과 리뷰가 실패한 것은 다르다. 200으로 "새 커밋이 없다"를 알린다.
+    res.json({ taskId: null, commits: [], start, skipped: 0, criteriaCount: criteria.length });
+    return;
+  }
+
+  state.startReview({ commits, criteria, skipped });
 
   const taskId = randomUUID();
-  state.patchAppContext({ projectPath, prompt: `review ${base}`, selectedItem: null });
+  const label = `review ${commits.length}개 커밋`;
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
   state.createTask({
     taskId,
     agent: adapter.id,
     projectPath,
-    prompt: `review ${base}`,
+    prompt: label,
     selectedItem: null,
     status: "starting",
     model: body.model || undefined,
@@ -357,7 +361,13 @@ app.post("/api/review", async (req: Request, res: Response) => {
     mcpCalls: [],
   });
 
-  res.json({ taskId, base, changedFiles, criteriaCount: criteria.length });
+  res.json({
+    taskId,
+    commits: commits.map((c) => ({ sha: c.sha, subject: c.subject })),
+    start,
+    skipped,
+    criteriaCount: criteria.length,
+  });
 
   void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
     model: body.model || undefined,
@@ -690,10 +700,14 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
     return;
   }
 
-  const known = new Set((state.getReviewContext()?.criteria ?? []).map((c) => c.id));
-  const warnings = report.findings
-    .filter((finding) => !known.has(finding.criterionId))
-    .map((finding) => `Unknown criterion id: ${finding.criterionId}`);
+  const context = state.getReviewContext();
+  const knownCriteria = new Set((context?.criteria ?? []).map((c) => c.id));
+  const knownCommits = new Set((context?.commits ?? []).map((c) => c.sha));
+  const warnings: string[] = [];
+  for (const finding of report.findings) {
+    if (!knownCriteria.has(finding.criterionId)) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
+    if (!knownCommits.has(finding.commit)) warnings.push(`Unknown commit: ${finding.commit}`);
+  }
 
   state.recordDrift(report);
   const taskId = noteMcpEndpointHit("report_drift");
@@ -702,6 +716,34 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
 
   log(`report_drift: ${report.findings.length}건 (${report.findings.map((f) => f.criterionId).join(", ") || "없음"})`);
   for (const warning of warnings) log(`  ! ${warning}`);
+
+  /**
+   * 어디까지 봤는지를 남긴다. **이 기록이 없으면 켤 때마다 처음부터 다시 본다.**
+   * 커밋은 변하지 않으므로 다시 볼 이유가 없고, 다시 보면 비용만 커밋 수만큼 곱해진다.
+   *
+   * 리포트가 도착했다는 것이 곧 그 커밋들을 다 봤다는 뜻이다. turn이 오류로 끝나면
+   * 리포트가 오지 않으므로 기록도 갱신되지 않고, 다음 리뷰가 같은 구간을 다시 본다.
+   */
+  const projectPath = state.getAppContext().projectPath;
+  const task = taskId ? state.getTask(taskId) : undefined;
+  if (context && projectPath) {
+    void (async () => {
+      try {
+        const existing = await readReviewLog(projectPath);
+        existing.lastReviewedSha = context.commits.at(-1)?.sha ?? existing.lastReviewedSha;
+        existing.runs.push({
+          at: new Date().toISOString(),
+          agent: task?.agent ?? "codex",
+          commits: context.commits.map((c) => c.sha),
+          findings: report.findings,
+          summary: report.summary,
+        });
+        await writeReviewLog(projectPath, existing);
+      } catch (error) {
+        log(`리뷰 기록 저장 실패: ${asMessage(error)}`);
+      }
+    })();
+  }
 
   res.json({ taskId, warnings });
 });
@@ -820,10 +862,16 @@ const GENERATED_DOCS = ["app_design.md", "AGENTS.md", "CLAUDE.md"] as const;
 const DESIGN_DIR = ".project-intel";
 
 /**
- * diff를 통째로 싣지 않는 한계선. 넘으면 자르고 잘렸다는 사실을 함께 넘긴다 —
+ * 커밋 하나의 diff를 싣는 한계선. 넘으면 자르고 잘렸다는 사실을 함께 넘긴다 —
  * 조용히 자르면 agent가 "diff에 없으니 위반이 없다"고 판단해 버린다.
  */
-const MAX_DIFF_CHARS = 40_000;
+const MAX_DIFF_CHARS = 20_000;
+
+/** 한 번의 리뷰가 훑을 커밋 수 상한. 넘치면 오래된 쪽을 남기고 최신부터 자른다. */
+const MAX_REVIEW_COMMITS = 50;
+
+/** `.project-intel/reviews.json` — 어디까지 봤는지가 남는 곳. */
+const REVIEW_LOG = "reviews.json";
 
 /**
  * 설계를 디스크에서 읽는다.
@@ -865,6 +913,102 @@ async function gitOutput(projectPath: string, args: string[]): Promise<string> {
 async function gitLines(projectPath: string, args: string[]): Promise<string[]> {
   const out = await gitOutput(projectPath, args);
   return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+async function readReviewLog(projectPath: string): Promise<ReviewLog> {
+  try {
+    const raw = await readFile(join(projectPath, DESIGN_DIR, REVIEW_LOG), "utf8");
+    return JSON.parse(raw) as ReviewLog;
+  } catch {
+    return { lastReviewedSha: null, runs: [] };
+  }
+}
+
+async function writeReviewLog(projectPath: string, log: ReviewLog): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+}
+
+/** ref가 이 저장소에 실제로 있는지. 기록이 있어도 rebase 등으로 사라졌을 수 있다. */
+async function commitExists(projectPath: string, ref: string): Promise<boolean> {
+  try {
+    await gitOutput(projectPath, ["cat-file", "-e", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 어디부터 볼지 정한다.
+ *
+ * **설계보다 앞선 커밋은 판정 대상이 아니다.** 그때는 아직 기준이 없었으므로, 그것을
+ * 지금의 DEC으로 재는 것은 의미가 없다. 그래서 처음 켤 때의 기준점은 임의의 개수가 아니라
+ * `design.json`이 들어온 커밋이다.
+ */
+async function resolveReviewStart(
+  projectPath: string,
+  since: string | undefined,
+): Promise<{ start: ReviewStart; since: string | null }> {
+  if (since?.trim()) return { start: "explicit", since: since.trim() };
+
+  const log = await readReviewLog(projectPath);
+  if (log.lastReviewedSha && (await commitExists(projectPath, log.lastReviewedSha))) {
+    return { start: "last-review", since: log.lastReviewedSha };
+  }
+
+  // 인계 커밋 자체는 설계와 하네스만 담고 있어 리뷰할 코드가 없다. 그 **다음**부터 본다.
+  try {
+    const shas = await gitLines(projectPath, [
+      "log", "--format=%H", "--diff-filter=A", "--", `${DESIGN_DIR}/design.json`,
+    ]);
+    const handover = shas.at(-1);
+    if (handover) return { start: "design", since: handover };
+  } catch {
+    // 저장소가 아니거나 아직 커밋이 없다. 아래 안전판으로 간다.
+  }
+
+  return { start: "recent", since: null };
+}
+
+/**
+ * 리뷰할 커밋들을 모은다. **오래된 것부터** 준다 — 바이브코딩은 앞 커밋이 뒤 커밋의 전제라
+ * 순서대로 읽어야 무엇이 왜 들어왔는지 읽힌다.
+ */
+async function collectCommits(
+  projectPath: string,
+  since: string | null,
+): Promise<{ commits: ReviewCommit[]; skipped: number }> {
+  const range = since ? [`${since}..HEAD`] : [`-n`, String(MAX_REVIEW_COMMITS)];
+  const SEP = "\u001f";
+  const lines = await gitLines(projectPath, [
+    "log", "--reverse", "--no-merges", `--format=%H${SEP}%s${SEP}%an${SEP}%aI`, ...range,
+  ]);
+
+  // 상한을 넘으면 **오래된 쪽을 남긴다.** 뒤 커밋은 앞 커밋 위에 서 있으므로, 앞을 건너뛰면
+  // 뒤를 읽어도 맥락이 없다. 남은 것은 다음 리뷰가 이어서 본다.
+  const skipped = Math.max(0, lines.length - MAX_REVIEW_COMMITS);
+  const selected = lines.slice(0, MAX_REVIEW_COMMITS);
+
+  const commits: ReviewCommit[] = [];
+  for (const line of selected) {
+    const [sha, subject = "", author = "", at = ""] = line.split(SEP);
+    if (!sha) continue;
+    const changedFiles = await gitLines(projectPath, ["show", "--name-only", "--format=", sha]);
+    const raw = await gitOutput(projectPath, ["show", "--format=", sha]);
+    const truncated = raw.length > MAX_DIFF_CHARS;
+    commits.push({
+      sha,
+      subject,
+      author,
+      at,
+      changedFiles,
+      diff: truncated ? `${raw.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : raw,
+      truncated,
+    });
+  }
+  return { commits, skipped };
 }
 
 /**
