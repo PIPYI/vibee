@@ -472,6 +472,7 @@ const architectureComponent = {
     label: nonEmptyString,
     sublabel: { type: "string" },
     presentationType,
+    layer: { enum: ["actor", "interface", "service", "state", "data", "external"] },
     presentationTypeConfidence: confidence,
     boundaryId: { type: "string" },
     conceptRefs: stringArray,
@@ -526,6 +527,28 @@ export const ARCHITECTURE_IR_SCHEMA = {
     components: { type: "array", items: architectureComponent },
     boundaries: { type: "array", items: architectureBoundary },
     connections: { type: "array", items: architectureConnection },
+    viewPlan: {
+      type: "object",
+      additionalProperties: false,
+      required: ["primaryPath", "groups"],
+      properties: {
+        primaryPath: { type: "array", items: nonEmptyString },
+        groups: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "label", "componentIds"],
+            properties: {
+              id: nonEmptyString,
+              label: nonEmptyString,
+              componentIds: { type: "array", items: nonEmptyString },
+              collapsedByDefault: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 

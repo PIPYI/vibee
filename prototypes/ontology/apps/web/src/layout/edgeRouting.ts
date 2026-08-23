@@ -183,7 +183,28 @@ function findClearMidX(from: RoutedPort, to: RoutedPort, obstacles: Box[]): numb
  * 노드를 뺀 나머지 박스를 넘긴다.
  */
 export function routedPathAvoiding(from: RoutedPort, to: RoutedPort, obstacles: Box[], radius = 10): string {
-  return routedPath(from, to, radius, findClearMidX(from, to, obstacles));
+  return routedGeometryAvoiding(from, to, obstacles, radius).path;
+}
+
+/** 장애물 회피로 실제 이동한 경로와 같은 좌표계에서 라벨 위치도 계산한다. */
+export function routedGeometryAvoiding(
+  from: RoutedPort,
+  to: RoutedPort,
+  obstacles: Box[],
+  radius = 10,
+): { path: string; labelPoint: RoutedPort } {
+  const midX = findClearMidX(from, to, obstacles);
+  const points = routePoints(from, to, midX);
+  const segments = points.slice(0, -1).map((start, index) => {
+    const end = points[index + 1]!;
+    return { start, end, horizontal: Math.abs(start[1] - end[1]) < 0.5, length: Math.hypot(end[0] - start[0], end[1] - start[1]) };
+  });
+  const horizontal = segments.filter((segment) => segment.horizontal).sort((a, b) => b.length - a.length)[0];
+  const segment = horizontal ?? segments.sort((a, b) => b.length - a.length)[0];
+  const labelPoint = segment
+    ? { x: (segment.start[0] + segment.end[0]) / 2, y: (segment.start[1] + segment.end[1]) / 2 }
+    : { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  return { path: routedPath(from, to, radius, midX), labelPoint };
 }
 
 /** archify `segmentIntersectsRect`를 이식 — 선분이 사각형과 만나는지(끝점이 안에 있어도 만남). */

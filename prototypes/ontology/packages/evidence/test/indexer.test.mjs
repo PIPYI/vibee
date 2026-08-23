@@ -102,6 +102,20 @@ test("같은 입력을 두 번 인덱싱하면 결과가 동일하다", () => {
   assert.deepEqual(second.evidence, first.evidence);
 });
 
+test("로컬 데이터 자산과 그 import를 file→file 골격 링크로 인덱싱한다", () => {
+  const root = scratch({
+    "src/main.ts": `import missions from "../data/missions.json";\nexport const count = missions.length;\n`,
+    "data/missions.json": `[{"id":1}]`,
+  });
+  const index = indexProject(root, { analysisVersion: 1 });
+
+  assert.ok(index.evidence.some((item) => item.kind === "file" && item.filePath === "data/missions.json"));
+  const link = index.evidence.find((item) => item.kind === "data_import");
+  assert.equal(link?.graph?.role, "link");
+  assert.deepEqual(link?.graph?.from, { kind: "file", filePath: "src/main.ts" });
+  assert.deepEqual(link?.graph?.to, { kind: "file", filePath: "data/missions.json" });
+});
+
 test("링크 evidence 는 실재하는 entity 를 양 끝점으로 갖는다 (T2 의 P1 부분)", () => {
   const root = scratch({ "src/follow.js": FOLLOW, "src/service.js": CALLER });
   const index = indexProject(root, { analysisVersion: 1 });

@@ -88,3 +88,13 @@ test("boundary에 안 감싸인 컴포넌트는 버려지지 않고 '그 외' �
   assert.equal(orphanGroup.boundaryLabel, "그 외");
   assert.equal(orphanGroup.tiers[0].components[0].id, "orphan");
 });
+
+test("명시된 layer가 있으면 flat graph에서도 rank 대신 의미 layer로 나눈다", () => {
+  const components = [
+    { ...component("screen", "frontend"), layer: "interface" },
+    { ...component("service", "backend"), layer: "service" },
+    { ...component("store", "database"), layer: "data" },
+  ];
+  const [group] = computeArchitectureComposition(ir(components, []));
+  assert.deepEqual(group.tiers.map((tier) => tier.label), ["화면", "중간 로직", "상태 · 데이터"]);
+});

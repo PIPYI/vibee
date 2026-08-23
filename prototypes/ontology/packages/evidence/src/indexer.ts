@@ -7,6 +7,7 @@
  *
  * 모델을 부르지 않는다. 전부 결정론이고, 출력은 id로 정렬된다.
  */
+import { posix } from "node:path";
 import ts from "typescript";
 
 import type {
@@ -70,9 +71,25 @@ const COMPILER_OPTIONS: ts.CompilerOptions = {
 
 /** TS 파서를 태우지 않지만 evidence는 만들어야 하는 파일들. */
 const EXTRA_FILE_PATTERNS = [/(?:^|\/)schema\.prisma$/u, /(?:^|\/)\.env\.example$/u];
+const DATA_ASSET_EXTENSION = /\.(?:json|ya?ml|csv|sql|prisma)$/iu;
+const DATA_ASSET_DIRECTORY = /(?:^|\/)(?:data|fixtures?|mocks?|seeds?)(?:\/|$)/iu;
+
+/** package/tsconfig 같은 설정 JSON과 실제 런타임 데이터 자산을 구분한다. */
+export function isDataAssetFile(relPath: string): boolean {
+  if (!DATA_ASSET_EXTENSION.test(relPath)) return false;
+  if (/(?:^|\/)(?:package-lock|package|tsconfig(?:\.[^/]+)?)\.json$/iu.test(relPath)) return false;
+  return DATA_ASSET_DIRECTORY.test(relPath) || /(?:^|\/)[^/]+\.(?:data|fixture|seed)\.json$/iu.test(relPath);
+}
 
 function isExtraFile(relPath: string): boolean {
-  return isConfigFile(relPath) || EXTRA_FILE_PATTERNS.some((pattern) => pattern.test(relPath));
+  return isConfigFile(relPath) || isDataAssetFile(relPath) || EXTRA_FILE_PATTERNS.some((pattern) => pattern.test(relPath));
+}
+
+function resolveImportedDataPath(fromPath: string, specifier: string, indexed: Set<string>): string | undefined {
+  if (!specifier.startsWith(".") || !DATA_ASSET_EXTENSION.test(specifier)) return undefined;
+  const candidate = posix.normalize(posix.join(posix.dirname(fromPath), specifier));
+  if (candidate.startsWith("../") || !indexed.has(candidate) || !isDataAssetFile(candidate)) return undefined;
+  return candidate;
 }
 
 export function indexProject(projectRoot: string, options: IndexOptions): EvidenceIndex {
@@ -105,6 +122,7 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   }
 
   const indexed = [...sources.keys()].sort();
+  const indexedSet = new Set(indexed);
   const parsed = indexed.filter((relPath) => sourcePaths.includes(relPath));
 
   const program = ts.createProgram({
@@ -231,6 +249,26 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
     if (!sourceFile) continue;
     const fileHash = fileHashes[relPath]!;
     const sites = sitesByFile.get(relPath) ?? [];
+
+    // 데이터 자산에는 TS symbol이 없으므로 checker만으로는 연결이 생기지 않는다.
+    // import 선언을 file→file 골격 링크로 남겨 로컬 저장소를 Architecture에서 근거 있게
+    // 표현할 수 있도록 한다.
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const targetPath = resolveImportedDataPath(relPath, statement.moduleSpecifier.text, indexedSet);
+      if (!targetPath) continue;
+      queueLink({
+        linkKind: "data_import",
+        from: { kind: "file", filePath: relPath },
+        to: { kind: "file", filePath: targetPath },
+        extentText: statement.getText(sourceFile),
+        location: rangeOf(sourceFile, statement),
+        startColumn: startColumnOf(sourceFile, statement),
+        filePath: relPath,
+        fileContentHash: fileHash,
+        summary: `${relPath} 이 로컬 데이터 ${targetPath} 를 읽는다`,
+      });
+    }
 
     const visit = (node: ts.Node): void => {
       if (ts.isIdentifier(node) && !isDeclarationName(node)) {

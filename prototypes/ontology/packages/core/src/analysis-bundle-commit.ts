@@ -48,6 +48,7 @@ export async function commitAnalysisBundle(
         bundle,
         evidence: snapshot.evidence,
         memory: snapshot.memory,
+        projectPath: store.projectPath,
       });
       diagnostics = result.diagnostics;
       if (hasError(diagnostics) || !result.bundle) {
@@ -59,6 +60,7 @@ export async function commitAnalysisBundle(
         analysisVersion: snapshot.project.analysisVersion,
         semanticVersion: snapshot.project.semanticVersion,
         freshness: "current",
+        ...(result.repositoryTopology ? { repositoryTopology: result.repositoryTopology } : {}),
       };
       snapshot.analysisBundle = stamped;
       return snapshot;

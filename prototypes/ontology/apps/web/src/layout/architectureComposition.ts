@@ -17,7 +17,7 @@ import type { ArchitectureComponent, ArchitectureIR } from "@onto/protocol";
 // allowImportingTsExtensions를 그대로 쓴다). vite도 같은 확장자를 그대로 지원한다.
 import { computeArchitectureLayout } from "./architectureLayout.ts";
 
-export type ArchitectureTier = "screen" | "logic" | "core";
+export type ArchitectureTier = "screen" | "logic" | "state" | "core";
 
 export type ArchitectureCompositionTier = {
   tier: ArchitectureTier;
@@ -35,6 +35,7 @@ export type ArchitectureCompositionGroup = {
 const TIER_LABEL: Record<ArchitectureTier, string> = {
   screen: "화면",
   logic: "중간 로직",
+  state: "상태 · 데이터",
   core: "핵심 서비스",
 };
 
@@ -42,6 +43,22 @@ function tierOf(rank: number): ArchitectureTier {
   if (rank <= 0) return "screen";
   if (rank === 1) return "logic";
   return "core";
+}
+
+function tierOfComponent(component: ArchitectureComponent, rank: number): ArchitectureTier {
+  switch (component.layer) {
+    case "actor":
+    case "interface":
+    case "external":
+      return "screen";
+    case "service":
+      return "logic";
+    case "state":
+    case "data":
+      return "state";
+    default:
+      return tierOf(rank);
+  }
 }
 
 function tiersFor(components: ArchitectureComponent[], ir: ArchitectureIR): ArchitectureCompositionTier[] {
@@ -56,19 +73,19 @@ function tiersFor(components: ArchitectureComponent[], ir: ArchitectureIR): Arch
   const layout = computeArchitectureLayout(subIr);
 
   // flat-graph 폴백: 컴포넌트 간 연결이 거의 없어 계층이 안 나오면 억지로 3단 분류하지 않는다.
-  if (layout.maxRank === 0) {
+  if (layout.maxRank === 0 && components.every((component) => !component.layer)) {
     return [{ tier: "screen", label: "구성 요소", components }];
   }
 
   const byTier = new Map<ArchitectureTier, ArchitectureComponent[]>();
   for (const component of components) {
     const rank = layout.positions.get(component.id)?.rank ?? 0;
-    const tier = tierOf(rank);
+    const tier = tierOfComponent(component, rank);
     if (!byTier.has(tier)) byTier.set(tier, []);
     byTier.get(tier)!.push(component);
   }
 
-  const order: ArchitectureTier[] = ["screen", "logic", "core"];
+  const order: ArchitectureTier[] = ["screen", "logic", "state", "core"];
   return order
     .filter((tier) => byTier.has(tier))
     .map((tier) => ({ tier, label: TIER_LABEL[tier], components: byTier.get(tier)! }));

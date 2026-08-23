@@ -15,6 +15,7 @@ import {
   resolveLabelOverlaps,
   routedPath,
   routedPathAvoiding,
+  routedGeometryAvoiding,
   routeEdges,
   segmentIntersectsRect,
 } from "../src/layout/edgeRouting.ts";
@@ -214,6 +215,15 @@ test("routedPathAvoiding — 장애물이 없으면 routedPath와 같다", () =>
   const from = { x: 0, y: 10 };
   const to = { x: 200, y: 90 };
   assert.equal(routedPathAvoiding(from, to, []), routedPath(from, to));
+});
+
+test("routedGeometryAvoiding — 라벨 위치는 장애물 회피 후 실제 경로 위에서 계산한다", () => {
+  const from = { x: 100, y: 50 };
+  const to = { x: 400, y: 250 };
+  const obstacle = box("obstacle", 230, 100, 270, 200);
+  const geometry = routedGeometryAvoiding(from, to, [obstacle]);
+  assert.ok(geometry.path.includes(`L ${geometry.labelPoint.x}`) || geometry.labelPoint.y === from.y || geometry.labelPoint.y === to.y);
+  assert.equal(Number.isFinite(geometry.labelPoint.x) && Number.isFinite(geometry.labelPoint.y), true);
 });
 
 test("reduceCrossings — barycenter로도 안 풀리는 X자 교차를 스왑으로 실제로 없앤다", () => {

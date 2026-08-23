@@ -111,3 +111,36 @@ test("클러스터 크기가 MIN_CLUSTER_SIZE 미만이면(소규모 tier) 완�
   assert.ok(clusteredIr.components.some((c) => c.id === "core-a"));
   assert.ok(clusteredIr.components.some((c) => c.id === "core-b"));
 });
+
+test("viewPlan group은 연결 모양과 무관하게 우선되고 합친 근거를 보존한다", () => {
+  const members = ["s1", "s2", "s3"].map((id, index) => ({
+    ...component(id, "frontend"),
+    layer: "interface",
+    entityRefs: [`file:${id}.tsx`],
+    evidenceRefs: [`ev-${index}`],
+  }));
+  const input = {
+    ...ir(members, []),
+    viewPlan: { primaryPath: [], groups: [{ id: "screens", label: "여행 화면", componentIds: members.map((item) => item.id) }] },
+  };
+  const { ir: clusteredIr, clusters } = computeClusteredArchitectureIR(input);
+  assert.equal(clusters.size, 1);
+  const cluster = clusteredIr.components.find((item) => item.id === "cluster:group:screens");
+  assert.equal(cluster.label, "여행 화면");
+  assert.deepEqual(cluster.entityRefs, ["file:s1.tsx", "file:s2.tsx", "file:s3.tsx"]);
+  assert.deepEqual(cluster.evidenceRefs, ["ev-0", "ev-1", "ev-2"]);
+});
+
+test("이웃이 같아도 서로 다른 runtime boundary의 컴포넌트는 한 클러스터로 합치지 않는다", () => {
+  const left = ["a1", "a2", "a3"].map((id) => component(id));
+  const right = ["b1", "b2", "b3"].map((id) => component(id));
+  const components = [...left, ...right, component("shared")];
+  const connections = [...left, ...right].map((item) => connection(item.id, "shared"));
+  const boundaries = [
+    { id: "app-a", label: "A", kind: "runtime", wraps: left.map((item) => item.id) },
+    { id: "app-b", label: "B", kind: "runtime", wraps: right.map((item) => item.id) },
+  ];
+  const { clusters } = computeClusteredArchitectureIR(ir(components, connections, boundaries));
+  assert.equal(clusters.size, 2);
+  assert.ok([...clusters.values()].every((members) => members.length === 3));
+});

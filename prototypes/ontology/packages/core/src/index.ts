@@ -85,3 +85,8 @@ export {
   type CommitAnalysisBundleResult,
 } from "./analysis-bundle-commit.js";
 export { VIEW_BUDGET } from "./viewBudget.js";
+export {
+  assessRepositoryCoverage,
+  describeRepositoryTopology,
+  detectRepositoryTopology,
+} from "./repository-topology.js";

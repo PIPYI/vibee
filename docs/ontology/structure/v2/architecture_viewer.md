@@ -1,14 +1,27 @@
-# Architecture Viewer v2 — 구성 개요 탭 + 시각화 리디자인
+# Architecture Viewer v2 — 저장소 완전성 + 단계적 시각화
 
-이 문서는 [ontology_schema3.md](../v1/ontology_schema3.md)(v1)가 확정한 파이프라인·IR 위에서, 시각화(View 레이어)만 다시 설계한 기록이다. 분석 파이프라인(Evidence → Semantic Memory → Assembly)은 이번 개정에서 건드리지 않는다 — 실전 검증(chungnam-mission-app 실제 분석)으로 이미 확인됐고, 문제는 그 결과를 "전부 펼쳐서 보여주기만 하는" 시각화 쪽이었다.
+이 문서는 [ontology_schema3.md](../v1/ontology_schema3.md)(v1)가 확정한 파이프라인·IR 위에서, 저장소 완전성 검사와 시각화(View 레이어)를 함께 개선한 기록이다. 실전 검증 결과 문제는 렌더링만이 아니었다. `admin`처럼 별도 실행되는 앱과 로컬 JSON 데이터가 Evidence에는 있어도 Assembly 결과에서 사라질 수 있었고, 그 상태에서는 아무리 레이아웃을 다듬어도 “전체 구조”라고 부를 수 없다.
 
 ## 배경
 
-v1의 아키텍처 탭은 `AnalysisBundle.architecture.components`를 전부 한 그래프에 펼치기만 했다. 원래 목표(`ontology_schema3.md` §1)였던 "비전공자가 한눈에 이해"를 그래프 하나로는 달성하지 못했다 — 19개 컴포넌트짜리 그래프는 전공자에게도 한눈에 안 들어온다.
+v1의 아키텍처 탭은 `AnalysisBundle.architecture.components`를 전부 한 그래프에 펼치기만 했다. 원래 목표(`ontology_schema3.md` §1)였던 "비전공자가 한눈에 이해"를 그래프 하나로는 달성하지 못했다 — 19개 컴포넌트짜리 그래프는 전공자에게도 한눈에 안 들어온다. 또한 화면 19개가 실제 저장소 전체를 대표하는지 확인할 기계적 장치가 없었다.
 
-## 1. 구성 개요 티어링 — 새 알고리즘이 아니라 rank의 재해석
+## 0. RepositoryTopology — AI가 생략할 수 없는 저장소 골격
 
-`layout/architectureLayout.ts`의 `computeArchitectureLayout()`은 v1부터 이미 결정론적 `rank`(root로부터의 최장 경로)를 계산하고 있었다 — 그래프 뷰의 컬럼 위치를 정하는 데만 썼을 뿐이다. v2는 이 `rank`를 큐레이션 축으로 재해석한다: rank 0(아무도 의존하지 않는 진입점)은 "화면", rank 1은 "중간 로직", rank 2 이상은 전부 "핵심 서비스"로 묶는다(3단계로 캡).
+Core는 LLM 없이 package manifest, runnable script/framework, 관례적 entrypoint, `data/fixtures/mocks/seeds` 자산을 읽어 `RepositoryTopology`를 만든다. 이 데이터는 의미 구조가 아니라 완전성 하한선이다.
+
+- 독립 실행 런타임마다 별도 boundary와 entrypoint-backed component가 있어야 한다.
+- 로컬 데이터 저장소마다 해당 파일을 `entityRefs`로 가진 data component가 있어야 한다.
+- 여러 런타임이 하나의 boundary로 합쳐지면 거절한다.
+- 검사 결과는 `AnalysisBundle.repositoryTopology.coverage`에 Core가 찍는다. Agent가 이 영수증을 작성할 수 없다.
+
+실제 `chungnam-mission-app-master`에서는 모바일 앱(root)과 관리자 웹(`admin`) 2개 런타임, `src/data` 15개와 `admin/src/data` 5개의 JSON 파일을 탐지했다. 기존 Assembly가 관리자 웹을 빠뜨리면 이제 `bundle/runtime-not-represented`와 `bundle/data-store-not-represented`로 제출이 실패한다.
+
+Assembly는 픽셀 좌표 대신 `component.layer`, `connection.role`, `viewPlan.primaryPath/groups`를 저작한다. Core가 정한 사실과 AI가 정한 설명 우선순위를 분리한 것이다.
+
+## 1. 구성 개요 티어링 — 의미 layer 우선, rank는 레거시 폴백
+
+새 Bundle은 Assembly가 저작한 `component.layer`(`interface/service/state/data` 등)를 구성 개요의 우선 축으로 쓴다. 연결 방향에서 계산한 `rank`는 layer가 없는 레거시 Bundle에서만 안전한 폴백으로 사용한다. 이로써 상태 저장소가 우연한 연결 방향 때문에 “화면”이나 “핵심 서비스”로 바뀌는 문제를 줄인다.
 
 **실측 검증** — chungnam-mission-app 실제 분석 결과(19개 컴포넌트, `/tmp/chungnam-bundle.json`)의 실제 in-degree 분포:
 
@@ -25,7 +38,7 @@ v1의 아키텍처 탭은 `AnalysisBundle.architecture.components`를 전부 한
 
 rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스 4로 나뉘었다 — 참고 mockup(이전 세션에서 만든 검증용 아티팩트 `chungnam_report.html`의 "이 앱은 무엇으로 이루어져 있는가" 섹션)과 정확히 일치한다. 메커니즘: `verification-reward-service`(rank 1)만 유일하게 핵심 서비스 4개 전부로 나가는 통로라, 화면에서 직접 많이 불리는 서비스들(높은 in-degree)도 rank가 2로 끌어올려진다.
 
-**View 레이어 전용** — Stage 3(Assembly)/스키마는 건드리지 않는다. `layout/architectureComposition.ts`의 `computeArchitectureComposition(ir)`가 `computeArchitectureLayout`을 내부에서 호출해 rank를 얻고 화면/중간 로직/핵심 서비스로 재분류할 뿐이다.
+`layout/architectureComposition.ts`의 `computeArchitectureComposition(ir)`는 layer가 있으면 화면/서비스/상태·데이터로 분류하고, 없으면 기존 rank 기반 화면/중간 로직/핵심 서비스 분류를 유지한다.
 
 **예외 처리**:
 - flat-graph 폴백: 컴포넌트 간 연결이 거의 없어 `maxRank === 0`이면 3단 분류를 강제하지 않고 단일 그룹으로 반환한다.
@@ -33,10 +46,11 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 
 ## 2. 아키텍처 탭 구조 — 서브탭
 
-`ArchitectureView.tsx`가 "아키텍처" 탭 전체를 소유한다. 안에 `[구성 개요] [전체 구조]` 서브탭이 있다:
+`ArchitectureView.tsx`가 "프로젝트 지도" 탭 전체를 소유한다. 안에 `[프로젝트 한눈에] [구성요소] [관계 상세]` 서브탭이 있다:
 
-- **구성 개요**(기본 진입) — `ArchitectureComposition.tsx`, 카드 그리드. `ViewerShell`(SVG pan/zoom) 밖의 일반 DOM이다 — 스크롤 가능한 카드 리스트가 이 매체에 맞다.
-- **전체 구조** — 기존 rank/lane SVG 그래프(`ArchitectureGraph`, `ArchitectureView.tsx` 내부). `ViewerShell` 안에서 pan/zoom/finder/radar를 그대로 쓴다.
+- **프로젝트 한눈에**(기본 진입) — Core coverage 영수증, AI가 고른 주 경로, 런타임별 역할·진입점·로컬 데이터를 일반 DOM으로 보여준다.
+- **구성요소** — `ArchitectureComposition.tsx` 카드 그리드.
+- **관계 상세** — rank/lane SVG 그래프. `ViewerShell` 안에서 pan/zoom/finder/radar를 쓴다. 최초 진입과 0 키는 좌상단 100%가 아니라 전체 내용 맞춤이다.
 
 서브탭 전환은 로컬 state만 바꾼다 — 이미 받아온 `AnalysisBundle`을 다시 그릴 뿐 `GET /api/analysis-bundle` 재요청이 없다("탭 전환은 API를 안 부른다"는 v1의 불변을 그대로 지킨다).
 
@@ -68,7 +82,7 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 
 **처음 시도(반려)**: "같은 tier 안에서 이웃 집합이 완전히 동일한 노드만 합친다"는 exact-match 방식을 생각했지만, 실제 데이터에서 화면들은 공통 서비스 몇 개는 같이 부르면서도 나머지 연결은 조금씩 갈려서 완전히 똑같은 경우가 드물어 대응 범위가 너무 좁다는 지적을 받았다. §2(구성 개요 티어링)는 rank를 재사용할 뿐 새 알고리즘이 필요 없었지만, **클러스터링은 실제로 새로운 그래프 알고리즘이 필요하다** — 다만 AI/스키마가 아니라 순수 그래프 유사도 알고리즘이라는 점은 같다.
 
-**최종 알고리즘 — `layout/architectureClustering.ts`**: 같은 tier(§2와 동일한 rank 재해석) 안의 모든 노드 쌍에 대해 이웃 집합(진입+진출 연결 대상)의 Jaccard 유사도(`|A∩B|/|A∪B|`)를 계산하고, `SIMILARITY_THRESHOLD`(0.6) 이상인 쌍끼리 엣지를 이은 유사도 그래프에서 Union-Find로 connected component를 구해 클러스터로 삼는다. 완전히 동일하지 않아도 충분히 비슷하면 전이적으로 묶인다. 클러스터 크기가 `MIN_CLUSTER_SIZE`(3) 미만이면 합치지 않는다.
+**최종 알고리즘 — `layout/architectureClustering.ts`**: `viewPlan.groups`가 있으면 그 의미 그룹을 우선 사용한다. 없는 항목에만 같은 boundary·같은 layer/tier 안에서 Jaccard 유사도(`|A∩B|/|A∪B|`) 0.6 이상인 노드를 자동 클러스터링한다. 서로 다른 앱의 화면이 연결 모양만 비슷하다는 이유로 합쳐지지 않는다. 합친 component와 connection은 원본 `entityRefs/evidenceRefs/traceLinkRefs/role`을 합집합으로 보존한다.
 
 **실측 검증(chungnam 실제 번들)**: 19개 컴포넌트·41개 connection → **9개 노드·10개 connection**으로 줄었다.
 - `cluster:screen:1`(화면 9개): `bus-stop-detail, complete-screen, history-screen, home-screen, mission-detail-screen, missions-tab, progress-screen, recommend-screen, verify-screen` — 나머지 화면 3개(`badges-screen`, `ranking-screen`, `agent-showcase`)는 이웃 집합이 충분히 달라 threshold 미달로 남았다.
@@ -77,12 +91,12 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 
 **펼치기(확정: 전체 구조 안에서 바로 펼치기)**: `ArchitectureGraph`가 `expandedMemberIds: Set<string>`(원본 컴포넌트 id, 클러스터 id 아님) 로컬 state를 갖는다. 렌더링마다 `computeClusteredArchitectureIR(ir, { excludeFromClustering: expandedMemberIds })`를 다시 호출 — 이미 펼친 컴포넌트는 유사도 계산에서 빠져 원본 그대로 나온다. 클러스터 노드 클릭 시 그 클러스터의 원본 멤버 id를 `expandedMemberIds`에 더한다(클러스터 id 자체가 재호출마다 바뀔 수 있어 안정적인 원본 id로 추적한다). 접기는 그룹별이 아니라 "펼친 항목 접기" 버튼 하나로 전체를 되돌린다(단순화). 클러스터 노드는 클릭해도 `onSelectComponent`(Passport 패널)를 열지 않는다 — 클러스터는 특정 컴포넌트가 아니므로 펼쳐서 개별 노드가 나온 뒤에만 동작한다. 전부 로컬 state라 API 재요청이 없다("탭 전환은 API를 안 부른다"가 "펼치기/접기도 API를 안 부른다"로 확장).
 
-**알려진 한계(이번 패스에서 손대지 않음)**: `ViewerShell`의 "찾기"(finder)는 `ArchitectureView`가 전달하는 원본 컴포넌트 목록 전체를 검색 대상으로 보여준다. 검색 결과를 클릭했을 때 그 컴포넌트가 아직 접힌 클러스터 안에 있으면 `ViewerShell`이 DOM에서 `[data-node-id]`를 찾지 못해 포커스 이동이 조용히 무시된다(에러는 안 남). `ViewerShell`은 focus 상태를 전적으로 내부에서 관리하고(I14) 외부 개입 지점이 없어서, 이걸 고치려면 `ViewerShell`(WorkflowView 등 다른 뷰도 공유)에 focus-intercept 훅을 추가해야 한다 — 이번 클러스터링 패스의 범위를 벗어나 후속 과제로 남긴다.
+**알려진 한계**: `ViewerShell`의 찾기는 원본 컴포넌트 목록 전체를 검색한다. 접힌 클러스터 안의 항목을 선택하면 아직 자동으로 그룹을 펼치지 못한다. 또한 현재 Core 런타임 탐지는 JS/TS package manifest 중심이며, Python/Java/Go의 실행 단위 탐지는 후속 adapter가 필요하다.
 
 ## 유지 / 폐기
 
 **유지**: `computeArchitectureLayout`/`computeWorkflowLayout`의 rank 계산 골격, `edgeRouting.ts`의 port-spread·elbow 라우팅·라벨 겹침 해소, `ViewerShell`의 pan/zoom/finder/radar, Passport 패널 연결(변경 없음).
 
-**신규(이번 v2)**: `layout/architectureComposition.ts`, `components/ArchitectureComposition.tsx`, `ArchitectureView.tsx`의 서브탭 구조, `edgeRouting.ts`의 crossing 최소화/장애물 회피, `workflowLayout.ts`의 `laneSlot`, `layout/architectureClustering.ts`(Jaccard+Union-Find 구조적 클러스터링)와 전체 구조 탭의 펼치기 인터랙션.
+**신규(이번 v2)**: Core `RepositoryTopology`·completeness gate, data asset Evidence와 `data_import`, `ArchitectureIR.viewPlan/layer`, `ProjectOverview.tsx`, 3단계 서브탭, 내용 맞춤 캔버스, 근거를 보존하는 boundary-safe 클러스터링, 실제 우회 경로 기준 edge label 배치.
 
 **후속(다음 v2 단계, 아직 안 함)**: Workflow/Sequence 뷰어의 시각적 리디자인 — 이번 패스는 아키텍처 뷰어에 한정했다. `ViewerShell` 찾기(finder)가 접힌 클러스터 안의 노드를 자동으로 펼쳐서 포커스하도록 하는 것(§4-1의 "알려진 한계" 참고).

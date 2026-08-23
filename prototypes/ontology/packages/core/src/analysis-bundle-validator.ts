@@ -25,22 +25,27 @@ import type {
   ArchitectureIR,
   Diagnostic,
   EvidenceIndex,
+  RepositoryTopology,
   SemanticMemory,
   WorkflowIR,
 } from "@onto/protocol";
 
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
 import { buildEvidenceGraph } from "./trace.js";
+import { assessRepositoryCoverage, detectRepositoryTopology } from "./repository-topology.js";
 
 export type AnalysisBundleValidateInput = {
   bundle: unknown;
   evidence: EvidenceIndex;
   memory: SemanticMemory;
+  /** 있으면 manifest/entrypoint/data asset completeness gate도 수행한다. */
+  projectPath?: string;
 };
 
 export type AnalysisBundleValidateResult = {
   diagnostics: Diagnostic[];
   bundle?: AnalysisBundle;
+  repositoryTopology?: RepositoryTopology;
 };
 
 export function validateAnalysisBundle(input: AnalysisBundleValidateInput): AnalysisBundleValidateResult {
@@ -152,6 +157,47 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     checkConceptRefs(component.conceptRefs ?? [], `${base}/conceptRefs`);
     (component.inputs ?? []).forEach((io, i) => checkComponentIO(io, `${base}/inputs/${i}`));
     (component.outputs ?? []).forEach((io, i) => checkComponentIO(io, `${base}/outputs/${i}`));
+    if (input.projectPath && !component.layer) {
+      diagnostics.push(
+        diagnostic("bundle/component-layer-missing", "warning", `${base}/layer 가 없어 레이아웃이 추론에 의존합니다.`, {
+          subject: { path: `${base}/layer` },
+          supportedFixes: ["actor/interface/service/state/data/external 중 하나를 지정한다"],
+        }),
+      );
+    }
+  }
+
+  if (!architecture.viewPlan) {
+    if (input.projectPath) {
+      diagnostics.push(
+        diagnostic("bundle/view-plan-missing", "warning", "/architecture/viewPlan 이 없어 전체 지도의 읽는 순서와 그룹이 불명확합니다.", {
+          subject: { path: "/architecture/viewPlan" },
+          supportedFixes: ["primaryPath와 groups를 작성한다"],
+        }),
+      );
+    }
+  } else {
+    architecture.viewPlan.primaryPath.forEach((id, index) => {
+      if (!componentIds.has(id)) {
+        diagnostics.push(unknownRef("bundle/unknown-component", `/architecture/viewPlan/primaryPath/${index}`, id, "architecture.components[].id 중 하나를 쓴다"));
+      }
+    });
+    const grouped = new Set<string>();
+    for (const [index, group] of architecture.viewPlan.groups.entries()) {
+      for (const [memberIndex, id] of group.componentIds.entries()) {
+        if (!componentIds.has(id)) {
+          diagnostics.push(unknownRef("bundle/unknown-component", `/architecture/viewPlan/groups/${index}/componentIds/${memberIndex}`, id, "architecture.components[].id 중 하나를 쓴다"));
+        } else if (grouped.has(id)) {
+          diagnostics.push(
+            diagnostic("bundle/component-in-multiple-view-groups", "error", `component "${id}"가 둘 이상의 viewPlan group에 들어 있습니다.`, {
+              subject: { path: `/architecture/viewPlan/groups/${index}/componentIds/${memberIndex}`, id },
+              supportedFixes: ["component를 하나의 group에만 둔다"],
+            }),
+          );
+        }
+        grouped.add(id);
+      }
+    }
   }
 
   const boundaryIds = new Set<string>();
@@ -175,6 +221,15 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     const base = `/architecture/connections/${index} (id: "${connection.id}")`;
     if (connectionIds.has(connection.id)) diagnostics.push(duplicateId(base, connection.id));
     connectionIds.add(connection.id);
+
+    if (input.projectPath && !connection.role) {
+      diagnostics.push(
+        diagnostic("bundle/connection-role-missing", "warning", `${base}/role 이 없어 선의 의미를 구분할 수 없습니다.`, {
+          subject: { path: `${base}/role` },
+          supportedFixes: ["sync/async/data/control 중 하나를 지정한다"],
+        }),
+      );
+    }
 
     for (const [field, value] of [["from", connection.from], ["to", connection.to]] as const) {
       if (componentIds.has(value)) continue;
@@ -211,6 +266,44 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         ),
       );
     });
+  }
+
+  let repositoryTopology: RepositoryTopology | undefined;
+  if (input.projectPath) {
+    repositoryTopology = assessRepositoryCoverage(detectRepositoryTopology(input.projectPath, input.evidence), architecture);
+    const runtimeById = new Map(repositoryTopology.runtimes.map((runtime) => [runtime.id, runtime] as const));
+    const storeById = new Map(repositoryTopology.dataStores.map((store) => [store.id, store] as const));
+    for (const runtimeId of repositoryTopology.coverage.missingRuntimeIds) {
+      const runtime = runtimeById.get(runtimeId);
+      diagnostics.push(
+        diagnostic(
+          "bundle/runtime-not-represented",
+          "error",
+          `탐지된 런타임 "${runtime?.label ?? runtimeId}"의 entrypoint 또는 boundary가 아키텍처에서 빠졌습니다.`,
+          {
+            subject: { runtimeId, rootPath: runtime?.rootPath ?? "" },
+            supportedFixes: ["entrypoint entityRefs를 가진 component를 만들고 이 런타임 전용 boundary에 넣는다"],
+          },
+        ),
+      );
+    }
+    for (const storeId of repositoryTopology.coverage.missingDataStoreIds) {
+      const store = storeById.get(storeId);
+      diagnostics.push(
+        diagnostic("bundle/data-store-not-represented", "error", `탐지된 로컬 데이터 저장소 "${store?.label ?? storeId}"가 아키텍처에서 빠졌습니다.`, {
+          subject: { storeId, rootPath: store?.rootPath ?? "" },
+          supportedFixes: ["저장소 파일의 entityRefs/evidenceRefs를 가진 data layer component를 만든다"],
+        }),
+      );
+    }
+    if (repositoryTopology.coverage.sharedBoundaryRuntimeIds.length > 0) {
+      diagnostics.push(
+        diagnostic("bundle/runtime-boundary-collapsed", "error", "서로 독립적인 실행 런타임이 하나의 boundary에 합쳐져 있습니다.", {
+          subject: { runtimeIds: repositoryTopology.coverage.sharedBoundaryRuntimeIds },
+          supportedFixes: ["런타임마다 별도의 boundary를 만든다"],
+        }),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -380,8 +473,8 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     requireGrounded(sequence.evidenceRefs, base, "bundle/sequence-ungrounded");
   }
 
-  if (hasError(diagnostics)) return { diagnostics };
-  return { diagnostics, bundle };
+  if (hasError(diagnostics)) return { diagnostics, ...(repositoryTopology ? { repositoryTopology } : {}) };
+  return { diagnostics, bundle, ...(repositoryTopology ? { repositoryTopology } : {}) };
 }
 
 function duplicateId(base: string, id: string): Diagnostic {

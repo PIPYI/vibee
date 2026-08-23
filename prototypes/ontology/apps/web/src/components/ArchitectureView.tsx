@@ -15,12 +15,13 @@
  */
 import { useState } from "react";
 
-import type { ArchitectureComponent, ArchitectureIR } from "@onto/protocol";
+import type { ArchitectureComponent, ArchitectureIR, RepositoryTopology } from "@onto/protocol";
 
 import { computeClusteredArchitectureIR } from "../layout/architectureClustering.js";
 import { computeArchitectureLayout } from "../layout/architectureLayout.js";
-import { type Box, type LabelBox, reduceCrossings, resolveLabelOverlaps, routeEdges, routedPathAvoiding } from "../layout/edgeRouting.js";
+import { type Box, type LabelBox, reduceCrossings, resolveLabelOverlaps, routeEdges, routedGeometryAvoiding } from "../layout/edgeRouting.js";
 import { ArchitectureComposition } from "./ArchitectureComposition.js";
+import { ProjectOverview } from "./ProjectOverview.js";
 import { ViewerShell, type ViewerNode } from "./ViewerShell.js";
 
 const COL_WIDTH = 280;
@@ -144,6 +145,14 @@ function ArchitectureGraph({
   const height = MARGIN_Y + maxRows * ROW_HEIGHT + 40;
 
   const routed = new Map(routeEdges(forward, (id) => boxes.get(id)).map((edge) => [edge.key, edge] as const));
+  const geometries = new Map(
+    forwardConnections.flatMap(({ connection, index }) => {
+      const route = routed.get(`c-${index}`);
+      if (!route) return [];
+      const obstacles = [...boxes.values()].filter((box) => box.id !== connection.from && box.id !== connection.to);
+      return [[`c-${index}`, routedGeometryAvoiding(route.fromPort, route.toPort, obstacles)] as const];
+    }),
+  );
 
   // v2: 라벨끼리 겹치면(특히 같은 rank 쌍을 잇는 여러 연결의 라벨이 한 자리에 몰리는 경우)
   // 위아래로 밀어낸다 — WorkflowView.tsx가 이미 하던 것과 같은 패턴(resolveLabelOverlaps).
@@ -152,8 +161,10 @@ function ArchitectureGraph({
       if (!connection.label) return null;
       const route = routed.get(`c-${index}`);
       if (!route) return null;
-      const cx = (route.fromPort.x + route.toPort.x) / 2;
-      const cy = (route.fromPort.y + route.toPort.y) / 2 - 6;
+      const point = geometries.get(`c-${index}`)?.labelPoint;
+      if (!point) return null;
+      const cx = point.x;
+      const cy = point.y - 6;
       return { key: `c-${index}`, cx, cy, text: connection.label };
     })
     .filter((l): l is { key: string; cx: number; cy: number; text: string } => l !== null);
@@ -225,18 +236,19 @@ function ArchitectureGraph({
             }
             const route = routed.get(`c-${index}`);
             if (!route) return null;
-            const obstacles = [...boxes.values()].filter((box) => box.id !== connection.from && box.id !== connection.to);
-            const cx = (route.fromPort.x + route.toPort.x) / 2;
-            const cy = (route.fromPort.y + route.toPort.y) / 2 - 6 + (labelOffsets.get(`c-${index}`) ?? 0);
+            const geometry = geometries.get(`c-${index}`);
+            if (!geometry) return null;
+            const cx = geometry.labelPoint.x;
+            const cy = geometry.labelPoint.y - 6 + (labelOffsets.get(`c-${index}`) ?? 0);
             return (
               <g key={connection.id} data-edge-from={connection.from} data-edge-to={connection.to}>
                 <path
-                  d={routedPathAvoiding(route.fromPort, route.toPort, obstacles)}
+                  d={geometry.path}
                   className={`edge arch-edge-${connection.role ?? "sync"}`}
                   markerEnd="url(#arch-arrow)"
                 />
                 {connection.label && (
-                  <g data-detail="context">
+                  <g data-detail="context" className="arch-edge-label">
                     {connection.role && <title>{ROLE_LABEL[connection.role] ?? connection.role}</title>}
                     <EdgeLabel cx={cx} cy={cy} text={connection.label} />
                   </g>
@@ -288,18 +300,20 @@ function ArchitectureGraph({
   );
 }
 
-type ArchitectureSubtab = "composition" | "structure";
+type ArchitectureSubtab = "overview" | "composition" | "structure";
 
 export function ArchitectureView({
   ir,
+  topology,
   viewKey,
   onSelectComponent,
 }: {
   ir: ArchitectureIR;
+  topology?: RepositoryTopology;
   viewKey: string;
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
-  const [subtab, setSubtab] = useState<ArchitectureSubtab>("composition");
+  const [subtab, setSubtab] = useState<ArchitectureSubtab>("overview");
 
   const nodes: ViewerNode[] = ir.components.map((c) => ({
     id: c.id,
@@ -312,16 +326,21 @@ export function ArchitectureView({
       <div className="architecture-view-head">
         <h2>{ir.title}</h2>
         <nav className="arch-subtab-switch" role="tablist" aria-label="아키텍처 보기 방식">
+          <button type="button" role="tab" aria-selected={subtab === "overview"} onClick={() => setSubtab("overview")}>
+            프로젝트 한눈에
+          </button>
           <button type="button" role="tab" aria-selected={subtab === "composition"} onClick={() => setSubtab("composition")}>
-            구성 개요
+            구성요소
           </button>
           <button type="button" role="tab" aria-selected={subtab === "structure"} onClick={() => setSubtab("structure")}>
-            전체 구조
+            관계 상세
           </button>
         </nav>
       </div>
 
-      {subtab === "composition" ? (
+      {subtab === "overview" ? (
+        <ProjectOverview ir={ir} topology={topology} onSelectComponent={onSelectComponent} />
+      ) : subtab === "composition" ? (
         <ArchitectureComposition ir={ir} onSelectComponent={onSelectComponent} />
       ) : (
         <ViewerShell viewKind="architecture" viewKey={viewKey} nodes={nodes}>

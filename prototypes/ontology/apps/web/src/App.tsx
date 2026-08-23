@@ -67,6 +67,16 @@ export function App(): React.JSX.Element {
       if (s.projectPath) {
         setProjectPath(s.projectPath);
         setProjectPathInput(s.projectPath);
+        setScreen("indexing");
+        void api.fetchAnalysisBundle(s.projectPath).then((result) => {
+          if ("error" in result) {
+            setBundle(null);
+            setScreen("ready");
+            return;
+          }
+          setBundle(result.bundle);
+          setScreen("analyzed");
+        });
       }
     });
   }, []);
@@ -331,10 +341,10 @@ export function App(): React.JSX.Element {
             <section className="view-pane analyzed-pane">
               <nav className="tab-switch" role="tablist" aria-label="분석 결과 탭">
                 <button type="button" role="tab" aria-selected={tab === "architecture"} onClick={() => selectTab("architecture")}>
-                  아키텍처
+                  프로젝트 지도
                 </button>
                 <button type="button" role="tab" aria-selected={tab === "workflow"} onClick={() => selectTab("workflow")}>
-                  워크플로우
+                  사용자 흐름
                 </button>
               </nav>
               {bundle.freshness === "needs_review" && (
@@ -345,6 +355,7 @@ export function App(): React.JSX.Element {
               {tab === "architecture" && (
                 <ArchitectureView
                   ir={bundle.architecture}
+                  topology={bundle.repositoryTopology}
                   viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`}
                   onSelectComponent={(id) => {
                     setSequenceView(null);

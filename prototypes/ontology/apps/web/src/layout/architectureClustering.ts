@@ -59,6 +59,9 @@ export function computeClusteredArchitectureIR(
   const exclude = opts.excludeFromClustering ?? new Set<string>();
   const layout = computeArchitectureLayout(ir);
   const componentById = new Map(ir.components.map((c) => [c.id, c]));
+  const boundaryByComponent = new Map<string, string>();
+  for (const component of ir.components) if (component.boundaryId) boundaryByComponent.set(component.id, component.boundaryId);
+  for (const boundary of ir.boundaries) for (const id of boundary.wraps) boundaryByComponent.set(id, boundary.id);
 
   const neighborSet = new Map<string, Set<string>>();
   for (const c of ir.components) neighborSet.set(c.id, new Set());
@@ -68,16 +71,27 @@ export function computeClusteredArchitectureIR(
     neighborSet.get(conn.to)?.add(conn.from);
   }
 
-  const byTier = new Map<ArchitectureTier, string[]>();
-  for (const c of ir.components) {
-    if (exclude.has(c.id)) continue;
-    const rank = layout.positions.get(c.id)?.rank ?? 0;
-    const tier = tierOf(rank);
-    if (!byTier.has(tier)) byTier.set(tier, []);
-    byTier.get(tier)!.push(c.id);
+  const uf = new UnionFind();
+  const forcedGroups = (ir.viewPlan?.groups ?? [])
+    .map((group) => ({ ...group, componentIds: group.componentIds.filter((id) => componentById.has(id) && !exclude.has(id)) }))
+    .filter((group) => group.componentIds.length >= MIN_CLUSTER_SIZE);
+  const forcedMembers = new Set(forcedGroups.flatMap((group) => group.componentIds));
+  for (const group of forcedGroups) {
+    const first = group.componentIds[0]!;
+    group.componentIds.slice(1).forEach((id) => uf.union(first, id));
   }
 
-  const uf = new UnionFind();
+  // 자동 유사도 클러스터링은 같은 boundary와 같은 의미 layer 안에서만 허용한다.
+  const byTier = new Map<string, string[]>();
+  for (const c of ir.components) {
+    if (exclude.has(c.id) || forcedMembers.has(c.id)) continue;
+    const rank = layout.positions.get(c.id)?.rank ?? 0;
+    const tier = tierOf(rank);
+    const key = `${boundaryByComponent.get(c.id) ?? "unbounded"}|${c.layer ?? tier}`;
+    if (!byTier.has(key)) byTier.set(key, []);
+    byTier.get(key)!.push(c.id);
+  }
+
   for (const ids of byTier.values()) {
     const sorted = [...ids].sort();
     for (let i = 0; i < sorted.length; i += 1) {
@@ -91,25 +105,23 @@ export function computeClusteredArchitectureIR(
   }
 
   const groupsByRoot = new Map<string, string[]>();
-  for (const ids of byTier.values()) {
-    for (const id of ids) {
-      const root = uf.find(id);
-      if (!groupsByRoot.has(root)) groupsByRoot.set(root, []);
-      groupsByRoot.get(root)!.push(id);
-    }
+  const candidates = new Set<string>([...forcedMembers, ...[...byTier.values()].flat()]);
+  for (const id of candidates) {
+    const root = uf.find(id);
+    if (!groupsByRoot.has(root)) groupsByRoot.set(root, []);
+    groupsByRoot.get(root)!.push(id);
   }
 
   const idToClusterId = new Map<string, string>();
   const clusters = new Map<string, ArchitectureComponent[]>();
   const clusterComponents: ArchitectureComponent[] = [];
   const sortedRoots = [...groupsByRoot.keys()].sort();
-  let clusterSeq = 0;
   for (const root of sortedRoots) {
     const members = [...groupsByRoot.get(root)!].sort();
     if (members.length < MIN_CLUSTER_SIZE) continue;
     const tier = tierOf(layout.positions.get(members[0]!)?.rank ?? 0);
-    const clusterId = `cluster:${tier}:${clusterSeq}`;
-    clusterSeq += 1;
+    const authoredGroup = forcedGroups.find((group) => group.componentIds.every((id) => members.includes(id)));
+    const clusterId = authoredGroup ? `cluster:group:${authoredGroup.id}` : `cluster:${tier}:${root}`;
     const memberComponents = members.map((id) => componentById.get(id)).filter((c): c is ArchitectureComponent => Boolean(c));
     clusters.set(clusterId, memberComponents);
     for (const id of members) idToClusterId.set(id, clusterId);
@@ -122,10 +134,17 @@ export function computeClusteredArchitectureIR(
 
     clusterComponents.push({
       id: clusterId,
-      label: `${TIER_LABEL[tier]} ${members.length}개`,
+      label: authoredGroup?.label ?? `${TIER_LABEL[tier]} ${members.length}개`,
       presentationType,
-      entityRefs: [],
-      evidenceRefs: [],
+      ...(memberComponents.every((component) => component.layer === memberComponents[0]?.layer) && memberComponents[0]?.layer
+        ? { layer: memberComponents[0].layer }
+        : {}),
+      ...(memberComponents.every((component) => component.boundaryId === memberComponents[0]?.boundaryId) && memberComponents[0]?.boundaryId
+        ? { boundaryId: memberComponents[0].boundaryId }
+        : {}),
+      entityRefs: [...new Set(memberComponents.flatMap((component) => component.entityRefs))].sort(),
+      evidenceRefs: [...new Set(memberComponents.flatMap((component) => component.evidenceRefs))].sort(),
+      conceptRefs: [...new Set(memberComponents.flatMap((component) => component.conceptRefs ?? []))].sort(),
     });
   }
 
@@ -133,28 +152,37 @@ export function computeClusteredArchitectureIR(
   const passthroughComponents = ir.components.filter((c) => !idToClusterId.has(c.id));
   const newComponents = [...passthroughComponents, ...clusterComponents];
 
-  const connectionLabels = new Map<string, Set<string>>();
+  const connectionGroups = new Map<string, ArchitectureConnection[]>();
   for (const conn of ir.connections) {
     const from = resolvedId(conn.from);
     const to = resolvedId(conn.to);
     if (from === to) continue;
     const key = `${from}->${to}`;
-    if (!connectionLabels.has(key)) connectionLabels.set(key, new Set());
-    if (conn.label) connectionLabels.get(key)!.add(conn.label);
+    if (!connectionGroups.has(key)) connectionGroups.set(key, []);
+    connectionGroups.get(key)!.push(conn);
   }
 
-  const newConnections: ArchitectureConnection[] = [...connectionLabels.entries()]
+  const newConnections: ArchitectureConnection[] = [...connectionGroups.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([key, labelSet]) => {
+    .map(([key, connections]) => {
       const [from, to] = key.split("->") as [string, string];
-      const labels = [...labelSet].sort();
+      const labels = [...new Set(connections.map((connection) => connection.label).filter((label): label is string => Boolean(label)))].sort();
       const label =
         labels.length === 0
           ? undefined
           : labels.length <= MAX_MERGED_LABELS
             ? labels.join(" · ")
             : `${labels.slice(0, MAX_MERGED_LABELS).join(" · ")} 외 ${labels.length - MAX_MERGED_LABELS}`;
-      return { id: `merged:${key}`, from, to, ...(label ? { label } : {}), traceLinkRefs: [], evidenceRefs: [] };
+      const roles = [...new Set(connections.map((connection) => connection.role).filter((role): role is NonNullable<ArchitectureConnection["role"]> => Boolean(role)))];
+      return {
+        id: `merged:${key}`,
+        from,
+        to,
+        ...(label ? { label } : {}),
+        ...(roles.length === 1 ? { role: roles[0]! } : {}),
+        traceLinkRefs: [...new Set(connections.flatMap((connection) => connection.traceLinkRefs))].sort(),
+        evidenceRefs: [...new Set(connections.flatMap((connection) => connection.evidenceRefs))].sort(),
+      };
     });
 
   const newBoundaries = ir.boundaries.map((b) => ({ ...b, wraps: [...new Set(b.wraps.map(resolvedId))] }));

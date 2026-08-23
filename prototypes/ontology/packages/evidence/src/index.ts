@@ -1,4 +1,4 @@
-export { indexProject, type IndexOptions } from "./indexer.js";
+export { indexProject, isDataAssetFile, type IndexOptions } from "./indexer.js";
 export {
   buildWorkSet,
   carryMissingEvidence,

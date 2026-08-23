@@ -779,6 +779,12 @@ export type PresentationType =
   | "unknown";
 
 /**
+ * Architecture에서의 설명 역할. 배치 결과인 rank와 의미 역할을 분리한다.
+ * `presentationType`은 시각적 기술 분류, `layer`는 독자가 읽는 구조적 층이다.
+ */
+export type ArchitectureLayer = "actor" | "interface" | "service" | "state" | "data" | "external";
+
+/**
  * schema3 §3.1 — Architecture/Workflow 컴포넌트의 in/out 요소.
  *
  * 예: `{ label: "GET /api/bookings", kind: "route", direction: "in" }`.
@@ -800,6 +806,8 @@ export type ArchitectureComponent = {
   label: string;
   sublabel?: string;
   presentationType: PresentationType;
+  /** 저장소 지도에서의 의미적 층. 없으면 레거시 번들로 취급해 렌더러가 안전하게 추정한다. */
+  layer?: ArchitectureLayer;
   presentationTypeConfidence?: number;
   boundaryId?: string;
   /** SemanticConcept.id (있으면) */
@@ -836,11 +844,68 @@ export type ArchitectureConnection = {
   evidenceRefs: string[];
 };
 
+export type ArchitectureViewGroup = {
+  id: string;
+  label: string;
+  componentIds: string[];
+  /** 프로젝트 지도에서는 접고, 상세 관계에서만 펼칠 그룹인가. */
+  collapsedByDefault?: boolean;
+};
+
+/** AI는 픽셀이 아니라 이야기의 우선순위와 의미 그룹만 저작한다. */
+export type ArchitectureViewPlan = {
+  primaryPath: string[];
+  groups: ArchitectureViewGroup[];
+};
+
 export type ArchitectureIR = {
   title: string;
   components: ArchitectureComponent[];
   boundaries: ArchitectureBoundary[];
   connections: ArchitectureConnection[];
+  viewPlan?: ArchitectureViewPlan;
+};
+
+// ---------------------------------------------------------------------------
+// Repository Topology — Core가 결정론적으로 만들고 AnalysisBundle에 찍는 저장소 골격
+// ---------------------------------------------------------------------------
+
+export type RepositoryRuntimeKind = "mobile-app" | "web-app" | "service" | "application";
+
+export type RepositoryRuntime = {
+  id: string;
+  label: string;
+  rootPath: string;
+  manifestPath: string;
+  kind: RepositoryRuntimeKind;
+  entrypointRefs: string[];
+  evidenceRefs: string[];
+};
+
+export type RepositoryDataStore = {
+  id: string;
+  label: string;
+  rootPath: string;
+  runtimeId?: string;
+  format: string;
+  entityRefs: string[];
+  evidenceRefs: string[];
+};
+
+export type RepositoryCoverage = {
+  detectedRuntimeCount: number;
+  representedRuntimeCount: number;
+  detectedDataStoreCount: number;
+  representedDataStoreCount: number;
+  missingRuntimeIds: string[];
+  missingDataStoreIds: string[];
+  sharedBoundaryRuntimeIds: string[];
+};
+
+export type RepositoryTopology = {
+  runtimes: RepositoryRuntime[];
+  dataStores: RepositoryDataStore[];
+  coverage: RepositoryCoverage;
 };
 
 /** schema3 §3.3. */
@@ -928,5 +993,7 @@ export type AnalysisBundle = {
   architecture: ArchitectureIR;
   workflow: WorkflowIR;
   sequences: SequenceIR[];
+  /** agent 입력이 아니라 Core가 저장소와 최종 Architecture를 대조해 커밋 시점에 만든다. */
+  repositoryTopology?: RepositoryTopology;
   freshness: ViewFreshness;
 };

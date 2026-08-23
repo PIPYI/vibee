@@ -22,6 +22,9 @@ import {
   buildEvidenceGraph,
   commitAnalysisBundle,
   commitPatch,
+  describeRepositoryTopology,
+  detectRepositoryTopology,
+  assessRepositoryCoverage,
   hasError,
   initialProjectState,
   projectReachability,
@@ -603,7 +606,12 @@ async function runAnalyzePipeline(
   // Stage 2가 방금 커밋한 semantic memory를 반영한 최신 상태에서 골격을 다시 만든다.
   const head = new SemanticStore(projectPath).load();
   const skeleton = buildEvidenceGraph(head.evidence);
-  const stage3Prompt = buildAssemblyPrompt(projectPath, buildSkeletonSummary(skeleton));
+  const topology = detectRepositoryTopology(projectPath, head.evidence);
+  const stage3Prompt = buildAssemblyPrompt(
+    projectPath,
+    buildSkeletonSummary(skeleton),
+    describeRepositoryTopology(topology),
+  );
 
   state.updateTask(taskId, { mode: "assembly", prompt: stage3Prompt });
 
@@ -888,11 +896,12 @@ app.get("/api/views/:id", (req: Request, res: Response) => {
 /**
  * AnalysisBundle 읽기 (schema3 §5.4).
  *
- * **HEAD generation의 `analysis-bundle.json`을 읽기만 한다 — LLM turn을 절대 열지 않는다.**
+ * **HEAD generation의 `analysis-bundle.json`을 읽고 LLM turn을 절대 열지 않는다.**
  * 탭을 전환할 때마다(아키텍처 ↔ 워크플로우) 매번 여기를 부르더라도 재분석이 일어나지 않는다는
  * 것이 이 엔드포인트가 존재하는 이유다. freshness는 `withCurrentFreshness`와 같은 이유로
  * **읽는 시점에 다시 계산한다** — 커밋 당시 "current"로 찍혔더라도 그 뒤 재인덱싱이 있었으면
- * 여기서 "needs_review"로 바뀐다.
+ * 여기서 "needs_review"로 바뀐다. RepositoryTopology가 없는 레거시 bundle에 한해서는 현재
+ * 파일을 메모리에서만 재인덱싱해 coverage 영수증을 만들어 준다(커밋·버전 증가 없음).
  */
 app.get("/api/analysis-bundle", (req: Request, res: Response) => {
   let projectPath: string;
@@ -916,7 +925,17 @@ app.get("/api/analysis-bundle", (req: Request, res: Response) => {
 
   const freshness =
     head.project.semanticReconciledAnalysisVersion >= head.project.analysisVersion ? "current" : "needs_review";
-  res.json({ bundle: { ...head.analysisBundle, freshness } });
+  const repositoryTopology = head.analysisBundle.repositoryTopology ?? (() => {
+    const transientEvidence = indexProject(projectPath, {
+      analysisVersion: head.project.analysisVersion,
+      includeTests: false,
+    });
+    return assessRepositoryCoverage(
+      detectRepositoryTopology(projectPath, transientEvidence),
+      head.analysisBundle!.architecture,
+    );
+  })();
+  res.json({ bundle: { ...head.analysisBundle, repositoryTopology, freshness } });
 });
 
 // ---------------------------------------------------------------------------

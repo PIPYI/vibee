@@ -277,10 +277,18 @@ const ASSEMBLY_RULES = [
   "3. 좌표(x/y)를 넣지 마라. layout은 렌더러가 계산한다 (A7).",
   "4. presentationType 은 화면 표시용 분류일 뿐이다(schema3 §4) — 확신이 없으면 \"unknown\"",
   "   을 쓴다. 틀려도 Core identity 에는 영향이 없다.",
-  "5. 해석 가치가 있는 workflow.edges 에만 SequenceIR 을 만든다 — 모든 edge 에 만들 필요는",
+  "5. 모든 architecture.component 에 layer(actor/interface/service/state/data/external)를, 모든",
+  "   connection 에 role(sync/async/data/control)을 넣는다. 이는 레이아웃과 범례의 입력이다.",
+  "6. 독립 실행 런타임은 서로 다른 boundary로 표현한다. 하나의 boundary에 여러 런타임을",
+  "   합치지 말고, 각 런타임의 entrypoint와 로컬 데이터 저장소를 적어도 한 component의",
+  "   entityRefs/evidenceRefs로 포함한다. 누락하면 Core가 제출을 거절한다.",
+  "7. 전체 지도는 6~12개의 거시 component가 중심이어야 한다. 화면·훅·작은 모듈을 같은",
+  "   수준으로 늘어놓지 말고 viewPlan.groups로 묶는다. primaryPath에는 사용자가 처음 읽을",
+  "   3~7개의 component id를 순서대로 넣는다.",
+  "8. 해석 가치가 있는 workflow.edges 에만 SequenceIR 을 만든다 — 모든 edge 에 만들 필요는",
   "   없다. edge.sequenceRef 와 그 SequenceIR.triggeredByEdgeId 는 반드시 서로를 가리켜야",
   "   한다(1엣지-1시퀀스, schema3 §3.4) — 어긋나면 거절된다.",
-  "6. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
+  "9. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
 ].join("\n");
 
 /**
@@ -290,7 +298,7 @@ const ASSEMBLY_RULES = [
  * 골격을 입력으로 "클러스터링 + 라벨링 + 역할 부여"만 지시한다 — 구조 자체를 상상하게
  * 하지 않는다(§5.2 R4의 정신을 Assembly로 확장한 것).
  */
-export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string): string {
+export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string, topologySummary: string): string {
   return [
     "지금까지 만든 Semantic Memory와 Evidence 골격을 클러스터링·라벨링해서 " +
       "ArchitectureIR + WorkflowIR + SequenceIR 한 벌(AnalysisBundle)을 만든다.",
@@ -301,6 +309,11 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     skeletonSummary,
     "```",
     "",
+    "## Core가 탐지한 저장소 토폴로지 (반드시 모두 표현)",
+    "```",
+    topologySummary,
+    "```",
+    "",
     "순서:",
     "1. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다.",
     "2. 각 CanonicalScenario 또는 중요한 Concept 의 anchor 에 대해 get_impact_context 나",
@@ -308,14 +321,17 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     "3. architecture.components 를 만든다. 각 component 는 entityRefs 로 실제 골격 entity를",
     "   하나 이상 가리켜야 하고, evidenceRefs 는 그 entity 들의 근거를 합친 것이다.",
     "   description 을 쓰려면 evidenceRefs 가 반드시 있어야 한다(I9).",
-    "4. architecture.connections 를 만든다 — traceLinkRefs 에 2번에서 확인한 골격 link 의",
+    "4. Core 토폴로지의 런타임별로 boundary를 만들고 entrypoint·로컬 데이터 저장소가",
+    "   component.entityRefs에 들어갔는지 확인한다. 화면은 기능별 group으로 압축하고",
+    "   architecture.viewPlan에 primaryPath와 groups를 만든다.",
+    "5. architecture.connections 를 만든다 — traceLinkRefs 에 2번에서 확인한 골격 link 의",
     "   evidenceRefs 를 넣는다.",
-    "5. workflow.nodes/edges 를 만든다. workflow.edges 의 label 은 사용자에게 보이는 문장으로",
+    "6. workflow.nodes/edges 를 만든다. workflow.edges 의 label 은 사용자에게 보이는 문장으로",
     "   쓰고, 여러 용어를 다룰 때는 가운데점(·)으로 잇는다(예: \"위치 · 추천 조회\").",
     "   labelTerms 에는 그 용어들을 배열로도 넣는다.",
-    "6. 해석 가치가 있는 workflow.edges 마다 그 구간을 SequenceIR 로 펼쳐 sequences 에",
+    "7. 해석 가치가 있는 workflow.edges 마다 그 구간을 SequenceIR 로 펼쳐 sequences 에",
     "   추가하고, edge.sequenceRef 와 SequenceIR.triggeredByEdgeId 를 서로 맞춘다.",
-    "7. submit_analysis_bundle 로 { architecture, workflow, sequences } 를 제출한다.",
+    "8. submit_analysis_bundle 로 { architecture, workflow, sequences } 를 제출한다.",
     "",
     ASSEMBLY_RULES,
   ].join("\n");

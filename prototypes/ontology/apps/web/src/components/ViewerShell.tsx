@@ -63,15 +63,36 @@ export function ViewerShell({
   const drag = useRef<{ startX: number; startY: number; panX: number; panY: number; moved: boolean } | null>(null);
   const restoredKeyRef = useRef<string | null>(null);
 
+  const fitToContent = useCallback(() => {
+    const container = canvasRef.current;
+    const svg = container?.querySelector("svg");
+    if (!container || !svg) {
+      setScale(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const size = naturalSize(svg);
+    const padding = 32;
+    const nextScale = Math.max(
+      MIN_SCALE,
+      Math.min(1, (container.clientWidth - padding * 2) / size.width, (container.clientHeight - padding * 2) / size.height),
+    );
+    setScale(nextScale);
+    setPan({
+      x: (container.clientWidth - size.width * nextScale) / 2,
+      y: (container.clientHeight - size.height * nextScale) / 2,
+    });
+  }, []);
+
   // 뷰가 바뀌면(다른 시나리오/다른 anchor) 상호작용 상태를 리셋한다.
   useEffect(() => {
-    setScale(1);
-    setPan({ x: 0, y: 0 });
     setFocusId(null);
     setRadarOpen(false);
     setFinderOpen(false);
     setFinderQuery("");
-  }, [viewKey]);
+    const frame = requestAnimationFrame(fitToContent);
+    return () => cancelAnimationFrame(frame);
+  }, [viewKey, fitToContent]);
 
   // 딥링크 복원: `#view=<kind>&focus=<id>` — 이 뷰가 이미 화면에 그려진 뒤 한 번만.
   useEffect(() => {
@@ -143,9 +164,8 @@ export function ViewerShell({
   }, []);
 
   const reset = useCallback(() => {
-    setScale(1);
-    setPan({ x: 0, y: 0 });
-  }, []);
+    fitToContent();
+  }, [fitToContent]);
 
   const centerOnNode = useCallback(
     (id: string, targetScale?: number) => {
@@ -299,7 +319,7 @@ export function ViewerShell({
         <button type="button" onClick={() => zoomTo(scale - ZOOM_STEP)} disabled={scale <= MIN_SCALE} title="축소 (-)">
           −
         </button>
-        <button type="button" className="viewer-zoom-reset" onClick={reset} title="리셋 (0)">
+        <button type="button" className="viewer-zoom-reset" onClick={reset} title="화면에 맞춤 (0)">
           {Math.round(scale * 100)}%
         </button>
         <button type="button" onClick={() => zoomTo(scale + ZOOM_STEP)} disabled={scale >= MAX_SCALE} title="확대 (+)">
