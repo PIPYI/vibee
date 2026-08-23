@@ -30,13 +30,18 @@ import {
   type AgentReadiness,
   type ModelOption,
   type SessionSummary,
+  type TranscriptMessage,
 } from "@byoa/protocol";
 
 import { cliSpawnOptions } from "../../platform.js";
 import { describeSession } from "../../prompt.js";
+import { READ_ONLY_TOOLS, isReadOnlyMode, needsReadTools } from "../types.js";
 import type { AgentAdapter, StartTaskInput, TaskMode, TaskOutcome } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Codex adapter의 ALL_MODES와 같은 이유로 둔다. */
+const ALL_MODES: readonly TaskMode[] = ["task", "interview", "review", "wiki"];
 
 /** 세션 캐시 키. mode가 다르면 다른 대화다 (Codex adapter의 threadKey와 같은 이유). */
 function sessionKey(projectPath: string, mode: TaskMode): string {
@@ -137,7 +142,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const canUseTool: CanUseTool = (toolName, toolInput) =>
       Promise.resolve(this.evaluateToolUse(toolName, toolInput, input.projectPath, input.taskId, emit));
 
-    const interview = input.mode === "interview";
+    const readOnly = isReadOnlyMode(input.mode);
     const resumeFrom = this.sessionByProject.get(sessionKey(input.projectPath, input.mode));
 
     const stream = query({
@@ -145,15 +150,20 @@ export class ClaudeAdapter implements AgentAdapter {
       options: {
         cwd: input.projectPath,
         mcpServers,
-        // 인터뷰는 대화지 작업이 아니다. 내장 도구를 전부 끄면 Task(하위 에이전트)·Read·Bash가
-        // 사라지고 MCP tool 네 개만 남는다 — 인터뷰에 필요한 건 그게 전부다.
+        // 인터뷰도 리뷰도 대화지 작업이 아니다. 내장 도구를 전부 끄면 Task(하위 에이전트)·
+        // Read·Bash가 사라지고 MCP tool만 남는다 — 둘 다 필요한 건 그게 전부다.
+        // 리뷰가 볼 diff는 우리가 get_review_context로 넘기므로 셸이 필요 없다.
         // 이렇게 두지 않으면 프로젝트에 놓인 하네스를 읽고 앱을 만들기 시작한다
         // (SPIKE_FINDINGS.md §14).
-        ...(interview ? { tools: [] } : {}),
+        ...(needsReadTools(input.mode)
+          ? { tools: [...READ_ONLY_TOOLS] }
+          : readOnly
+            ? { tools: [] }
+            : {}),
         // CLAUDE.md는 `settingSources`에 "project"가 있을 때만 로드된다. 생략하면 CLI처럼
-        // 전부 로드하므로, 인터뷰에서는 명시적으로 비운다. 그 CLAUDE.md는 [4] 인계 산출물이지
-        // 인터뷰의 규칙이 아니다.
-        ...(interview ? { settingSources: [] } : {}),
+        // 전부 로드하므로, 코드를 쓰지 않는 mode에서는 명시적으로 비운다. 그 CLAUDE.md는
+        // [4] 인계 산출물이지 인터뷰의 규칙도 리뷰의 기준도 아니다.
+        ...(readOnly ? { settingSources: [] } : {}),
         // 생략하면 SDK가 사용자의 기본 모델을 쓴다.
         model: input.model,
         // 값은 `listModels()`가 신고한 이 모델의 effort 목록에서 온 것이므로 그대로 넘긴다.
@@ -180,8 +190,14 @@ export class ClaudeAdapter implements AgentAdapter {
         if (message.type === "result") {
           if (message.subtype === "success" && !message.is_error) return "completed";
           if (abortController.signal.aborted) return "interrupted";
-          // SDKResultError는 사람이 읽을 메시지를 따로 싣지 않는다. subtype이 유일한 사유다.
-          throw new Error(`Claude turn failed: ${message.subtype}`);
+          // subtype만 실으면 진단이 안 된다 — `subtype: "success"`인데 `is_error`가 참인
+          // 경우가 실제로 있었고, 그때 "Claude turn failed: success"만 남아 원인을 알 수
+          // 없었다. SDK가 무엇을 실어 보내든 그대로 남긴다.
+          const detail =
+            typeof (message as { result?: unknown }).result === "string"
+              ? (message as { result: string }).result
+              : JSON.stringify(message).slice(0, 600);
+          throw new Error(`Claude turn failed (${message.subtype}): ${detail}`);
         }
       }
       // result 메시지 없이 스트림이 끝나는 것은 비정상이다.
@@ -238,10 +254,36 @@ export class ClaudeAdapter implements AgentAdapter {
     this.sessionByProject.set(sessionKey(projectPath, "interview"), sessionId);
   }
 
+  /**
+   * 이 프로젝트의 대화 전문. `listSessions`와 같은 파일을 읽되 첫 줄이 아니라 전부 읽는다.
+   *
+   * **우리 앱이 시작한 대화만이 아니다.** 사용자가 옆 창에서 바이브코딩한 세션도 같은
+   * 디렉터리에 남으므로 함께 읽힌다 — 위키가 알고 싶어 하는 말은 대개 그쪽에서 나온다.
+   */
+  async readTranscript(projectPath: string): Promise<TranscriptMessage[]> {
+    const dir = join(homedir(), ".claude", "projects", encodeProjectDir(projectPath));
+    let entries: string[];
+    try {
+      entries = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
+    } catch {
+      return [];
+    }
+
+    // 최근 것부터 상한까지만. 대화가 쌓여도 비용이 선형으로만 늘게 한다.
+    const withTime = await Promise.all(
+      entries.map(async (name) => ({ name, at: (await stat(join(dir, name))).mtimeMs })),
+    );
+    const recent = withTime.sort((a, b) => b.at - a.at).slice(0, MAX_TRANSCRIPT_FILES);
+
+    const messages: TranscriptMessage[] = [];
+    for (const { name } of recent) messages.push(...(await readSessionMessages(join(dir, name))));
+    return messages;
+  }
+
   /** 이 프로젝트에서 지금 물고 있는 session id들 (mode별로 하나씩). */
   private heldSessions(projectPath: string): Set<string> {
     const held = new Set<string>();
-    for (const mode of ["task", "interview"] as const) {
+    for (const mode of ALL_MODES) {
       const id = this.sessionByProject.get(sessionKey(projectPath, mode));
       if (id) held.add(id);
     }
@@ -255,7 +297,7 @@ export class ClaudeAdapter implements AgentAdapter {
   resetSession(projectPath: string): void {
     // session_id 참조만 버린다. 세션 파일은 ~/.claude/projects에 그대로 남아
     // `claude --resume`으로 이어받을 수 있다.
-    for (const mode of ["task", "interview"] as const) {
+    for (const mode of ALL_MODES) {
       this.sessionByProject.delete(sessionKey(projectPath, mode));
     }
   }
@@ -417,6 +459,46 @@ async function firstUserMessage(path: string): Promise<string> {
     reader.close();
   }
   return "(빈 대화)";
+}
+
+/** 위키 키워드를 뽑을 때 훑을 세션 파일 수 상한. */
+const MAX_TRANSCRIPT_FILES = 10;
+
+/**
+ * 세션 파일 하나의 사용자·에이전트 발화를 전부 뽑는다.
+ *
+ * tool_use / tool_result 블록은 버린다 — 거기 담긴 것은 파일 내용과 명령 출력이라
+ * 키워드로 뽑으면 식별자와 로그가 쏟아진다. 사람이 읽은 것은 텍스트 블록뿐이다.
+ */
+async function readSessionMessages(path: string): Promise<TranscriptMessage[]> {
+  const reader = createInterface({ input: createReadStream(path, "utf8"), crlfDelay: Infinity });
+  const messages: TranscriptMessage[] = [];
+  try {
+    for await (const line of reader) {
+      let entry: { type?: string; message?: { content?: unknown } };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry.type !== "user" && entry.type !== "assistant") continue;
+
+      const content = entry.message?.content;
+      const text =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content
+                .filter((block) => typeof block === "object" && block && (block as { type?: string }).type === "text")
+                .map((block) => String((block as { text?: unknown }).text ?? ""))
+                .join(" ")
+            : "";
+      if (text.trim()) messages.push({ role: entry.type === "user" ? "user" : "agent", text: text.trim() });
+    }
+  } finally {
+    reader.close();
+  }
+  return messages;
 }
 
 /** 프롬프트를 하나도 보내지 않는 입력 스트림. listModels가 turn 없이 control 채널만 열 때 쓴다. */

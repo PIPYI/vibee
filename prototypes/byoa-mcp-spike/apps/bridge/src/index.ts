@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -27,10 +27,21 @@ import {
   type ExportDesignRequest,
   type InterviewMessageRequest,
   type ModelOption,
+  type ReportDriftInput,
   type ResumeSessionRequest,
   type ResetSessionRequest,
+  type ReviewCommit,
+  type ReviewCriterion,
+  type ReviewLog,
+  type ReviewStart,
   type ShowResultInput,
+  type StartReviewRequest,
   type StartTaskRequest,
+  type StartWikiKeywordsRequest,
+  type StartWikiRequest,
+  type WikiKeyword,
+  type WikiPage,
+  type WikiPageInput,
 } from "@byoa/protocol";
 import { fixturePath, loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
 
@@ -47,7 +58,14 @@ import {
   suggestFirstPrompt,
   validateDesign,
 } from "./design.js";
-import { buildInterviewPrompt, buildSpikePrompt } from "./prompt.js";
+import {
+  buildInterviewPrompt,
+  buildReviewPrompt,
+  buildSpikePrompt,
+  buildWikiKeywordsPrompt,
+  buildWikiPrompt,
+} from "./prompt.js";
+import { condenseTranscript, countOccurrences, findAdvice, findMentions, renderWikiMarkdown } from "./wiki.js";
 import { BridgeState } from "./state.js";
 
 const log = (...args: unknown[]): void => console.log("[bridge]", ...args);
@@ -269,6 +287,230 @@ app.post("/api/interview/message", async (req: Request, res: Response) => {
   res.json({ taskId });
 
   void runTask(adapter, taskId, projectPath, buildInterviewPrompt(body.message), "interview", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * 드리프트 리뷰 (docs/vibe_coding_assistant_design.md §3.3).
+ *
+ * **PR 리뷰와 같은 모양이되 기준이 다르다.** 범용 베스트프랙티스가 아니라 이 프로젝트가
+ * 인터뷰에서 정한 DEC/RULE 하나만 본다. 그래서 diff를 우리가 만들어 넘긴다 —
+ * agent에게 git을 실행시키지 않으므로 리뷰 turn에는 셸도 쓰기 권한도 필요 없다.
+ */
+app.post("/api/review", async (req: Request, res: Response) => {
+  const body = req.body as StartReviewRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  // 디스크를 먼저 본다. 메모리의 초안은 **다른 프로젝트의 것일 수 있다** — bridge는 오래
+  // 살아 있고 state.design에는 프로젝트 구분이 없다. 같은 프로젝트일 때만 대체재로 쓴다.
+  const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
+  const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
+  if (!design) {
+    res.status(400).json({ error: `No design found. Expected ${DESIGN_DIR}/design.json in ${projectPath}.` });
+    return;
+  }
+
+  const criteria = criteriaFrom(design);
+  if (criteria.length === 0) {
+    // 기준이 없는 리뷰는 범용 코드 리뷰가 된다. 그건 우리가 하는 일이 아니다.
+    res.status(400).json({ error: "The design has no DEC or RULE to check against." });
+    return;
+  }
+
+  let start: ReviewStart;
+  let commits: ReviewCommit[];
+  let skipped: number;
+  try {
+    const resolved = await resolveReviewStart(projectPath, body.since);
+    start = resolved.start;
+    ({ commits, skipped } = await collectCommits(projectPath, resolved.since));
+  } catch (error) {
+    res.status(400).json({ error: `git log failed: ${asMessage(error)}` });
+    return;
+  }
+
+  if (commits.length === 0) {
+    // 볼 것이 없는 것과 리뷰가 실패한 것은 다르다. 200으로 "새 커밋이 없다"를 알린다.
+    res.json({ taskId: null, commits: [], start, skipped: 0, criteriaCount: criteria.length });
+    return;
+  }
+
+  state.startReview({ commits, criteria, skipped });
+
+  const taskId = randomUUID();
+  const label = `review ${commits.length}개 커밋`;
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({
+    taskId,
+    commits: commits.map((c) => ({ sha: c.sha, subject: c.subject })),
+    start,
+    skipped,
+    criteriaCount: criteria.length,
+  });
+
+  void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * 위키 후보 키워드 (§3.5).
+ *
+ * **agent가 고른다.** 빈도로 뽑아 봤더니 `wait` · `getting` · `turn`이 상위를 차지했다 —
+ * 빈도는 낯섦과 반대 방향이라 당연한 결과다 (SPIKE_FINDINGS.md §16). "모를 만한 말"은
+ * 판단이므로 turn을 하나 쓴다. 위키 패널을 열 때 한 번이고, 키워드마다가 아니다.
+ */
+app.post("/api/wiki/keywords", async (req: Request, res: Response) => {
+  const body = req.body as StartWikiKeywordsRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  let messages;
+  try {
+    messages = await adapter.readTranscript(projectPath);
+  } catch (error) {
+    res.status(500).json({ error: asMessage(error) });
+    return;
+  }
+
+  const existing = await listWikiTerms(projectPath);
+  const transcript = condenseTranscript(messages);
+  if (transcript.messages.length === 0) {
+    // 대화가 없으면 뽑을 것도 없다. turn을 낭비하지 않는다.
+    res.json({ taskId: null, messages: 0, existing });
+    return;
+  }
+
+  state.startWikiKeywords(transcript, messages);
+
+  const taskId = randomUUID();
+  state.patchAppContext({ projectPath, prompt: "wiki keywords", selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: "wiki keywords",
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, messages: transcript.messages.length, existing });
+
+  void runTask(adapter, taskId, projectPath, buildWikiKeywordsPrompt(), "wiki", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * 키워드 하나를 골랐을 때 페이지를 만든다.
+ *
+ * 위키 turn은 **읽되 쓰지 않는다.** 어느 파일을 봐야 할지 우리가 미리 알 수 없어서 리뷰처럼
+ * 먹여 줄 수 없고, 그래서 읽기 도구만 열어 준다 (`needsReadTools`).
+ */
+app.post("/api/wiki", async (req: Request, res: Response) => {
+  const body = req.body as StartWikiRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+  if (!body?.term?.trim()) {
+    res.status(400).json({ error: "term is required" });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const term = body.term.trim();
+  const messages = await adapter.readTranscript(projectPath);
+  state.startWiki({ term, mentions: findMentions(messages, term), design: await loadDesignFromDisk(projectPath) });
+
+  const taskId = randomUUID();
+  state.patchAppContext({ projectPath, prompt: `wiki ${term}`, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: `wiki ${term}`,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, term });
+
+  void runTask(adapter, taskId, projectPath, buildWikiPrompt(term), "wiki", {
     model: body.model || undefined,
     effort: body.effort || undefined,
   });
@@ -571,6 +813,179 @@ app.post("/internal/design", requireToken, (req: Request, res: Response) => {
   res.json({ taskId, warnings });
 });
 
+/**
+ * 리뷰 turn이 보는 전부 — diff와 기준. 우리가 만들어 넘기므로 agent는 git을 돌리지 않는다.
+ */
+app.get("/internal/review-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_review_context");
+  const context = state.getReviewContext();
+  if (!context) {
+    res.status(409).json({ error: "No review is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+/**
+ * 리뷰 turn의 결론.
+ *
+ * **findings가 비어 있어도 정상 응답이다.** 그것이 오탐 시험의 통과 조건이다 —
+ * "확인했고 어긋난 것이 없다"와 "아예 확인하지 않았다"를 구분할 수 있어야 한다.
+ * 그래서 기준에 없는 id를 짚었을 때도 거절하지 않고 경고만 되돌린다. 무엇을 지어냈는지가
+ * 결과에 남아야 판정할 수 있기 때문이다.
+ */
+app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
+  const report = req.body as ReportDriftInput;
+  if (!Array.isArray(report?.findings) || typeof report?.summary !== "string") {
+    res.status(400).json({ error: "findings (array) and summary (string) are required" });
+    return;
+  }
+
+  const context = state.getReviewContext();
+  const knownCriteria = new Set((context?.criteria ?? []).map((c) => c.id));
+  const knownCommits = new Set((context?.commits ?? []).map((c) => c.sha));
+  const warnings: string[] = [];
+  for (const finding of report.findings) {
+    if (!knownCriteria.has(finding.criterionId)) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
+    if (!knownCommits.has(finding.commit)) warnings.push(`Unknown commit: ${finding.commit}`);
+  }
+
+  state.recordDrift(report);
+  const taskId = noteMcpEndpointHit("report_drift");
+  if (taskId) emit({ type: "app.drift", taskId, report });
+  else log("report_drift arrived with no active task; stored but not routed to the UI");
+
+  log(`report_drift: ${report.findings.length}건 (${report.findings.map((f) => f.criterionId).join(", ") || "없음"})`);
+  for (const warning of warnings) log(`  ! ${warning}`);
+
+  /**
+   * 어디까지 봤는지를 남긴다. **이 기록이 없으면 켤 때마다 처음부터 다시 본다.**
+   * 커밋은 변하지 않으므로 다시 볼 이유가 없고, 다시 보면 비용만 커밋 수만큼 곱해진다.
+   *
+   * 리포트가 도착했다는 것이 곧 그 커밋들을 다 봤다는 뜻이다. turn이 오류로 끝나면
+   * 리포트가 오지 않으므로 기록도 갱신되지 않고, 다음 리뷰가 같은 구간을 다시 본다.
+   */
+  const projectPath = state.getAppContext().projectPath;
+  const task = taskId ? state.getTask(taskId) : undefined;
+  if (context && projectPath) {
+    void (async () => {
+      try {
+        const existing = await readReviewLog(projectPath);
+        existing.lastReviewedSha = context.commits.at(-1)?.sha ?? existing.lastReviewedSha;
+        existing.runs.push({
+          at: new Date().toISOString(),
+          agent: task?.agent ?? "codex",
+          commits: context.commits.map((c) => c.sha),
+          findings: report.findings,
+          summary: report.summary,
+        });
+        await writeReviewLog(projectPath, existing);
+      } catch (error) {
+        log(`리뷰 기록 저장 실패: ${asMessage(error)}`);
+      }
+    })();
+  }
+
+  res.json({ taskId, warnings });
+});
+
+/** 키워드 turn이 읽을 대화. 코드 블록과 우리 래퍼는 이미 걷어낸 상태다. */
+app.get("/internal/wiki-transcript", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_wiki_transcript");
+  const transcript = state.getWikiTranscript();
+  if (!transcript) {
+    res.status(409).json({ error: "No wiki keyword pass is in progress." });
+    return;
+  }
+  res.json(transcript);
+});
+
+/**
+ * agent가 고른 후보 키워드.
+ *
+ * **횟수는 여기서 센다.** agent가 신고한 숫자를 믿지 않는다 — 세는 일은 모델이 잘 못하고,
+ * 여기서는 정확할 필요가 있다. agent는 무엇이 키워드인지만 정한다.
+ */
+app.post("/internal/wiki-keywords", requireToken, (req: Request, res: Response) => {
+  const input = req.body as { keywords?: Array<{ term: string; why: string; sample: string }> };
+  if (!Array.isArray(input?.keywords)) {
+    res.status(400).json({ error: "keywords (array) is required" });
+    return;
+  }
+
+  const source = state.getWikiSource();
+  const keywords: WikiKeyword[] = input.keywords
+    .filter((entry) => entry?.term?.trim())
+    .map((entry) => ({
+      term: entry.term.trim(),
+      why: entry.why?.trim() ?? "",
+      sample: entry.sample?.trim() ?? "",
+      count: countOccurrences(source, entry.term.trim()),
+    }));
+
+  const taskId = noteMcpEndpointHit("save_wiki_keywords");
+  if (taskId) emit({ type: "app.wiki.keywords", taskId, keywords });
+  else log("save_wiki_keywords arrived with no active task; keywords not routed to the UI");
+
+  log(`save_wiki_keywords: ${keywords.length}개 (${keywords.map((k) => k.term).join(", ") || "없음"})`);
+  res.json({ taskId, keywords });
+});
+
+/** 위키 turn이 보는 것 — 그 말이 오간 대목과 설계. */
+app.get("/internal/wiki-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_wiki_context");
+  const context = state.getWikiContext();
+  if (!context) {
+    res.status(409).json({ error: "No wiki page is being written." });
+    return;
+  }
+  res.json(context);
+});
+
+/**
+ * 완성된 위키 페이지.
+ *
+ * `where`가 비어 있으면 **일반론**이라는 뜻이다. 그런 페이지는 검색으로 얻을 수 있으므로
+ * 우리가 만들 이유가 없다. 거절하지는 않되 경고를 되돌려 다음 turn이 고칠 수 있게 한다.
+ */
+app.post("/internal/wiki", requireToken, (req: Request, res: Response) => {
+  const input = req.body as WikiPageInput;
+  if (!input?.term?.trim() || !input?.oneLine?.trim() || !input?.inThisProject?.trim()) {
+    res.status(400).json({ error: "term, oneLine and inThisProject are required" });
+    return;
+  }
+
+  const warnings: string[] = [];
+  if (!Array.isArray(input.where) || input.where.length === 0) {
+    warnings.push("`where` is empty — without evidence from this project the page is a generic definition.");
+  }
+  // 순수 학습용이라는 제약은 프롬프트만으로 지켜지지 않는다 (SPIKE_FINDINGS.md §16).
+  for (const advice of findAdvice(input.oneLine, input.inThisProject)) {
+    warnings.push(`This reads as a judgement, which this page must not make — ${advice}`);
+  }
+
+  const page: WikiPage = {
+    term: input.term.trim(),
+    oneLine: input.oneLine.trim(),
+    inThisProject: input.inThisProject.trim(),
+    where: input.where ?? [],
+    related: input.related ?? [],
+    createdAt: new Date().toISOString(),
+  };
+
+  const taskId = noteMcpEndpointHit("save_wiki");
+  if (taskId) emit({ type: "app.wiki", taskId, page });
+  else log("save_wiki arrived with no active task; page stored but not routed to the UI");
+
+  log(`save_wiki: ${page.term} (근거 ${page.where.length}개)`);
+  for (const warning of warnings) log(`  ! ${warning}`);
+
+  const projectPath = state.getAppContext().projectPath;
+  if (projectPath) void writeWikiPage(projectPath, page).catch((error) => log(`위키 저장 실패: ${asMessage(error)}`));
+
+  res.json({ taskId, warnings });
+});
+
 // ---------- 연결 ----------
 
 function emit(event: AgentEvent): void {
@@ -683,6 +1098,196 @@ async function isHandWritten(path: string): Promise<boolean> {
 /** 인터뷰가 프로젝트에 내보내는 것들. `create-fixture.mjs`도 같은 목록을 지운다. */
 const GENERATED_DOCS = ["app_design.md", "AGENTS.md", "CLAUDE.md"] as const;
 const DESIGN_DIR = ".project-intel";
+
+/**
+ * 커밋 하나의 diff를 싣는 한계선. 넘으면 자르고 잘렸다는 사실을 함께 넘긴다 —
+ * 조용히 자르면 agent가 "diff에 없으니 위반이 없다"고 판단해 버린다.
+ */
+const MAX_DIFF_CHARS = 20_000;
+
+/** 한 번의 리뷰가 훑을 커밋 수 상한. 넘치면 오래된 쪽을 남기고 최신부터 자른다. */
+const MAX_REVIEW_COMMITS = 50;
+
+/** `.project-intel/reviews.json` — 어디까지 봤는지가 남는 곳. */
+const REVIEW_LOG = "reviews.json";
+
+/**
+ * 설계를 디스크에서 읽는다.
+ *
+ * 리뷰는 정의상 **인계가 끝나고 한참 뒤에** 돈다. 그때 bridge는 이미 재시작됐고 메모리에
+ * 설계가 없다. 인터뷰가 `.project-intel/design.json`에 남겨 둔 것이 유일한 원본이다
+ * (SPIKE_FINDINGS.md §13의 "인터뷰 상태의 지속성"이 여기서 필수가 된다).
+ */
+async function loadDesignFromDisk(projectPath: string): Promise<DesignDoc | null> {
+  try {
+    const raw = await readFile(join(projectPath, DESIGN_DIR, "design.json"), "utf8");
+    return JSON.parse(raw) as DesignDoc;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 리뷰가 대조할 기준 목록. **DEC과 RULE을 한 목록으로 준다** — agent에게는 둘 다
+ * "이 프로젝트가 정한 것"이고, 종류를 나눠 주면 한쪽만 보는 일이 생긴다.
+ */
+function criteriaFrom(design: DesignDoc): ReviewCriterion[] {
+  return [
+    ...design.decisions.map((d) => ({ id: d.id, text: d.text, why: d.why, source: d.source })),
+    ...design.rules.map((r) => ({ id: r.id, text: r.text, source: r.source })),
+  ];
+}
+
+/** 프로젝트에서 git을 돌리고 stdout을 그대로 돌려준다. */
+async function gitOutput(projectPath: string, args: string[]): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  // diff는 커질 수 있다. execFile 기본 버퍼(1MB)로는 큰 변경에서 터진다.
+  const { stdout } = await run("git", args, { cwd: projectPath, maxBuffer: 32 * 1024 * 1024, ...cliSpawnOptions });
+  return stdout;
+}
+
+async function gitLines(projectPath: string, args: string[]): Promise<string[]> {
+  const out = await gitOutput(projectPath, args);
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+/** 파일 이름으로 쓸 수 있게. 대소문자는 버린다 — `JWT`와 `jwt`는 같은 말이다. */
+function wikiSlug(term: string): string {
+  return term.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-|-$/g, "") || "page";
+}
+
+/**
+ * JSON과 마크다운을 같이 쓴다.
+ *
+ * JSON이 원본이고 마크다운은 파생물이다 (`design.json` → `app_design.md`와 같은 관계).
+ * `.md`가 있으면 Obsidian·GitHub·에디터 미리보기·노션 임포트가 그대로 동작하므로,
+ * 우리가 커넥터를 만들 이유가 없어진다.
+ */
+async function writeWikiPage(projectPath: string, page: WikiPage): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR, "wiki");
+  await mkdir(dir, { recursive: true });
+  const slug = wikiSlug(page.term);
+  await writeFile(join(dir, `${slug}.json`), JSON.stringify(page, null, 2), "utf8");
+  await writeFile(join(dir, `${slug}.md`), renderWikiMarkdown(page), "utf8");
+}
+
+/** 이미 만들어 둔 페이지들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
+async function listWikiTerms(projectPath: string): Promise<string[]> {
+  try {
+    const dir = join(projectPath, DESIGN_DIR, "wiki");
+    const files = (await readdir(dir)).filter((name) => name.endsWith(".json"));
+    const terms = await Promise.all(
+      files.map(async (name) => {
+        try {
+          return (JSON.parse(await readFile(join(dir, name), "utf8")) as WikiPage).term;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return terms.filter((term): term is string => Boolean(term));
+  } catch {
+    return [];
+  }
+}
+
+async function readReviewLog(projectPath: string): Promise<ReviewLog> {
+  try {
+    const raw = await readFile(join(projectPath, DESIGN_DIR, REVIEW_LOG), "utf8");
+    return JSON.parse(raw) as ReviewLog;
+  } catch {
+    return { lastReviewedSha: null, runs: [] };
+  }
+}
+
+async function writeReviewLog(projectPath: string, log: ReviewLog): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+}
+
+/** ref가 이 저장소에 실제로 있는지. 기록이 있어도 rebase 등으로 사라졌을 수 있다. */
+async function commitExists(projectPath: string, ref: string): Promise<boolean> {
+  try {
+    await gitOutput(projectPath, ["cat-file", "-e", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 어디부터 볼지 정한다.
+ *
+ * **설계보다 앞선 커밋은 판정 대상이 아니다.** 그때는 아직 기준이 없었으므로, 그것을
+ * 지금의 DEC으로 재는 것은 의미가 없다. 그래서 처음 켤 때의 기준점은 임의의 개수가 아니라
+ * `design.json`이 들어온 커밋이다.
+ */
+async function resolveReviewStart(
+  projectPath: string,
+  since: string | undefined,
+): Promise<{ start: ReviewStart; since: string | null }> {
+  if (since?.trim()) return { start: "explicit", since: since.trim() };
+
+  const log = await readReviewLog(projectPath);
+  if (log.lastReviewedSha && (await commitExists(projectPath, log.lastReviewedSha))) {
+    return { start: "last-review", since: log.lastReviewedSha };
+  }
+
+  // 인계 커밋 자체는 설계와 하네스만 담고 있어 리뷰할 코드가 없다. 그 **다음**부터 본다.
+  try {
+    const shas = await gitLines(projectPath, [
+      "log", "--format=%H", "--diff-filter=A", "--", `${DESIGN_DIR}/design.json`,
+    ]);
+    const handover = shas.at(-1);
+    if (handover) return { start: "design", since: handover };
+  } catch {
+    // 저장소가 아니거나 아직 커밋이 없다. 아래 안전판으로 간다.
+  }
+
+  return { start: "recent", since: null };
+}
+
+/**
+ * 리뷰할 커밋들을 모은다. **오래된 것부터** 준다 — 바이브코딩은 앞 커밋이 뒤 커밋의 전제라
+ * 순서대로 읽어야 무엇이 왜 들어왔는지 읽힌다.
+ */
+async function collectCommits(
+  projectPath: string,
+  since: string | null,
+): Promise<{ commits: ReviewCommit[]; skipped: number }> {
+  const range = since ? [`${since}..HEAD`] : [`-n`, String(MAX_REVIEW_COMMITS)];
+  const SEP = "\u001f";
+  const lines = await gitLines(projectPath, [
+    "log", "--reverse", "--no-merges", `--format=%H${SEP}%s${SEP}%an${SEP}%aI`, ...range,
+  ]);
+
+  // 상한을 넘으면 **오래된 쪽을 남긴다.** 뒤 커밋은 앞 커밋 위에 서 있으므로, 앞을 건너뛰면
+  // 뒤를 읽어도 맥락이 없다. 남은 것은 다음 리뷰가 이어서 본다.
+  const skipped = Math.max(0, lines.length - MAX_REVIEW_COMMITS);
+  const selected = lines.slice(0, MAX_REVIEW_COMMITS);
+
+  const commits: ReviewCommit[] = [];
+  for (const line of selected) {
+    const [sha, subject = "", author = "", at = ""] = line.split(SEP);
+    if (!sha) continue;
+    const changedFiles = await gitLines(projectPath, ["show", "--name-only", "--format=", sha]);
+    const raw = await gitOutput(projectPath, ["show", "--format=", sha]);
+    const truncated = raw.length > MAX_DIFF_CHARS;
+    commits.push({
+      sha,
+      subject,
+      author,
+      at,
+      changedFiles,
+      diff: truncated ? `${raw.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : raw,
+      truncated,
+    });
+  }
+  return { commits, skipped };
+}
 
 /**
  * 지난 인터뷰가 이 디렉터리에 남긴 산출물을 지운다.

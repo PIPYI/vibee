@@ -166,7 +166,166 @@ export type DesignDoc = {
   decisions: DesignDecision[];
 };
 
-export type McpToolName = "get_app_context" | "show_result" | "ask_user" | "save_design";
+// ---------- 드리프트 리뷰 (docs/vibe_coding_assistant_design.md §3.3, §7.2) ----------
+
+/**
+ * 리뷰 turn이 받는 전부. **판단 기준은 범용 베스트프랙티스가 아니라 이 프로젝트가 정한 것**
+ * 하나다 — 버그·스타일 리뷰는 이미 provider가 잘 하고, 그것은 우리 몫이 아니다.
+ *
+ * diff를 우리가 만들어 넘긴다. agent에게 git을 실행시키지 않으므로 리뷰 turn에는 셸도
+ * 쓰기 권한도 필요 없다.
+ */
+export type ReviewContext = {
+  /** 오래된 것부터. 한 세션이 여러 커밋을 훑는다. */
+  commits: ReviewCommit[];
+  /** 지켜야 할 것 전부. DEC과 RULE을 한 목록으로 준다 — agent에게는 둘 다 "정한 것"이다. */
+  criteria: ReviewCriterion[];
+  /** 상한에 걸려 이번 리뷰에서 빠진 커밋 수. 0이 아니면 화면이 그 사실을 말해야 한다. */
+  skipped: number;
+};
+
+/**
+ * 리뷰의 단위는 **커밋 하나**다.
+ *
+ * 커밋은 변하지 않으므로 한 번 본 커밋을 다시 볼 이유가 없다. 범위(`base..HEAD`)를 통째로
+ * 보면 커밋이 하나 늘 때마다 앞의 것까지 다시 읽게 되어 비용이 커밋 수만큼 곱해진다.
+ *
+ * 리포트의 수명 문제도 여기서 풀린다. 코드를 고치면 **새 커밋**이 생기고 그것이 다음 리뷰
+ * 대상이 되므로, 지난 코멘트를 다시 계산하거나 상태를 뒤집을 일이 없다.
+ */
+export type ReviewCommit = {
+  sha: string;
+  subject: string;
+  author: string;
+  /** ISO 8601. */
+  at: string;
+  changedFiles: string[];
+  /** 이 커밋 하나의 diff. 너무 크면 잘리고 `truncated`가 참이 된다. */
+  diff: string;
+  truncated: boolean;
+};
+
+/** 어디부터 볼지를 무엇이 정했는가. 화면이 사용자에게 그대로 말해 준다. */
+export type ReviewStart =
+  /** 마지막으로 리뷰한 커밋 다음부터. */
+  | "last-review"
+  /** `.project-intel/design.json`이 들어온 커밋부터 — 설계보다 앞선 커밋은 판정 대상이 아니다. */
+  | "design"
+  /** 설계가 아직 커밋되지 않은 경우의 안전판. */
+  | "recent"
+  /** 호출자가 직접 지정했다. */
+  | "explicit";
+
+export type ReviewCriterion = {
+  /** DEC-… 또는 RULE-… . 리포트가 이 id를 되짚는다. */
+  id: string;
+  text: string;
+  /** DEC에만 있다. 왜 그렇게 정했는지. */
+  why?: string;
+  source: DesignSource;
+};
+
+/** agent가 `report_drift`로 되돌려 보내는 판정 하나. */
+export type DriftFinding = {
+  /** **어느 커밋에서** 깨졌는가. `ReviewContext.commits`에 있는 sha여야 한다. */
+  commit: string;
+  /** 어긋난 기준의 id. `ReviewContext.criteria`에 있는 것이어야 한다. */
+  criterionId: string;
+  /** 어디서 깨졌는가. 프로젝트 기준 상대 경로. */
+  files: string[];
+  /** 무엇이 어긋났는지 한 문장. */
+  detail: string;
+  confidence: "high" | "low";
+};
+
+/**
+ * 리뷰 turn의 결론. **위반이 없으면 `findings`가 빈 배열이다** — 그 경우에도 반드시
+ * 호출해야 한다. "조용히 끝났다"와 "확인했고 문제 없다"를 구분할 수 없으면 오탐 시험이
+ * 성립하지 않는다.
+ */
+export type ReportDriftInput = {
+  findings: DriftFinding[];
+  /** 무엇을 근거로 그렇게 판단했는지 한 문단. */
+  summary: string;
+};
+
+// ---------- 위키 (docs/vibe_coding_assistant_design.md §3.5) ----------
+
+/**
+ * 세션에서 뽑아낸 대화 한 줄. provider가 다르지만 이 형태로 맞춰서 올라온다.
+ */
+export type TranscriptMessage = { role: "user" | "agent"; text: string };
+
+/**
+ * 위키 후보 키워드.
+ *
+ * **agent가 고른다.** 처음에는 빈도로 뽑았는데 완전히 실패했다 — 실제 대화에 돌리니
+ * `wait` · `getting` · `turn` 같은 것이 상위를 차지했다. 당연한 일이다.
+ * **빈도는 낯섦과 반대 방향이다** — 가장 자주 나오는 말이 가장 익숙한 말이다.
+ * "비전공자가 모를 만한 말"은 세는 일이 아니라 판단이므로 세는 쪽에 맡길 수 없다
+ * (SPIKE_FINDINGS.md §16).
+ *
+ * 세는 일은 그대로 코드가 한다 — agent가 몇 번 나왔는지를 정확히 세지는 못한다.
+ */
+export type WikiKeyword = {
+  term: string;
+  /** 왜 이 말이 궁금할 만한가. 사용자가 고를 때 보는 근거다. */
+  why: string;
+  /** 이 말이 나온 문장 하나. 사용자가 "아 이거" 하고 알아보게 하는 용도다. */
+  sample: string;
+  /** 대화에 몇 번 나왔는지. bridge가 센다. */
+  count: number;
+};
+
+/** 위키 키워드 turn이 읽는 대화. 코드 블록과 우리 래퍼를 걷어내고 상한까지 자른 것. */
+export type WikiTranscript = {
+  messages: TranscriptMessage[];
+  /** 상한에 걸려 빠진 메시지 수. */
+  skipped: number;
+};
+
+/**
+ * 위키 페이지. **순수 학습용이다** — 가치판단을 담지 않는다.
+ *
+ * "이건 위험합니다", "X가 더 낫습니다", "재검토가 필요합니다"는 전부 이 기능이 하는 일이
+ * 아니다. 드리프트 판정과 역할이 다르고, 섞이면 둘 다 못 쓰게 된다.
+ *
+ * 그리고 **일반론이면 만들 이유가 없다.** 같은 설명을 검색으로 얻을 수 있다면 우리가 할 일이
+ * 아니다. 가치는 `inThisProject`와 `where`에 있다 — 이 프로젝트에서 그 말이 무엇을 가리키는지.
+ */
+export type WikiPageInput = {
+  term: string;
+  /** 비전공자의 말로 한 줄. 기술 용어로 기술 용어를 설명하지 않는다. */
+  oneLine: string;
+  /** 이 앱에서 이것이 무엇을 하는가. 이 기능의 존재 이유다. */
+  inThisProject: string;
+  /** 근거. 실제 파일 경로 또는 REQ/FLOW/DEC id. 비어 있으면 일반론이라는 뜻이다. */
+  where: string[];
+  /** 같이 알아두면 좋은 다른 키워드. 다음에 읽을 것을 잇는다. */
+  related: string[];
+};
+
+export type WikiPage = WikiPageInput & { createdAt: string };
+
+/** 위키 turn이 받는 것. 그 말이 실제로 오간 대목과 설계를 함께 준다. */
+export type WikiContext = {
+  term: string;
+  /** 그 말이 나온 대화 대목들. 무엇을 가리키는지는 여기에 있다. */
+  mentions: string[];
+  design: DesignDoc | null;
+};
+
+export type McpToolName =
+  | "get_app_context"
+  | "show_result"
+  | "ask_user"
+  | "save_design"
+  | "get_review_context"
+  | "report_drift"
+  | "get_wiki_transcript"
+  | "save_wiki_keywords"
+  | "get_wiki_context"
+  | "save_wiki";
 
 /**
  * agent가 `ask_user` MCP tool로 던지는 질문 (docs/requirements_flow.md §4.3).
@@ -234,6 +393,11 @@ export type AgentEvent =
   | { type: "mcp.tool.called"; taskId: string; tool: McpToolName | string; source: "agent-stream" | "bridge-endpoint" }
   | { type: "app.result"; taskId: string; result: ShowResultInput }
   | { type: "app.design"; taskId: string; design: DesignDoc }
+  /** 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다. */
+  | { type: "app.drift"; taskId: string; report: ReportDriftInput }
+  | { type: "app.wiki"; taskId: string; page: WikiPage }
+  /** 위키 후보 키워드가 정해졌다. 사용자가 여기서 하나를 고른다. */
+  | { type: "app.wiki.keywords"; taskId: string; keywords: WikiKeyword[] }
   | { type: "app.question"; taskId: string; question: PendingQuestion }
   | { type: "app.answer"; taskId: string; questionId: string; answer: string }
   | { type: "task.completed"; taskId: string }
@@ -388,6 +552,86 @@ export type StartTaskResponse = {
    * 무엇을 지웠는지 그대로 올려 보낸다.
    */
   cleared?: string[];
+};
+
+/**
+ * 드리프트 리뷰를 시작한다 (§3.3).
+ *
+ * **코드를 고치지 않는다.** 리뷰 turn은 읽기 전용이고, 어긋난 것이 나오면 그것을 고칠
+ * 프롬프트를 사용자에게 건넨다. 고치는 일은 사용자가 쓰는 agent가 한다 — 우리 앱은
+ * 코드를 쓰는 곳이 아니라 보는 곳이다.
+ */
+export type StartReviewRequest = {
+  agent: AgentId;
+  projectPath: string;
+  /**
+   * 이 ref **다음** 커밋부터 본다. 생략하면 bridge가 정한다 — 마지막 리뷰 지점, 없으면
+   * 설계가 들어온 커밋, 그것도 없으면 최근 것들 (`ReviewStart`).
+   */
+  since?: string;
+  model?: string;
+  effort?: string;
+};
+
+export type StartReviewResponse = {
+  taskId: string;
+  /** 이번에 볼 커밋들. 오래된 것부터. */
+  commits: Array<{ sha: string; subject: string }>;
+  /** 어디부터 볼지를 무엇이 정했는지. */
+  start: ReviewStart;
+  /** 상한에 걸려 빠진 커밋 수. */
+  skipped: number;
+  /** 기준이 하나도 없으면 리뷰가 성립하지 않는다. 그 사실을 조용히 넘기지 않는다. */
+  criteriaCount: number;
+};
+
+/**
+ * `.project-intel/reviews.json`. **어디까지 봤는지**가 남는 곳이다.
+ *
+ * 이것이 없으면 켤 때마다 처음부터 다시 본다. 커밋은 변하지 않으므로 한 번 본 것을
+ * 다시 볼 이유가 없고, 다시 보면 비용만 커밋 수만큼 곱해진다.
+ */
+export type ReviewLog = {
+  /** 마지막으로 리뷰가 끝난 커밋. 다음 리뷰는 이 다음부터 본다. */
+  lastReviewedSha: string | null;
+  runs: ReviewRun[];
+};
+
+export type ReviewRun = {
+  at: string;
+  agent: AgentId;
+  /** 이번 run이 본 커밋들. 오래된 것부터. */
+  commits: string[];
+  findings: DriftFinding[];
+  summary: string;
+};
+
+/**
+ * 후보 키워드를 뽑는 turn을 시작한다. 결과는 `app.wiki.keywords` 이벤트로 온다.
+ * 위키 패널을 열 때 한 번 돌고, 키워드마다 돌지 않는다.
+ */
+export type StartWikiKeywordsRequest = {
+  agent: AgentId;
+  projectPath: string;
+  model?: string;
+  effort?: string;
+};
+
+export type StartWikiKeywordsResponse = {
+  /** 대화가 하나도 없으면 null. 그 경우 turn을 돌리지 않는다. */
+  taskId: string | null;
+  /** 훑은 메시지 수. */
+  messages: number;
+  /** 이미 만들어 둔 페이지의 term들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
+  existing: string[];
+};
+
+export type StartWikiRequest = {
+  agent: AgentId;
+  projectPath: string;
+  term: string;
+  model?: string;
+  effort?: string;
 };
 
 /**
