@@ -14,6 +14,7 @@ import type {
   SelectedItem,
   SessionSummary,
   ShowResultInput,
+  StartReviewResponse,
   StartTaskResponse,
   ToolReadiness,
 } from "@byoa/protocol";
@@ -402,6 +403,31 @@ export function App() {
     setHandover(data);
   }, [agent, projectPath]);
 
+  /**
+   * 드리프트 리뷰 (§3.3). 어디부터 볼지는 bridge가 정한다 — 마지막 리뷰 지점, 없으면
+   * 설계가 들어온 커밋. 볼 커밋이 없으면 taskId가 null로 온다.
+   */
+  const review = useCallback(async () => {
+    setError(null);
+    setLines([]);
+    const response = await fetch("/api/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath, model, effort }),
+    });
+    const data = (await response.json()) as StartReviewResponse & { taskId: string | null; error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "리뷰를 시작하지 못했습니다");
+      return;
+    }
+    if (!data.taskId) {
+      setError("리뷰할 새 커밋이 없습니다");
+      return;
+    }
+    setTaskId(data.taskId);
+    setRunning(true);
+  }, [agent, projectPath, model, effort]);
+
   const send = useCallback(async () => {
     setError(null);
     setLines([]);
@@ -547,6 +573,9 @@ export function App() {
           </button>
           <button onClick={() => void startInterview()} disabled={running || !projectPath.trim()} className="secondary">
             인터뷰 시작
+          </button>
+          <button onClick={() => void review()} disabled={running || !projectPath.trim()} className="secondary">
+            드리프트 리뷰
           </button>
           <button onClick={() => void newSession()} disabled={running || !session} className="secondary">
             New Session
