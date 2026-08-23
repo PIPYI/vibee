@@ -210,6 +210,13 @@ export class SemanticStore {
 
     const contents: Record<string, string> = {};
     for (const name of MANIFEST_MEMBERS) {
+      // schema3 §5.4 이전 generation에는 analysis-bundle.json이 없다 — manifest에도 안 실려
+      // 있고 파일도 없으면 "아직 분석 파이프라인을 돌리지 않은 generation"과 같은 것으로
+      // 취급한다(null). 새로 쓰는 generation은 `writeGeneration`이 이 파일을 항상 함께
+      // 쓰므로(null이라도) 여기로 빠지지 않는다 — 레거시 generation만의 경로다.
+      if (name === STATE_FILES.analysisBundle && manifest.files[name] === undefined && !existsSync(join(dir, name))) {
+        continue;
+      }
       const raw = this.readFileOrThrow(dir, name);
       const expected = manifest.files[name];
       if (expected === undefined) {
@@ -229,13 +236,14 @@ export class SemanticStore {
       contents[name] = raw;
     }
 
+    const analysisBundleRaw = contents[STATE_FILES.analysisBundle];
     return {
       project: JSON.parse(contents[STATE_FILES.project]!) as ProjectState,
       evidence: JSON.parse(contents[STATE_FILES.evidence]!) as EvidenceIndex,
       memory: JSON.parse(contents[STATE_FILES.memory]!) as SemanticMemory,
       grounding: JSON.parse(contents[STATE_FILES.grounding]!) as GroundingStore,
       versions: JSON.parse(contents[STATE_FILES.versions]!) as SemanticVersion[],
-      analysisBundle: JSON.parse(contents[STATE_FILES.analysisBundle]!) as AnalysisBundle | null,
+      analysisBundle: analysisBundleRaw ? (JSON.parse(analysisBundleRaw) as AnalysisBundle) : null,
     };
   }
 

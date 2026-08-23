@@ -195,6 +195,28 @@ test("analysisBundle을 커밋하고 다시 읽으면 동일하다 (schema3 §5.
   assert.equal(store.readGeneration(1).analysisBundle, null);
 });
 
+test("analysis-bundle.json이 없는 레거시 generation도 analysisBundle: null로 읽힌다 (schema3 이전 데이터와의 하위호환)", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+  const after1 = await store.commit("index", "index", (s) => {
+    s.project.analysisVersion = 1;
+    return s;
+  });
+
+  // schema3 이전에는 이 파일 자체가 없었다 — 실제로 지우고 manifest에서도 항목을 뺀다.
+  const dir = generationDir(root, after1.generation);
+  const manifestPath = join(dir, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete manifest.files["analysis-bundle.json"];
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  rmSync(join(dir, "analysis-bundle.json"));
+
+  const reloaded = store.readGeneration(after1.generation);
+  assert.equal(reloaded.analysisBundle, null);
+  assert.equal(store.load().analysisBundle, null, "HEAD를 다시 읽어도 크래시하지 않는다");
+});
+
 test("고아 generation 이 남아 있어도 다음 커밋이 그것을 덮어쓴다", async () => {
   const root = scratch();
   spawnSync(process.execPath, [join(HERE, "crash-child.mjs"), root], { encoding: "utf8" });
