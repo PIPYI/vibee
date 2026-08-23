@@ -156,6 +156,45 @@ test("SIGKILL 이후 이어서 커밋하면 generation 3 이 다시 만들어진
   );
 });
 
+test("analysisBundle 없이 커밋해도(null) 여전히 유효하다", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  const initial = await store.init(initialProjectState("p1", "fixture"));
+  assert.equal(initial.analysisBundle, null);
+
+  const after1 = await store.commit("index", "index", (s) => {
+    s.project.analysisVersion = 1;
+    return s;
+  });
+  assert.equal(after1.analysisBundle, null);
+  assert.equal(store.load().analysisBundle, null);
+});
+
+test("analysisBundle을 커밋하고 다시 읽으면 동일하다 (schema3 §5.4)", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+
+  const bundle = {
+    analysisVersion: 1,
+    semanticVersion: 1,
+    architecture: { title: "아키텍처", components: [], boundaries: [], connections: [] },
+    workflow: { title: "워크플로우", lanes: [], mainPath: [], nodes: [], edges: [] },
+    sequences: [],
+    freshness: "current",
+  };
+
+  const after1 = await store.commit("analysis bundle", "patch", (s) => {
+    s.analysisBundle = bundle;
+    return s;
+  });
+
+  assert.deepEqual(after1.analysisBundle, bundle);
+  assert.deepEqual(store.load().analysisBundle, bundle);
+  // generation이 곧 history다 — 이전 generation은 여전히 null이었어야 한다.
+  assert.equal(store.readGeneration(1).analysisBundle, null);
+});
+
 test("고아 generation 이 남아 있어도 다음 커밋이 그것을 덮어쓴다", async () => {
   const root = scratch();
   spawnSync(process.execPath, [join(HERE, "crash-child.mjs"), root], { encoding: "utf8" });

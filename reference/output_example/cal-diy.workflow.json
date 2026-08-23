@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": { "title": "Cal.diy 일반 예약 생성 워크플로", "quality_profile": "showcase", "viewBox": [900, 850] },
+  "lanes": [
+    { "id": "visitor", "label": "예약자" },
+    { "id": "web", "label": "Cal.diy Web" },
+    { "id": "guard", "label": "요청 보호" },
+    { "id": "booking", "label": "예약 서비스" },
+    { "id": "data", "label": "예약 데이터" },
+    { "id": "integrations", "label": "외부 연동 및 전달" }
+  ],
+  "phases": [
+    { "id": "submit", "label": "제출", "fromCol": 0, "toCol": 1 },
+    { "id": "validate", "label": "검증", "fromCol": 2, "toCol": 2, "variant": "security" },
+    { "id": "create", "label": "생성 및 통지", "fromCol": 3, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": ["form", "api", "checks", "service", "persist", "calendar", "result"],
+  "nodes": [
+    { "id": "form", "lane": "visitor", "col": 0, "type": "external", "label": "예약 양식", "sublabel": "시간 · 참석자" },
+    { "id": "result", "lane": "visitor", "col": 5, "type": "frontend", "label": "예약 결과", "sublabel": "성공 또는 오류" },
+    { "id": "api", "lane": "web", "col": 1, "type": "backend", "label": "예약 API", "sublabel": "/api/book/event" },
+    { "id": "checks", "lane": "guard", "col": 2, "type": "security", "label": "요청 검사", "sublabel": "Turnstile · bot", "tag": "실패 시 중단" },
+    { "id": "service", "lane": "booking", "col": 3, "type": "backend", "label": "예약 서비스", "sublabel": "이벤트 타입 조율" },
+    { "id": "persist", "lane": "data", "col": 4, "type": "database", "label": "Booking", "sublabel": "uid · 상태" },
+    { "id": "calendar", "lane": "integrations", "col": 5, "type": "cloud", "label": "일정/회의", "sublabel": "EventManager" },
+    { "id": "notify", "lane": "integrations", "col": 4, "type": "messagebus", "label": "알림 및 웹훅", "sublabel": "확정 예약 후" },
+    { "id": "conflict", "lane": "guard", "col": 3, "type": "security", "label": "충돌 또는 거부", "sublabel": "409 / 검사 실패" }
+  ],
+  "edges": [
+    { "from": "form", "to": "api", "label": "예약 제출", "variant": "emphasis", "role": "main" },
+    { "from": "api", "to": "checks", "label": "검증", "variant": "security", "role": "main" },
+    { "from": "checks", "to": "service", "label": "통과", "variant": "emphasis", "role": "main" },
+    { "from": "checks", "to": "conflict", "label": "거부", "variant": "security", "role": "error", "route": "drop" },
+    { "from": "service", "to": "persist", "variant": "emphasis", "role": "main" },
+    { "from": "persist", "to": "calendar", "label": "확정 시", "variant": "emphasis", "role": "main" },
+    { "from": "calendar", "to": "result", "variant": "emphasis", "role": "return", "route": "outside-right" },
+    { "from": "persist", "to": "notify", "variant": "dashed", "role": "async", "route": "drop" },
+    { "from": "conflict", "to": "result", "variant": "security", "role": "error", "route": "outside-right" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "동기 경로", "items": ["저장 후 확정 예약은 외부 일정 생성을 시도합니다.", "결과는 Web 경로를 통해 예약자에게 반환됩니다."] },
+    { "dot": "rose", "title": "실패 경로", "items": ["요청 검사 실패는 생성 전 중단됩니다.", "고유성 충돌은 예약 충돌 오류로 변환됩니다."] }
+  ]
+}

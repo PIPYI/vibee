@@ -35,6 +35,7 @@ import {
 import { join } from "node:path";
 
 import type {
+  AnalysisBundle,
   EvidenceIndex,
   GroundingStore,
   ProjectState,
@@ -71,6 +72,8 @@ export type StateSnapshot = {
   memory: SemanticMemory;
   grounding: GroundingStore;
   versions: SemanticVersion[];
+  /** schema3 §5.4 — 아직 분석 파이프라인을 돌리지 않은 generation에서는 `null`이다. */
+  analysisBundle: AnalysisBundle | null;
 };
 
 export type LoadedState = StateSnapshot & { generation: number };
@@ -232,6 +235,7 @@ export class SemanticStore {
       memory: JSON.parse(contents[STATE_FILES.memory]!) as SemanticMemory,
       grounding: JSON.parse(contents[STATE_FILES.grounding]!) as GroundingStore,
       versions: JSON.parse(contents[STATE_FILES.versions]!) as SemanticVersion[],
+      analysisBundle: JSON.parse(contents[STATE_FILES.analysisBundle]!) as AnalysisBundle | null,
     };
   }
 
@@ -290,6 +294,7 @@ export class SemanticStore {
         },
         grounding: { conceptGroundings: [], claimGroundings: [] },
         versions: [],
+        analysisBundle: null,
       };
       return this.writeGeneration(1, snapshot, "초기화", "init", options);
     });
@@ -326,6 +331,7 @@ export class SemanticStore {
       [STATE_FILES.memory]: serialize(state.memory),
       [STATE_FILES.grounding]: serialize(state.grounding),
       [STATE_FILES.versions]: serialize(state.versions),
+      [STATE_FILES.analysisBundle]: serialize(state.analysisBundle),
     };
 
     const files: Record<string, string> = {};

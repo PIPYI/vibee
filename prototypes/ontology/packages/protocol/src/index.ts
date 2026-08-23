@@ -89,8 +89,8 @@ export type SemanticVersion = {
   semanticVersion: number;
   semanticReconciledAnalysisVersion: number;
   at: string;
-  /** 무엇 때문에 만들어진 generation인가 */
-  source: "index" | "patch" | "init";
+  /** 무엇 때문에 만들어진 generation인가. `bundle`은 schema3 §5.2 Stage 4(AnalysisBundle 커밋) */
+  source: "index" | "patch" | "init" | "bundle";
   message: string;
   /** patch generation일 때만 */
   diffSummary?: SemanticDiffSummary;
@@ -754,4 +754,179 @@ export type ReachabilityIR = {
   links: ReachabilityLink[];
   /** hop 경계에서 잘렸다면 그 hop. Trace의 truncatedAtHop과 같은 의미다 */
   truncatedAtHop?: number;
+};
+
+// ---------------------------------------------------------------------------
+// Architecture / Workflow / Sequence Bundle (schema3 §1~§5)
+// ---------------------------------------------------------------------------
+
+/**
+ * schema3 §4 — I16/A13을 다시 여는 절충안. **View IR에만** 존재한다.
+ *
+ * `SemanticConcept`/`SemanticClaim`에는 전역 `type`을 두지 않는다는 결정(I3, I16)은 그대로
+ * 유지된다 — 이것은 Core identity의 전역 taxonomy가 아니라 Architecture/Workflow가 archify
+ * 형태의 결과물을 내기 위해 쓰는 표시용 분류다 (I18).
+ */
+export type PresentationType =
+  | "external"
+  | "frontend"
+  | "backend"
+  | "database"
+  | "queue"
+  | "security"
+  | "job"
+  | "cloud"
+  | "unknown";
+
+/**
+ * schema3 §3.1 — Architecture/Workflow 컴포넌트의 in/out 요소.
+ *
+ * 예: `{ label: "GET /api/bookings", kind: "route", direction: "in" }`.
+ */
+export type ComponentIO = {
+  label: string;
+  kind: "route" | "event" | "db" | "call" | "config" | "other";
+  direction: "in" | "out";
+  /** 있으면 Stage 1 골격 그래프 노드로 역참조 가능 (schema3 §5.2) */
+  entityRef?: EntityRef;
+  /** 빈 배열 금지 — validator가 거부한다 (I9 재확인) */
+  evidenceRefs: string[];
+  description?: string;
+};
+
+/** schema3 §3.2. */
+export type ArchitectureComponent = {
+  id: string;
+  label: string;
+  sublabel?: string;
+  presentationType: PresentationType;
+  presentationTypeConfidence?: number;
+  boundaryId?: string;
+  /** SemanticConcept.id (있으면) */
+  conceptRefs?: string[];
+  /** 이 컴포넌트가 요약하는 실제 골격 노드들 (entityKey[]) */
+  entityRefs: string[];
+  /** entityRefs가 근거로 삼는 Evidence.id 합집합 */
+  evidenceRefs: string[];
+  /** evidenceRefs가 비었으면 validator가 거부 (I9) */
+  description?: string;
+  inputs?: ComponentIO[];
+  outputs?: ComponentIO[];
+  confidence?: number;
+};
+
+/** schema3 §3.2. 시각적 그룹. `kind`는 자유 문자열이다 (I3와 같은 이유). */
+export type ArchitectureBoundary = {
+  id: string;
+  label: string;
+  kind: string;
+  /** 포함하는 component id */
+  wraps: string[];
+};
+
+/** schema3 §3.2. */
+export type ArchitectureConnection = {
+  id: string;
+  from: string;
+  to: string;
+  label?: string;
+  role?: "sync" | "async" | "data" | "control";
+  /** Stage 1 골격 엣지 롤업 — AI가 지어낸 연결이 아님을 증명한다 (schema3 §5.2, I20) */
+  traceLinkRefs: string[];
+  evidenceRefs: string[];
+};
+
+export type ArchitectureIR = {
+  title: string;
+  components: ArchitectureComponent[];
+  boundaries: ArchitectureBoundary[];
+  connections: ArchitectureConnection[];
+};
+
+/** schema3 §3.3. */
+export type WorkflowLane = { id: string; label: string; kind: "actor" | "system" };
+
+/** schema3 §3.3. */
+export type WorkflowNode = {
+  id: string;
+  laneId: string;
+  label: string;
+  sublabel?: string;
+  presentationType: PresentationType;
+  conceptRefs?: string[];
+  entityRefs: string[];
+  evidenceRefs: string[];
+  description?: string;
+  inputs?: ComponentIO[];
+  outputs?: ComponentIO[];
+};
+
+/**
+ * schema3 §3.3~§3.4. `sequenceRef → SequenceIR.id`, 역방향은
+ * `SequenceIR.triggeredByEdgeId → WorkflowEdge.id` — 1엣지-1시퀀스로 고정한다.
+ */
+export type WorkflowEdge = {
+  id: string;
+  from: string;
+  to: string;
+  /** 화면에 보이는 문자열. 예: "위치 · 추천 조회" — 가운데점으로 여러 용어를 잇는다 */
+  label?: string;
+  /** ["위치", "추천 조회"] — 구조화된 형태. SequenceIR.phases[]와 1:1 매핑된다 */
+  labelTerms?: string[];
+  role: "main" | "error" | "async" | "return";
+  /** 클릭 시 열릴 시퀀스. 분석 시점에 이미 생성되어 있다 — 클릭은 조회일 뿐 요청이 아니다 */
+  sequenceRef?: string;
+  evidenceRefs: string[];
+};
+
+export type WorkflowIR = {
+  title: string;
+  lanes: WorkflowLane[];
+  /** 해피패스 node id 순서 */
+  mainPath: string[];
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
+/** schema3 §3.5. */
+export type SequenceMessage = {
+  id: string;
+  fromParticipantId: string;
+  toParticipantId: string;
+  /** 좌표가 아니다. 정수 전순서 — 렌더러가 y를 계산한다 (schema A7·A12, schema2 I14 재확인) */
+  order: number;
+  label: string;
+  kind: "call" | "return" | "event";
+  evidenceRefs: string[];
+};
+
+export type SequenceIR = {
+  id: string;
+  title: string;
+  /** WorkflowEdge.id 역참조 (breadcrumb) */
+  triggeredByEdgeId: string;
+  /** 기존 타입 재사용 */
+  participants: ScenarioParticipant[];
+  messages: SequenceMessage[];
+  /** 기존 타입 재사용 (schema2 §5) */
+  activations?: ScenarioActivation[];
+  /** 기존 타입 재사용, labelTerms 분절에 쓴다 */
+  phases?: ScenarioPhase[];
+  evidenceRefs: string[];
+  confidence?: number;
+};
+
+/**
+ * schema3 §3.5, §5.4 — 분석 시점에 한 번에 생성되고 generation에 원자적으로 커밋되는 단위.
+ *
+ * `sequences`는 `WorkflowEdge.sequenceRef`가 가리키는 전체 집합이다 — 해석 가치가 있다고
+ * 판단된 엣지에만 생성되므로 `workflow.edges`보다 적을 수 있다.
+ */
+export type AnalysisBundle = {
+  analysisVersion: number;
+  semanticVersion: number;
+  architecture: ArchitectureIR;
+  workflow: WorkflowIR;
+  sequences: SequenceIR[];
+  freshness: ViewFreshness;
 };

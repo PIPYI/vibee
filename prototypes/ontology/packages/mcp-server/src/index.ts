@@ -124,6 +124,7 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
+  · 아키텍처/워크플로우/시퀀스 한 벌을 제출하려면    -> submit_analysis_bundle (assembly turn 전용)
 
 중요한 규칙:
 
@@ -395,6 +396,49 @@ server.registerTool(
   },
   async ({ viewKind, ir }) =>
     reply(await callBridge("/internal/submit-view-ir", { method: "POST", body: JSON.stringify({ viewKind, ir }) })),
+);
+
+/**
+ * schema3 §5.2 Stage 3~4 — assembly turn 전용. `ir`의 shape을 zod로 다시 베끼지 않는 것은
+ * `submit_view_ir`와 같은 이유다(Core의 ajv schema가 유일한 출처, A6).
+ */
+server.registerTool(
+  "submit_analysis_bundle",
+  {
+    title: "Architecture/Workflow/Sequence Bundle 제출",
+    description:
+      "이번 assembly turn에서 만든 ArchitectureIR + WorkflowIR + SequenceIR 전체를 한 번에 " +
+      "제출한다. analyze turn(Stage 2)이 끝난 뒤 이어지는 assembly turn 밖에서 부르면 " +
+      "no_active_transaction을 돌려준다.\n\n" +
+      "architecture: { title, components: [{ id, label, presentationType, entityRefs, " +
+      "evidenceRefs, description?, inputs?, outputs?, boundaryId?, conceptRefs?, sublabel?, " +
+      "confidence? }], boundaries: [{ id, label, kind, wraps }], connections: [{ id, from, to, " +
+      "traceLinkRefs, evidenceRefs, label?, role? }] }.\n\n" +
+      "workflow: { title, lanes: [{ id, label, kind }], mainPath: [nodeId...], " +
+      "nodes: [{ id, laneId, label, presentationType, entityRefs, evidenceRefs, ... }], " +
+      "edges: [{ id, from, to, role, evidenceRefs, label?, labelTerms?, sequenceRef? }] }.\n\n" +
+      "sequences: [{ id, title, triggeredByEdgeId, participants, messages: [{ id, " +
+      "fromParticipantId, toParticipantId, order, label, kind, evidenceRefs }], activations?, " +
+      "phases?, evidenceRefs }].\n\n" +
+      "**규칙**: entityRefs는 실재하는 골격 entity(entityKey)만, evidenceRefs는 실재하고 " +
+      "present인 evidence id만 가리켜야 한다(빈 배열 금지, I9). connections.traceLinkRefs는 " +
+      "그 연결을 뒷받침하는 골격 link의 evidence id여야 한다 — 지어낸 연결은 거절된다(I20). " +
+      "edge.sequenceRef와 그 SequenceIR.triggeredByEdgeId는 서로 일치해야 한다(1엣지-1시퀀스). " +
+      "presentationType은 표시용 분류일 뿐이다 — 확신이 없으면 \"unknown\"을 쓴다.\n\n" +
+      "실패하면 diagnostics로 이유와 supportedFixes가 온다 — 같은 turn에서 고쳐 다시 제출하라.",
+    inputSchema: {
+      architecture: z.record(z.unknown()).describe("ArchitectureIR"),
+      workflow: z.record(z.unknown()).describe("WorkflowIR"),
+      sequences: z.array(z.record(z.unknown())).describe("SequenceIR[]"),
+    },
+  },
+  async ({ architecture, workflow, sequences }) =>
+    reply(
+      await callBridge("/internal/submit-analysis-bundle", {
+        method: "POST",
+        body: JSON.stringify({ architecture, workflow, sequences }),
+      }),
+    ),
 );
 
 /**

@@ -8,7 +8,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildEvidenceBundle, buildOverviewPrompt, buildScenarioPrompt, selectAnalyzePrompt } from "../dist/prompt.js";
+import {
+  buildAssemblyPrompt,
+  buildEvidenceBundle,
+  buildOverviewPrompt,
+  buildScenarioPrompt,
+  buildSkeletonSummary,
+  describeSession,
+  selectAnalyzePrompt,
+} from "../dist/prompt.js";
 
 const EMPTY_WORK_SET = {
   dirtyEvidence: [],
@@ -144,4 +152,59 @@ test("Scenario 프롬프트는 activations·phases·kind:return을 선택 사항
   assert.match(prompt, /phases/);
   assert.match(prompt, /kind: "return"/);
   assert.match(prompt, /선택이다/);
+});
+
+/**
+ * `buildSkeletonSummary` — schema3 §5.2 Stage 3의 오리엔테이션 입력.
+ */
+function evidenceGraph({ nodes = [], edges = [] } = {}) {
+  return {
+    nodes: new Map(nodes.map((node) => [node.key, node])),
+    outgoing: new Map(),
+    incoming: new Map(),
+    edges,
+  };
+}
+
+test("buildSkeletonSummary는 route/model만 나열하고 symbol/file은 개수에만 반영한다", () => {
+  const graph = evidenceGraph({
+    nodes: [
+      { key: "route:GET /api/x", kind: "route", label: "GET /api/x" },
+      { key: "model:User", kind: "model", label: "User" },
+      { key: "symbol:svc#handle", kind: "symbol", label: "handle" },
+    ],
+    edges: [{ fromId: "route:GET /api/x", toId: "symbol:svc#handle", kind: "api_handler", evidenceRefs: ["ev-1"] }],
+  });
+  const summary = buildSkeletonSummary(graph);
+  assert.match(summary, /entity 3개, link 1개/);
+  assert.match(summary, /route \(1개\): GET \/api\/x/);
+  assert.match(summary, /model \(1개\): User/);
+  assert.doesNotMatch(summary, /\bhandle\b/, "symbol 라벨은 route/model 목록에 새지 않는다");
+  assert.match(summary, /api_handler: 1/);
+});
+
+test("buildSkeletonSummary는 route/model/link가 없어도 (없음)으로 안전하게 표시한다", () => {
+  const summary = buildSkeletonSummary(evidenceGraph());
+  assert.match(summary, /entity 0개, link 0개/);
+  assert.match(summary, /route \(0개\): \(없음\)/);
+  assert.match(summary, /model \(0개\): \(없음\)/);
+  assert.match(summary, /link kind 별 개수:\n {2}\(없음\)/);
+});
+
+/**
+ * `buildAssemblyPrompt` — schema3 §5.2 Stage 3, §3.4의 1엣지-1시퀀스·I20 규칙을 지시한다.
+ */
+test("Assembly 프롬프트는 골격 요약을 포함하고 traceLinkRefs·1엣지-1시퀀스 규칙을 안내한다", () => {
+  const summary = buildSkeletonSummary(evidenceGraph());
+  const prompt = buildAssemblyPrompt("/tmp/proj", summary);
+  assert.match(prompt, /submit_analysis_bundle/);
+  assert.match(prompt, /traceLinkRefs/);
+  assert.match(prompt, /1엣지-1시퀀스/);
+  assert.match(prompt, /위치 · 추천 조회/);
+  assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
+});
+
+test("describeSession은 Assembly 프롬프트를 식별한다", () => {
+  const prompt = buildAssemblyPrompt("/tmp/proj", buildSkeletonSummary(evidenceGraph()));
+  assert.equal(describeSession(prompt), "Architecture/Workflow/Sequence 조립");
 });

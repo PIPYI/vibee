@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": { "title": "Cal.diy 예약 요청 시퀀스", "quality_profile": "showcase", "column_fit": "spread", "viewBox": [1080, 760] },
+  "participants": [
+    { "id": "visitor", "type": "external", "label": "예약자", "sublabel": "브라우저" },
+    { "id": "web", "type": "frontend", "label": "예약 화면", "sublabel": "Next.js" },
+    { "id": "api", "type": "backend", "label": "예약 API", "sublabel": "/api/book/event" },
+    { "id": "guards", "type": "security", "label": "요청 보호", "sublabel": "봇 · rate limit" },
+    { "id": "service", "type": "backend", "label": "예약 서비스", "sublabel": "RegularBookingService" },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "Prisma" },
+    { "id": "calendar", "type": "cloud", "label": "외부 캘린더", "sublabel": "이벤트 · 회의" }
+  ],
+  "segments": [
+    { "from": 150, "to": 285, "label": "입력 및 보호" },
+    { "from": 305, "to": 495, "label": "예약 생성" },
+    { "from": 515, "to": 665, "label": "연동 및 응답" }
+  ],
+  "messages": [
+    { "from": "visitor", "to": "web", "y": 185, "label": "시간과 참석자 입력", "variant": "default" },
+    { "from": "web", "to": "api", "y": 230, "label": "POST 예약 데이터", "variant": "emphasis" },
+    { "from": "api", "to": "guards", "y": 274, "label": "Turnstile · 봇 · rate limit", "variant": "security" },
+    { "from": "guards", "to": "api", "y": 313, "label": "통과", "variant": "return" },
+    { "from": "api", "to": "service", "y": 360, "label": "createBooking", "variant": "emphasis" },
+    { "from": "service", "to": "db", "y": 407, "label": "Booking · Attendee 생성", "variant": "emphasis" },
+    { "from": "db", "to": "service", "y": 447, "label": "uid · 상태", "variant": "return" },
+    { "from": "service", "to": "calendar", "y": 505, "label": "이벤트/회의 생성", "variant": "default" },
+    { "from": "calendar", "to": "service", "y": 548, "label": "참조 · 회의 URL", "variant": "return" },
+    { "from": "service", "to": "db", "y": 592, "label": "참조·메타데이터 갱신", "variant": "dashed" },
+    { "from": "service", "to": "api", "y": 635, "label": "예약 응답", "variant": "return" },
+    { "from": "api", "to": "web", "y": 675, "label": "HTTP 결과", "variant": "return" },
+    { "from": "web", "to": "visitor", "y": 675, "label": "확인 화면", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "web", "from": 220, "to": 714, "type": "frontend" },
+    { "participant": "api", "from": 230, "to": 679, "type": "backend" },
+    { "participant": "guards", "from": 270, "to": 318, "type": "security" },
+    { "participant": "service", "from": 356, "to": 640, "type": "backend" },
+    { "participant": "db", "from": 402, "to": 600, "type": "database" },
+    { "participant": "calendar", "from": 500, "to": 554, "type": "cloud" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "보호 후 생성", "items": ["API는 서비스 호출 전에 bot detection과 rate limit을 수행합니다.", "DB 생성 충돌은 409 예약 충돌로 처리됩니다."] },
+    { "dot": "amber", "title": "외부 연동", "items": ["확정 예약에서 EventManager가 캘린더/회의 생성을 조율합니다.", "반환된 참조와 메타데이터는 예약에 기록됩니다."] }
+  ]
+}

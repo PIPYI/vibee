@@ -19,6 +19,8 @@ export const STATE_FILES = {
   memory: "semantic-memory.json",
   grounding: "grounding.json",
   versions: "versions.json",
+  /** schema3 §5.4 — AnalysisBundle. 아직 분석하지 않은 generation에서는 `null`이다. */
+  analysisBundle: "analysis-bundle.json",
   manifest: "manifest.json",
 } as const;
 
@@ -31,6 +33,7 @@ export const MANIFEST_MEMBERS: StateFileName[] = [
   STATE_FILES.memory,
   STATE_FILES.grounding,
   STATE_FILES.versions,
+  STATE_FILES.analysisBundle,
 ];
 
 export function intelDir(projectPath: string): string {

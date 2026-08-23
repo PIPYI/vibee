@@ -15,6 +15,7 @@ import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 
 import type { Diagnostic } from "@onto/protocol";
 import {
+  ANALYSIS_BUNDLE_SCHEMA,
   EVIDENCE_PROPOSAL_SCHEMA,
   OVERVIEW_IR_SCHEMA,
   SCENARIO_IR_SCHEMA,
@@ -82,6 +83,7 @@ const SCHEMAS_BY_KEY = {
   "evidence-proposal": { schema: EVIDENCE_PROPOSAL_SCHEMA, code: "proposal/schema" },
   "overview-ir": { schema: OVERVIEW_IR_SCHEMA, code: "view/schema" },
   "scenario-ir": { schema: SCENARIO_IR_SCHEMA, code: "view/schema" },
+  "analysis-bundle": { schema: ANALYSIS_BUNDLE_SCHEMA, code: "bundle/schema" },
 } as const;
 
 /** schema 검사. 통과하면 빈 배열이다. */

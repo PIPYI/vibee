@@ -28,8 +28,12 @@ export type AgentId = "codex" | "claude";
  *
  * `analyze`는 프로젝트의 `AGENTS.md`/`CLAUDE.md`를 로드하지 않는다 — 그것은 기능1의 인계
  * 산출물이지 분석 turn의 규칙이 아니다. spike가 정확히 이 문제로 깨졌다(§14).
+ *
+ * `assembly`는 schema3 §5.2 Stage 3다 — `analyze`(Stage 2)가 끝난 뒤 같은 taskId 아래서
+ * 이어진다(`runAnalyzePipeline`). `analyze`와 같은 이유로 `AGENTS.md`/`CLAUDE.md`를
+ * 로드하지 않는다.
  */
-export type TaskMode = "analyze" | "view" | "chat";
+export type TaskMode = "analyze" | "view" | "chat" | "assembly";
 
 export type McpToolName =
   | "get_project_semantic_memory"
@@ -40,7 +44,8 @@ export type McpToolName =
   | "get_impact_context"
   | "propose_evidence"
   | "submit_semantic_patch"
-  | "submit_view_ir";
+  | "submit_view_ir"
+  | "submit_analysis_bundle";
 
 /** MCP 호출이 관측된 경로. **두 증거원이 모두 있어야** 통과다 (B4). */
 export type McpCallSource = "agent-stream" | "bridge-endpoint";
@@ -77,6 +82,8 @@ export type AgentEvent =
   | { type: "analysis.progress"; taskId: string; phase: string; message: string }
   | { type: "memory.patched"; taskId: string; semanticVersion: number; summary: string }
   | { type: "view.ready"; taskId: string; viewKind: string; requestId: string }
+  /** schema3 §5.2 Stage 4 — AnalysisBundle이 검증을 통과해 generation에 커밋되었다. */
+  | { type: "bundle.ready"; taskId: string; generation: number }
   | { type: "validation.failed"; taskId: string; tool: string; diagnostics: unknown[] }
   | { type: "task.completed"; taskId: string }
   | { type: "task.interrupted"; taskId: string }

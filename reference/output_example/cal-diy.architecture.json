@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Cal.diy 예약 런타임 아키텍처",
+    "quality_profile": "showcase",
+    "viewBox": [1360, 680],
+    "repository": { "url": "https://github.com/calcom/cal.diy.git", "revision": "176037d0afbe572f870a3c702985e7cd83fe6c0c" }
+  },
+  "components": [
+    { "id": "visitor", "type": "external", "label": "예약자", "sublabel": "브라우저", "pos": [30, 295], "size": [130, 64] },
+    { "id": "booker", "type": "frontend", "label": "Cal.diy Web", "sublabel": "Next.js 예약 화면", "pos": [210, 295], "size": [160, 64], "sources": [{ "path": "apps/web/pages/api/book/event.ts", "line": 1, "end_line": 63, "label": "예약 API" }] },
+    { "id": "api", "type": "backend", "label": "예약 API", "sublabel": "POST /api/book/event", "pos": [430, 295], "size": [164, 64], "tag": "defaultResponder", "sources": [{ "path": "apps/web/pages/api/book/event.ts", "line": 18, "end_line": 63, "label": "핸들러" }] },
+    { "id": "guards", "type": "security", "label": "요청 보호", "sublabel": "Turnstile · bot · rate limit", "pos": [430, 120], "size": [164, 64], "sources": [{ "path": "apps/web/pages/api/book/event.ts", "line": 21, "end_line": 43, "label": "검사" }] },
+    { "id": "booking", "type": "backend", "label": "RegularBookingService", "sublabel": "예약 조율", "pos": [655, 295], "size": [175, 64], "sources": [{ "path": "packages/features/bookings/lib/service/RegularBookingService.ts", "line": 2653, "end_line": 2665, "label": "서비스 진입" }] },
+    { "id": "prisma", "type": "database", "label": "PostgreSQL / Prisma", "sublabel": "Booking · Attendee · Reference", "pos": [905, 420], "size": [182, 64], "sources": [{ "path": "packages/prisma/schema.prisma", "line": 851, "end_line": 936, "label": "Booking 모델" }] },
+    { "id": "eventmanager", "type": "backend", "label": "EventManager", "sublabel": "캘린더·회의 생성", "pos": [905, 295], "size": [170, 64], "sources": [{ "path": "packages/features/bookings/lib/service/RegularBookingService.ts", "line": 1785, "end_line": 1790, "label": "연동 생성" }] },
+    { "id": "providers", "type": "cloud", "label": "외부 연동", "sublabel": "캘린더 · 화상회의", "pos": [1140, 295], "size": [160, 64], "sources": [{ "path": "packages/features/bookings/lib/service/RegularBookingService.ts", "line": 2050, "end_line": 2070, "label": "이벤트 생성" }] },
+    { "id": "notifications", "type": "messagebus", "label": "후속 전달", "sublabel": "이메일/SMS · 웹훅", "pos": [905, 545], "size": [182, 64], "sources": [{ "path": "packages/features/bookings/lib/service/RegularBookingService.ts", "line": 2387, "end_line": 2488, "label": "트리거·웹훅" }] }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "Cal.diy 애플리케이션", "wraps": ["booker", "api", "guards", "booking", "prisma", "eventmanager", "notifications"], "pad": 28 }
+  ],
+  "connections": [
+    { "from": "visitor", "to": "booker", "label": "예약 정보", "variant": "emphasis" },
+    { "from": "booker", "to": "api", "label": "예약 요청", "variant": "emphasis" },
+    { "from": "api", "to": "guards", "label": "요청 검증", "variant": "security" },
+    { "from": "api", "to": "booking", "variant": "emphasis" },
+    { "from": "booking", "to": "prisma", "variant": "emphasis" },
+    { "from": "booking", "to": "eventmanager", "variant": "emphasis" },
+    { "from": "eventmanager", "to": "providers", "variant": "default" },
+    { "from": "booking", "to": "notifications", "label": "알림·웹훅", "variant": "dashed", "labelDy": 62 },
+    { "from": "notifications", "to": "prisma", "label": "참조·메타데이터 갱신", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "주 경로", "items": ["Web 예약 화면이 예약 API를 호출합니다.", "서비스가 영속화와 외부 일정 생성을 조율합니다."] },
+    { "dot": "rose", "title": "보호 경계", "items": ["선택적으로 Turnstile 토큰을 검증합니다.", "봇 탐지와 IP 기반 예약 레이트 리밋이 API 앞에 있습니다."] },
+    { "dot": "emerald", "title": "비동기 후속 작업", "items": ["확정 예약은 이메일·SMS 및 웹훅 트리거를 가질 수 있습니다.", "참조와 메타데이터는 예약 레코드에 갱신됩니다."] }
+  ]
+}

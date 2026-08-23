@@ -7,6 +7,7 @@
  * C9의 evidence-first 제약을 넣되 한 줄을 바꾼다 — CoderMind의 "실재하는 노드만"을 그대로
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
+import type { EvidenceGraph } from "@onto/core";
 import type { EvidenceIndex, SemanticWorkSet, ViewRequest } from "@onto/protocol";
 
 const EVIDENCE_RULES = [
@@ -230,6 +231,97 @@ export function buildScenarioPrompt(projectPath: string, request: ViewRequest): 
 }
 
 /**
+ * schema3 §5.2 Stage 3 — Stage 1 골격(`EvidenceGraph`)의 오리엔테이션 요약.
+ *
+ * 전체 evidence를 다시 나열하지 않는다(§7.3 index-only arm과 다른 목적이다) — Stage 3
+ * agent는 이미 Stage 2에서 Semantic Memory를 만들며 저장소를 봤으므로, 여기서는 route/model
+ * 목록과 link kind 분포만 줘서 "이런 골격이 있다"는 지도를 제공하고, 실제 세부는
+ * `get_impact_context`/`get_scenario_context`로 필요할 때 가져오게 한다.
+ */
+export function buildSkeletonSummary(graph: EvidenceGraph): string {
+  const routes: string[] = [];
+  const models: string[] = [];
+  for (const node of graph.nodes.values()) {
+    if (node.kind === "route") routes.push(node.label);
+    else if (node.kind === "model") models.push(node.label);
+  }
+  routes.sort();
+  models.sort();
+
+  const edgeKindCounts = new Map<string, number>();
+  for (const edge of graph.edges) {
+    edgeKindCounts.set(edge.kind, (edgeKindCounts.get(edge.kind) ?? 0) + 1);
+  }
+  const kindLines = [...edgeKindCounts.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  return [
+    `entity ${graph.nodes.size}개, link ${graph.edges.length}개.`,
+    "",
+    `route (${routes.length}개): ${routes.length > 0 ? routes.join(", ") : "(없음)"}`,
+    `model (${models.length}개): ${models.length > 0 ? models.join(", ") : "(없음)"}`,
+    "",
+    "link kind 별 개수:",
+    ...(kindLines.length > 0 ? kindLines.map(([kind, count]) => `  ${kind}: ${count}`) : ["  (없음)"]),
+  ].join("\n");
+}
+
+const ASSEMBLY_RULES = [
+  "규칙:",
+  "1. entityRefs·traceLinkRefs·evidenceRefs 는 전부 실재해야 한다 — 지어내지 마라.",
+  "   get_impact_context(anchor, direction, hops) 또는 get_scenario_context(anchor) 로 골격",
+  "   서브그래프(entity·link, 각 link 는 evidenceRefs 를 이미 갖고 있다)를 확인한 뒤에만",
+  "   그 값을 architecture.connections[].traceLinkRefs 에 쓴다.",
+  "2. architecture.connections 는 반드시 골격 link 를 요약한 것이어야 한다(I20) — 골격에",
+  "   없는 연결을 새로 만들 수 없다. workflow.edges 는 대신 evidenceRefs 로만 근거를 댄다",
+  "   (하나의 워크플로우 전이가 여러 골격 hop 을 압축할 수 있기 때문이다).",
+  "3. 좌표(x/y)를 넣지 마라. layout은 렌더러가 계산한다 (A7).",
+  "4. presentationType 은 화면 표시용 분류일 뿐이다(schema3 §4) — 확신이 없으면 \"unknown\"",
+  "   을 쓴다. 틀려도 Core identity 에는 영향이 없다.",
+  "5. 해석 가치가 있는 workflow.edges 에만 SequenceIR 을 만든다 — 모든 edge 에 만들 필요는",
+  "   없다. edge.sequenceRef 와 그 SequenceIR.triggeredByEdgeId 는 반드시 서로를 가리켜야",
+  "   한다(1엣지-1시퀀스, schema3 §3.4) — 어긋나면 거절된다.",
+  "6. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
+].join("\n");
+
+/**
+ * Assembly Prompt (schema3 §5.2 Stage 3).
+ *
+ * `analyze`(Stage 2)가 방금 커밋한 Semantic Memory와, `analyze` 이전에도 존재하는 Stage 1
+ * 골격을 입력으로 "클러스터링 + 라벨링 + 역할 부여"만 지시한다 — 구조 자체를 상상하게
+ * 하지 않는다(§5.2 R4의 정신을 Assembly로 확장한 것).
+ */
+export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string): string {
+  return [
+    "지금까지 만든 Semantic Memory와 Evidence 골격을 클러스터링·라벨링해서 " +
+      "ArchitectureIR + WorkflowIR + SequenceIR 한 벌(AnalysisBundle)을 만든다.",
+    `프로젝트 경로: ${projectPath}`,
+    "",
+    "## Evidence 골격 요약",
+    "```",
+    skeletonSummary,
+    "```",
+    "",
+    "순서:",
+    "1. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다.",
+    "2. 각 CanonicalScenario 또는 중요한 Concept 의 anchor 에 대해 get_impact_context 나",
+    "   get_scenario_context 를 불러 그 골격 서브그래프를 확인한다.",
+    "3. architecture.components 를 만든다. 각 component 는 entityRefs 로 실제 골격 entity를",
+    "   하나 이상 가리켜야 하고, evidenceRefs 는 그 entity 들의 근거를 합친 것이다.",
+    "   description 을 쓰려면 evidenceRefs 가 반드시 있어야 한다(I9).",
+    "4. architecture.connections 를 만든다 — traceLinkRefs 에 2번에서 확인한 골격 link 의",
+    "   evidenceRefs 를 넣는다.",
+    "5. workflow.nodes/edges 를 만든다. workflow.edges 의 label 은 사용자에게 보이는 문장으로",
+    "   쓰고, 여러 용어를 다룰 때는 가운데점(·)으로 잇는다(예: \"위치 · 추천 조회\").",
+    "   labelTerms 에는 그 용어들을 배열로도 넣는다.",
+    "6. 해석 가치가 있는 workflow.edges 마다 그 구간을 SequenceIR 로 펼쳐 sequences 에",
+    "   추가하고, edge.sequenceRef 와 SequenceIR.triggeredByEdgeId 를 서로 맞춘다.",
+    "7. submit_analysis_bundle 로 { architecture, workflow, sequences } 를 제출한다.",
+    "",
+    ASSEMBLY_RULES,
+  ].join("\n");
+}
+
+/**
  * 세션 미리보기를 사람이 읽을 이름으로 바꾼다.
  *
  * provider 가 주는 미리보기는 "첫 사용자 메시지"인데 우리가 보낸 첫 메시지는 위의 래퍼다.
@@ -243,6 +335,7 @@ export function describeSession(preview: string): string {
   if (text.startsWith("아래는 이 프로젝트의 Evidence Index 요약")) return "분석 (index-only arm)";
   if (text.startsWith("이 프로젝트가 무엇을 하는지")) return "Overview 생성";
   if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
+  if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/Workflow/Sequence 조립";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 

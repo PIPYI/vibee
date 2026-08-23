@@ -19,6 +19,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AnalyzeSession,
   SemanticStore,
+  buildEvidenceGraph,
+  commitAnalysisBundle,
   commitPatch,
   hasError,
   initialProjectState,
@@ -58,7 +60,7 @@ import { WebSocketServer } from "ws";
 
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
-import type { AgentAdapter } from "./agents/types.js";
+import type { AgentAdapter, TaskOutcome } from "./agents/types.js";
 import {
   conceptContext,
   impactContext,
@@ -71,9 +73,11 @@ import {
 } from "./memory-api.js";
 import { onShutdown } from "./platform.js";
 import {
+  buildAssemblyPrompt,
   buildEvidenceBundle,
   buildOverviewPrompt,
   buildScenarioPrompt,
+  buildSkeletonSummary,
   buildVerifyPrompt,
   selectAnalyzePrompt,
 } from "./prompt.js";
@@ -328,7 +332,7 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
       exploredFiles: [],
     });
     res.json({ taskId, ...prepared.summary });
-    void runTask(adapter, taskId, projectPath, prepared.prompt, "analyze", body);
+    void runAnalyzePipeline(adapter, taskId, projectPath, prepared.prompt, body);
   } catch (error) {
     res.status(500).json({ error: asMessage(error) });
   }
@@ -466,15 +470,12 @@ async function reindex(
   };
 }
 
-async function runTask(
-  adapter: AgentAdapter,
-  taskId: string,
-  projectPath: string,
-  prompt: string,
-  mode: TaskMode,
-  body: AnalyzeRequest,
-): Promise<void> {
-  const emit = (event: AgentEvent): void => {
+/**
+ * `AgentEvent`를 그대로 브로드캐스트하기 전에 task별 파생 상태(MCP 호출·탐색 파일·토큰
+ * 사용량)를 갱신한다. `runTask`와 `runAnalyzePipeline`이 공유한다.
+ */
+function makeEmit(taskId: string): (event: AgentEvent) => void {
+  return (event: AgentEvent): void => {
     if (event.type === "mcp.tool.called") {
       state.recordMcpCall(taskId, event.tool, event.source);
     }
@@ -486,6 +487,17 @@ async function runTask(
     }
     state.emit(event);
   };
+}
+
+async function runTask(
+  adapter: AgentAdapter,
+  taskId: string,
+  projectPath: string,
+  prompt: string,
+  mode: TaskMode,
+  body: AnalyzeRequest,
+): Promise<void> {
+  const emit = makeEmit(taskId);
 
   state.updateTask(taskId, { status: "running" });
   state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode });
@@ -518,6 +530,100 @@ async function runTask(
     // `viewResultsByTask`에 별도로 남아 있으므로 여기서 지워도 결과는 사라지지 않는다.
     state.clearPendingViewRequest(taskId);
   }
+}
+
+/**
+ * `/api/analyze`의 전체 파이프라인 (schema3 §5.2) — 하나의 taskId 아래서 Stage 2(analyze)와
+ * Stage 3(assembly)를 순서대로 잇는다. 브라우저에는 "분석 시작" 버튼 한 번, 요청 한 번으로
+ * 보인다(schema3 §2.1) — Trace/Reachability처럼 Core가 즉시 계산하는 것과 달리 Stage 2·3은
+ * 실제 agent turn이라 순서대로 기다려야 한다.
+ *
+ * **Stage 3에는 `AnalyzeSession`을 열지 않는다** — `submit_analysis_bundle`은 `propose_evidence`
+ * 로 새 근거를 만들지 않으므로(Stage 1 골격 + Stage 2 memory 안에서만 클러스터링·라벨링한다)
+ * transaction이 필요 없다. `/internal/submit-analysis-bundle`은 `task.mode === "assembly"`
+ * 로만 게이트한다.
+ *
+ * `index-only` arm(§7.3)은 Stage 3로 넘어가지 않는다 — 그것은 저장소 탐색 없이 얼마나
+ * 잘하는지를 재는 평가용 arm이지 제품 파이프라인이 아니다.
+ */
+async function runAnalyzePipeline(
+  adapter: AgentAdapter,
+  taskId: string,
+  projectPath: string,
+  stage2Prompt: string,
+  body: AnalyzeRequest,
+): Promise<void> {
+  const emit = makeEmit(taskId);
+  const modelEffort = {
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.effort ? { effort: body.effort } : {}),
+  };
+
+  state.updateTask(taskId, { status: "running" });
+  state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode: "analyze" });
+
+  let stage2Outcome: TaskOutcome;
+  try {
+    stage2Outcome = await adapter.startTask(
+      { taskId, projectPath, prompt: stage2Prompt, mode: "analyze", ...modelEffort },
+      emit,
+    );
+  } catch (error) {
+    const message = asMessage(error);
+    state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
+    state.emit({ type: "task.error", taskId, message });
+    state.disposeAnalyzeSession(taskId, "stage2(analyze) failed");
+    return;
+  }
+
+  if (stage2Outcome === "interrupted") {
+    state.updateTask(taskId, { status: "interrupted", endedAt: new Date().toISOString() });
+    state.emit({ type: "task.interrupted", taskId });
+    state.disposeAnalyzeSession(taskId, "stage2(analyze) interrupted");
+    return;
+  }
+
+  // Stage 2가 끝났다 — submit_semantic_patch의 transaction은 더 필요 없다.
+  state.disposeAnalyzeSession(taskId, "stage2(analyze) completed, entering stage3(assembly)");
+
+  // index-only arm(§7.3)은 평가용이다 — Stage 3(제품 파이프라인)으로 이어지지 않는다.
+  if (body.mode === "index-only") {
+    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
+    state.emit({ type: "task.completed", taskId });
+    return;
+  }
+
+  state.emit({
+    type: "analysis.progress",
+    taskId,
+    phase: "assembly",
+    message: "아키텍처 · 워크플로우 · 시퀀스를 조립하는 중",
+  });
+
+  // Stage 2가 방금 커밋한 semantic memory를 반영한 최신 상태에서 골격을 다시 만든다.
+  const head = new SemanticStore(projectPath).load();
+  const skeleton = buildEvidenceGraph(head.evidence);
+  const stage3Prompt = buildAssemblyPrompt(projectPath, buildSkeletonSummary(skeleton));
+
+  state.updateTask(taskId, { mode: "assembly", prompt: stage3Prompt });
+
+  let stage3Outcome: TaskOutcome;
+  try {
+    stage3Outcome = await adapter.startTask(
+      { taskId, projectPath, prompt: stage3Prompt, mode: "assembly", ...modelEffort },
+      emit,
+    );
+  } catch (error) {
+    const message = asMessage(error);
+    state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
+    state.emit({ type: "task.error", taskId, message });
+    return;
+  }
+
+  state.updateTask(taskId, { status: stage3Outcome, endedAt: new Date().toISOString() });
+  state.emit(
+    stage3Outcome === "interrupted" ? { type: "task.interrupted", taskId } : { type: "task.completed", taskId },
+  );
 }
 
 /**
@@ -777,6 +883,40 @@ app.get("/api/views/:id", (req: Request, res: Response) => {
   }
   const head = new SemanticStore(task.projectPath).load();
   res.json({ status: task.status, view: withCurrentFreshness(cached, head) });
+});
+
+/**
+ * AnalysisBundle 읽기 (schema3 §5.4).
+ *
+ * **HEAD generation의 `analysis-bundle.json`을 읽기만 한다 — LLM turn을 절대 열지 않는다.**
+ * 탭을 전환할 때마다(아키텍처 ↔ 워크플로우) 매번 여기를 부르더라도 재분석이 일어나지 않는다는
+ * 것이 이 엔드포인트가 존재하는 이유다. freshness는 `withCurrentFreshness`와 같은 이유로
+ * **읽는 시점에 다시 계산한다** — 커밋 당시 "current"로 찍혔더라도 그 뒤 재인덱싱이 있었으면
+ * 여기서 "needs_review"로 바뀐다.
+ */
+app.get("/api/analysis-bundle", (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(req.query["projectPath"] ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const store = new SemanticStore(projectPath);
+  if (!store.isInitialized()) {
+    res.status(412).json({ error: "프로젝트가 아직 인덱싱되지 않았습니다. 먼저 분석을 실행하세요." });
+    return;
+  }
+  const head = store.load();
+  if (!head.analysisBundle) {
+    res.status(404).json({ error: "아직 AnalysisBundle 이 없습니다. 먼저 분석을 실행하세요." });
+    return;
+  }
+
+  const freshness =
+    head.project.semanticReconciledAnalysisVersion >= head.project.analysisVersion ? "current" : "needs_review";
+  res.json({ bundle: { ...head.analysisBundle, freshness } });
 });
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1213,39 @@ app.post("/internal/submit-view-ir", requireToken, (req: Request, res: Response)
   state.setViewResultForTask(taskId, cacheKey);
   state.emit({ type: "view.ready", taskId, viewKind: pending.viewKind, requestId: cacheKey });
   res.json({ ok: true, diagnostics: result.diagnostics });
+});
+
+/**
+ * `submit_analysis_bundle` (schema3 §5.2 Stage 3~4). `submit_view_ir`과 달리 **`SemanticStore`에
+ * 커밋한다** — AnalysisBundle은 cache가 아니라 generation의 일부다(schema3 §5.4, view cache의
+ * in-memory 문제를 API 형태 자체에서 없애기 위해서다). `pendingViewRequest` 같은 별도 상태가
+ * 필요 없다 — `task.mode === "assembly"`인 활성 task가 있으면 그것으로 충분하다(§5.2, Stage 3는
+ * `propose_evidence`/`submit_semantic_patch`를 쓰지 않으므로 transaction도 필요 없다).
+ */
+app.post("/internal/submit-analysis-bundle", requireToken, async (req: Request, res: Response) => {
+  recordArrival("submit_analysis_bundle");
+  const projectPath = state.getProjectPath();
+  const taskId = state.getActiveTaskId();
+  const task = taskId ? state.getTask(taskId) : undefined;
+  if (!projectPath || !taskId || !task || task.mode !== "assembly") {
+    res.json({
+      error: "no_active_transaction",
+      next_step: "assembly turn 이 진행 중일 때만 submit_analysis_bundle 를 쓸 수 있습니다.",
+    });
+    return;
+  }
+
+  const store = new SemanticStore(projectPath);
+  const outcome = await commitAnalysisBundle(store, req.body);
+
+  if (!outcome.ok) {
+    state.emit({ type: "validation.failed", taskId, tool: "submit_analysis_bundle", diagnostics: outcome.diagnostics });
+    res.json({ ok: false, diagnostics: outcome.diagnostics });
+    return;
+  }
+
+  state.emit({ type: "bundle.ready", taskId, generation: outcome.value.generation });
+  res.json({ ok: true, ...outcome.value, diagnostics: outcome.diagnostics });
 });
 
 /** 시험과 진단용 — 이 task 에서 두 증거원이 모두 관측된 tool 들 (B4). */

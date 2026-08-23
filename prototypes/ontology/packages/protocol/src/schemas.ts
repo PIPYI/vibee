@@ -435,3 +435,222 @@ export const EVIDENCE_PROPOSAL_SCHEMA = {
     },
   },
 } as const;
+
+// ---------------------------------------------------------------------------
+// AnalysisBundle (schema3 §3~§4) — Architecture / Workflow / Sequence
+// ---------------------------------------------------------------------------
+
+/** schema3 §4.3 — View IR 전용 표시 분류. `"unknown"`도 항상 유효하다 (schema3 §4.3). */
+const presentationType = {
+  enum: ["external", "frontend", "backend", "database", "queue", "security", "job", "cloud", "unknown"],
+} as const;
+
+/**
+ * schema3 §3.1. **여기서는 빈 배열을 막지 않는다** — `evidenceRefs`가 비면 안 된다는 규칙은
+ * `scenarioStep`과 같은 이유로 grounding validator 층에서 다룬다(§6.7과 같은 관례).
+ */
+const componentIO = {
+  type: "object",
+  additionalProperties: false,
+  required: ["label", "kind", "direction", "evidenceRefs"],
+  properties: {
+    label: nonEmptyString,
+    kind: { enum: ["route", "event", "db", "call", "config", "other"] },
+    direction: { enum: ["in", "out"] },
+    entityRef,
+    evidenceRefs,
+    description: { type: "string" },
+  },
+} as const;
+
+const architectureComponent = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label", "presentationType", "entityRefs", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    sublabel: { type: "string" },
+    presentationType,
+    presentationTypeConfidence: confidence,
+    boundaryId: { type: "string" },
+    conceptRefs: stringArray,
+    // schema3 §5.2 — Stage 1 골격 노드를 반드시 참조해야 한다 (entityKey[]).
+    entityRefs: { type: "array", items: nonEmptyString },
+    evidenceRefs,
+    description: { type: "string" },
+    inputs: { type: "array", items: componentIO },
+    outputs: { type: "array", items: componentIO },
+    confidence,
+  },
+} as const;
+
+const architectureBoundary = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label", "kind", "wraps"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    // 자유 문자열이다 (I3와 같은 이유) — 고정 vocabulary로 정규화하지 않는다.
+    kind: nonEmptyString,
+    wraps: { type: "array", items: nonEmptyString },
+  },
+} as const;
+
+const architectureConnection = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "from", "to", "traceLinkRefs", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    from: nonEmptyString,
+    to: nonEmptyString,
+    label: { type: "string" },
+    role: { enum: ["sync", "async", "data", "control"] },
+    // schema3 §5.2, I20 — Stage 1 골격 엣지 롤업. 빈 배열이면 grounding validator가 거부한다.
+    traceLinkRefs: { type: "array", items: nonEmptyString },
+    evidenceRefs,
+  },
+} as const;
+
+/**
+ * `submit_analysis_bundle`의 `architecture` 하위 payload.
+ */
+export const ARCHITECTURE_IR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "components", "boundaries", "connections"],
+  properties: {
+    title: nonEmptyString,
+    components: { type: "array", items: architectureComponent },
+    boundaries: { type: "array", items: architectureBoundary },
+    connections: { type: "array", items: architectureConnection },
+  },
+} as const;
+
+const workflowLane = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "label", "kind"],
+  properties: {
+    id: nonEmptyString,
+    label: nonEmptyString,
+    kind: { enum: ["actor", "system"] },
+  },
+} as const;
+
+const workflowNode = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "laneId", "label", "presentationType", "entityRefs", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    laneId: nonEmptyString,
+    label: nonEmptyString,
+    sublabel: { type: "string" },
+    presentationType,
+    conceptRefs: stringArray,
+    entityRefs: { type: "array", items: nonEmptyString },
+    evidenceRefs,
+    description: { type: "string" },
+    inputs: { type: "array", items: componentIO },
+    outputs: { type: "array", items: componentIO },
+  },
+} as const;
+
+const workflowEdge = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "from", "to", "role", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    from: nonEmptyString,
+    to: nonEmptyString,
+    label: { type: "string" },
+    // schema3 §3.4 — 가운데점으로 이은 라벨을 ScenarioPhase 단위로 분절한 것.
+    labelTerms: stringArray,
+    role: { enum: ["main", "error", "async", "return"] },
+    // schema3 §3.4 — SequenceIR.id. 1엣지-1시퀀스로 고정한다.
+    sequenceRef: { type: "string" },
+    evidenceRefs,
+  },
+} as const;
+
+/**
+ * `submit_analysis_bundle`의 `workflow` 하위 payload.
+ */
+export const WORKFLOW_IR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "lanes", "mainPath", "nodes", "edges"],
+  properties: {
+    title: nonEmptyString,
+    lanes: { type: "array", items: workflowLane },
+    mainPath: { type: "array", items: nonEmptyString },
+    nodes: { type: "array", items: workflowNode },
+    edges: { type: "array", items: workflowEdge },
+  },
+} as const;
+
+const sequenceMessage = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "fromParticipantId", "toParticipantId", "order", "label", "kind", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    fromParticipantId: nonEmptyString,
+    toParticipantId: nonEmptyString,
+    // 좌표가 아니다. 정수 전순서 — 렌더러가 y를 계산한다 (schema A7·A12, schema2 I14 재확인).
+    order: { type: "integer" },
+    label: nonEmptyString,
+    kind: { enum: ["call", "return", "event"] },
+    evidenceRefs,
+  },
+} as const;
+
+/**
+ * `submit_analysis_bundle`의 `sequences[]` 하위 payload. participants/activations/phases는
+ * `SCENARIO_IR_SCHEMA`가 이미 정의한 것과 같은 하위 스키마를 재사용한다 (schema3 §3.5 —
+ * "기존 타입 재사용").
+ */
+export const SEQUENCE_IR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "title", "triggeredByEdgeId", "participants", "messages", "evidenceRefs"],
+  properties: {
+    id: nonEmptyString,
+    title: nonEmptyString,
+    triggeredByEdgeId: nonEmptyString,
+    participants: { type: "array", items: scenarioParticipant },
+    messages: { type: "array", items: sequenceMessage },
+    activations: { type: "array", items: scenarioActivation },
+    phases: { type: "array", items: scenarioPhase },
+    evidenceRefs,
+    confidence,
+  },
+} as const;
+
+/**
+ * `submit_analysis_bundle`의 payload 전체 (schema3 §5.2 Stage 3, §9).
+ *
+ * `analysisVersion`/`semanticVersion`/`freshness`는 Core가 커밋 시점에 찍는다 — agent가
+ * 보내오면 Core가 덮어쓴다 (다른 상태 파일의 `createdAtVersion`/`updatedAtVersion`과 같은
+ * 이유, §6.1 참고). 그래도 agent가 무엇을 보내는지 스스로 확인할 수 있도록 schema에는 둔다.
+ */
+export const ANALYSIS_BUNDLE_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $id: "onto://schemas/analysis-bundle.json",
+  title: "AnalysisBundle",
+  type: "object",
+  additionalProperties: false,
+  required: ["architecture", "workflow", "sequences"],
+  properties: {
+    analysisVersion: version,
+    semanticVersion: version,
+    architecture: ARCHITECTURE_IR_SCHEMA,
+    workflow: WORKFLOW_IR_SCHEMA,
+    sequences: { type: "array", items: SEQUENCE_IR_SCHEMA },
+    freshness: { enum: ["current", "needs_review"] },
+  },
+} as const;

@@ -75,4 +75,13 @@ export {
   type ValidateResult,
 } from "./validator.js";
 export { validateViewIR, type ViewValidateInput, type ViewValidateResult } from "./view-validator.js";
+export {
+  validateAnalysisBundle,
+  type AnalysisBundleValidateInput,
+  type AnalysisBundleValidateResult,
+} from "./analysis-bundle-validator.js";
+export {
+  commitAnalysisBundle,
+  type CommitAnalysisBundleResult,
+} from "./analysis-bundle-commit.js";
 export { VIEW_BUDGET } from "./viewBudget.js";
