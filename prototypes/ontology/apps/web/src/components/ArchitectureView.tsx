@@ -1,15 +1,21 @@
 /**
- * ArchitectureView — schema3 §3.2, §7. archify architecture.json이 보여주던 결과물 형태를
- * 재현하되, 좌표는 IR에 없고 이 렌더러가 `architectureLayout.ts`로 결정론적으로 계산한다
- * (A7 재확인). `boundaries[]`는 member component들의 계산된 bounding box를 감싸는 배경
- * 박스로 그린다 — boundary 자체에는 좌표가 없다.
+ * ArchitectureView — schema3 §3.2, §7, v2 §1·§4. archify architecture.json이 보여주던
+ * 결과물 형태를 재현하되, 좌표는 IR에 없고 이 렌더러가 `architectureLayout.ts`로
+ * 결정론적으로 계산한다(A7 재확인).
  *
- * 엣지 라우팅은 `edgeRouting.ts`(M10)를 TraceView/ScenarioView와 동일하게 재사용한다.
+ * v2: 이 컴포넌트가 "아키텍처" 탭 전체를 소유한다 — 안에 [구성 개요] [전체 구조] 서브탭이
+ * 있다. 구성 개요(기본 진입)는 `ArchitectureComposition`(카드 그리드, ViewerShell 밖)이고,
+ * 전체 구조는 아래 `ArchitectureGraph`(ViewerShell 안의 rank/lane SVG, 기존 로직)다. 서브탭
+ * 전환은 로컬 state만 바꾼다 — 이미 받아온 `AnalysisBundle`을 다시 그릴 뿐 재요청은 없다.
  */
+import { useState } from "react";
+
 import type { ArchitectureComponent, ArchitectureIR } from "@onto/protocol";
 
 import { computeArchitectureLayout } from "../layout/architectureLayout.js";
-import { type Box, routedPath, routeEdges } from "../layout/edgeRouting.js";
+import { type Box, reduceCrossings, routeEdges, routedPathAvoiding } from "../layout/edgeRouting.js";
+import { ArchitectureComposition } from "./ArchitectureComposition.js";
+import { ViewerShell, type ViewerNode } from "./ViewerShell.js";
 
 const COL_WIDTH = 260;
 const ROW_HEIGHT = 92;
@@ -21,20 +27,34 @@ const BOUNDARY_PAD = 20;
 
 const ROLE_LABEL: Record<string, string> = { sync: "동기", async: "비동기", data: "데이터", control: "제어" };
 
-function presentationDot(component: ArchitectureComponent): React.JSX.Element {
+const PT_SHORT: Record<string, string> = {
+  external: "EXT",
+  frontend: "UI",
+  backend: "SRV",
+  database: "DB",
+  queue: "Q",
+  security: "SEC",
+  job: "JOB",
+  cloud: "CLD",
+  unknown: "?",
+};
+
+function presentationBadge(component: ArchitectureComponent): React.JSX.Element {
   return (
     <span
-      className={`pt-dot pt-${component.presentationType}`}
+      className={`pt-chip-mini pt-${component.presentationType}`}
       title={
         component.presentationTypeConfidence !== undefined
           ? `${component.presentationType} (신뢰도 ${component.presentationTypeConfidence.toFixed(2)})`
           : component.presentationType
       }
-    />
+    >
+      {PT_SHORT[component.presentationType] ?? component.presentationType}
+    </span>
   );
 }
 
-export function ArchitectureView({
+function ArchitectureGraph({
   ir,
   onSelectComponent,
 }: {
@@ -42,34 +62,45 @@ export function ArchitectureView({
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
   const layout = computeArchitectureLayout(ir);
-  const boxes = new Map<string, Box>();
+  const componentById = new Map(ir.components.map((c) => [c.id, c]));
+
+  let byRank = new Map<number, string[]>();
   for (const component of ir.components) {
     const pos = layout.positions.get(component.id);
-    const left = MARGIN_X + (pos?.rank ?? 0) * COL_WIDTH;
-    const top = MARGIN_Y + (pos?.index ?? 0) * ROW_HEIGHT;
-    boxes.set(component.id, {
-      id: component.id,
-      left,
-      top,
-      right: left + BOX_WIDTH,
-      bottom: top + BOX_HEIGHT,
-      cy: top + BOX_HEIGHT / 2,
-    });
+    const rank = pos?.rank ?? 0;
+    if (!byRank.has(rank)) byRank.set(rank, []);
+    byRank.get(rank)!.push(component.id);
+  }
+  for (const [rank, list] of byRank) {
+    list.sort((a, b) => (layout.positions.get(a)?.index ?? 0) - (layout.positions.get(b)?.index ?? 0));
+    byRank.set(rank, list);
   }
 
-  const maxRows = Math.max(1, ...[...layout.rowsByRank.values()]);
-  const width = MARGIN_X + (layout.maxRank + 1) * COL_WIDTH + 40;
-  const height = MARGIN_Y + maxRows * ROW_HEIGHT + 40;
+  const buildBoxes = (order: Map<number, string[]>): Map<string, Box> => {
+    const boxes = new Map<string, Box>();
+    for (const [rank, list] of order) {
+      list.forEach((id, index) => {
+        const left = MARGIN_X + rank * COL_WIDTH;
+        const top = MARGIN_Y + index * ROW_HEIGHT;
+        boxes.set(id, { id, left, top, right: left + BOX_WIDTH, bottom: top + BOX_HEIGHT, cy: top + BOX_HEIGHT / 2 });
+      });
+    }
+    return boxes;
+  };
 
   const forwardConnections = ir.connections
     .map((connection, index) => ({ connection, index }))
     .filter(({ connection }) => connection.from !== connection.to);
-  const routed = new Map(
-    routeEdges(
-      forwardConnections.map(({ connection, index }) => ({ key: `c-${index}`, fromId: connection.from, toId: connection.to })),
-      (id) => boxes.get(id),
-    ).map((edge) => [edge.key, edge] as const),
-  );
+  const forward = forwardConnections.map(({ connection, index }) => ({ key: `c-${index}`, fromId: connection.from, toId: connection.to }));
+
+  byRank = reduceCrossings(byRank, buildBoxes, forward);
+  const boxes = buildBoxes(byRank);
+
+  const maxRows = Math.max(1, ...[...byRank.values()].map((list) => list.length));
+  const width = MARGIN_X + (layout.maxRank + 1) * COL_WIDTH + 40;
+  const height = MARGIN_Y + maxRows * ROW_HEIGHT + 40;
+
+  const routed = new Map(routeEdges(forward, (id) => boxes.get(id)).map((edge) => [edge.key, edge] as const));
 
   const boundaryBoxes = ir.boundaries
     .map((boundary) => {
@@ -87,10 +118,9 @@ export function ArchitectureView({
     .filter((box): box is { id: string; label: string; left: number; top: number; right: number; bottom: number } => box !== null);
 
   return (
-    <div className="architecture-view">
-      <h2>{ir.title}</h2>
+    <div className="architecture-graph">
       <div className="scenario-canvas-wrap">
-        <svg width={width} height={height} className="scenario-canvas">
+        <svg width={width} height={height} className="scenario-canvas arch-canvas">
           <defs>
             <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" fill="var(--edge-color, #888)" />
@@ -133,12 +163,13 @@ export function ArchitectureView({
             }
             const route = routed.get(`c-${index}`);
             if (!route) return null;
+            const obstacles = [...boxes.values()].filter((box) => box.id !== connection.from && box.id !== connection.to);
             const cx = (route.fromPort.x + route.toPort.x) / 2;
             const cy = (route.fromPort.y + route.toPort.y) / 2 - 6;
             return (
               <g key={connection.id} data-edge-from={connection.from} data-edge-to={connection.to}>
                 <path
-                  d={routedPath(route.fromPort, route.toPort)}
+                  d={routedPathAvoiding(route.fromPort, route.toPort, obstacles)}
                   className={`edge arch-edge-${connection.role ?? "sync"}`}
                   markerEnd="url(#arch-arrow)"
                 />
@@ -152,9 +183,9 @@ export function ArchitectureView({
             );
           })}
 
-          {ir.components.map((component) => {
-            const box = boxes.get(component.id);
-            if (!box) return null;
+          {[...boxes.values()].map((box) => {
+            const component = componentById.get(box.id);
+            if (!component) return null;
             return (
               <g key={component.id} data-node-id={component.id}>
                 <foreignObject x={box.left} y={box.top} width={BOX_WIDTH} height={BOX_HEIGHT}>
@@ -165,8 +196,7 @@ export function ArchitectureView({
                     title={component.sublabel ?? component.label}
                   >
                     <span className="trace-entity-kind" data-detail="context">
-                      {presentationDot(component)}
-                      {component.presentationType}
+                      {presentationBadge(component)}
                     </span>
                     <span className="trace-entity-label">{component.label}</span>
                     {component.sublabel && (
@@ -185,11 +215,55 @@ export function ArchitectureView({
         {(["external", "frontend", "backend", "database", "queue", "security", "job", "cloud", "unknown"] as const).map(
           (type) => (
             <span key={type} className="arch-legend-item">
-              <span className={`pt-dot pt-${type}`} /> {type}
+              <span className={`pt-chip-mini pt-${type}`}>{PT_SHORT[type]}</span> {type}
             </span>
           ),
         )}
       </p>
+    </div>
+  );
+}
+
+type ArchitectureSubtab = "composition" | "structure";
+
+export function ArchitectureView({
+  ir,
+  viewKey,
+  onSelectComponent,
+}: {
+  ir: ArchitectureIR;
+  viewKey: string;
+  onSelectComponent?: (componentId: string) => void;
+}): React.JSX.Element {
+  const [subtab, setSubtab] = useState<ArchitectureSubtab>("composition");
+
+  const nodes: ViewerNode[] = ir.components.map((c) => ({
+    id: c.id,
+    label: c.label,
+    ...(c.sublabel ? { sublabel: c.sublabel } : {}),
+  }));
+
+  return (
+    <div className="architecture-view">
+      <div className="architecture-view-head">
+        <h2>{ir.title}</h2>
+        <nav className="arch-subtab-switch" role="tablist" aria-label="아키텍처 보기 방식">
+          <button type="button" role="tab" aria-selected={subtab === "composition"} onClick={() => setSubtab("composition")}>
+            구성 개요
+          </button>
+          <button type="button" role="tab" aria-selected={subtab === "structure"} onClick={() => setSubtab("structure")}>
+            전체 구조
+          </button>
+        </nav>
+      </div>
+
+      {subtab === "composition" ? (
+        <ArchitectureComposition ir={ir} onSelectComponent={onSelectComponent} />
+      ) : (
+        <ViewerShell viewKind="architecture" viewKey={viewKey} nodes={nodes}>
+          <ArchitectureGraph ir={ir} onSelectComponent={onSelectComponent} />
+        </ViewerShell>
+      )}
     </div>
   );
 }

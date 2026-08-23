@@ -1,7 +1,7 @@
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --border: #2a2f3a;
+  --bg: #0a0c11;
+  --panel: #151821;
+  --border: #262c3a;
   --text: #e6e8ec;
   --dim: #8a90a0;
   --accent: #5b8cff;
@@ -9,6 +9,12 @@
   --bad: #e05a5a;
   --warn: #d9a441;
   --edge-color: #5a6270;
+  /* v2: 그래프 뷰 전용 토큰 — boundary·엣지 강조는 종류가 아니라 focus 상태에서만 온다(I16) */
+  --boundary: #d9a441;
+  --boundary-bg: rgba(217, 164, 65, 0.05);
+  --edge-match: #4fd1a0;
+  --edge-dim: #333a48;
+  --grid-dot: rgba(255, 255, 255, 0.045);
   font-family: -apple-system, "Segoe UI", "Pretendard", sans-serif;
 }
 
@@ -343,17 +349,50 @@ button:disabled {
   background: #5a6270;
 }
 
-/* ArchitectureView (schema3 §3.2) */
+/* ArchitectureView (schema3 §3.2, v2 §4) */
 .arch-boundary {
-  fill: rgba(91, 140, 255, 0.04);
-  stroke: var(--border);
-  stroke-dasharray: 4 4;
+  fill: var(--boundary-bg);
+  stroke: var(--boundary);
+  stroke-opacity: 0.6;
+  stroke-dasharray: 5 4;
 }
 .arch-boundary-label {
-  fill: var(--dim);
+  fill: var(--boundary);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.pt-chip-mini,
+.pt-chip {
+  color: #fff;
+}
+.pt-chip-mini.pt-external,
+.pt-chip-mini.pt-database,
+.pt-chip-mini.pt-queue,
+.pt-chip.pt-external,
+.pt-chip.pt-database,
+.pt-chip.pt-queue {
+  color: #14171e;
+}
+.pt-chip-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+.pt-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .arch-component-sublabel {
   font-size: 10px;
@@ -370,6 +409,112 @@ button:disabled {
 }
 .arch-edge-control {
   stroke: var(--warn);
+}
+
+/* ArchitectureView 서브탭 (v2 §1) */
+.architecture-view-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.arch-subtab-switch {
+  display: flex;
+  gap: 4px;
+}
+.arch-subtab-switch button {
+  border: 1px solid var(--border);
+  background: transparent;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.arch-subtab-switch button[aria-selected="true"] {
+  color: var(--text);
+  border-color: var(--boundary);
+  background: var(--boundary-bg);
+}
+
+/* ArchitectureComposition — 구성 개요 카드 그리드 (v2 §2~§3) */
+.architecture-composition {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.composition-group-label {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+.composition-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.composition-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+.composition-col-head .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+.composition-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.composition-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #1f232c;
+  border: 1.5px solid var(--border);
+  text-align: left;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.composition-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.composition-card-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.composition-card-sub {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
 }
 
 /* WorkflowView (schema3 §3.3~§3.4) */
@@ -692,6 +837,8 @@ button:disabled {
   height: 60vh;
   cursor: grab;
   outline: none;
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 .viewer-canvas[data-panning="true"] {
   cursor: grabbing;
@@ -717,6 +864,14 @@ button:disabled {
 }
 .viewer-shell [data-focus-state="selected"] {
   opacity: 1;
+}
+/* v2: match/dim에 색도 더한다 — 여전히 종류가 아니라 focus 상태가 근거다(I16 위반 아님) */
+.viewer-shell [data-focus-state="match"] .edge {
+  stroke: var(--edge-match);
+  stroke-width: 2;
+}
+.viewer-shell [data-focus-state="dim"] .edge {
+  stroke: var(--edge-dim);
 }
 .viewer-shell [data-focus-state="selected"] .scenario-step,
 .viewer-shell [data-focus-state="selected"] .trace-entity {

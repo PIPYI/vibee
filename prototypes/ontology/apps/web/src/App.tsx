@@ -246,11 +246,6 @@ export function App(): React.JSX.Element {
     [openSequence],
   );
 
-  const architectureNodes: ViewerNode[] = (bundle?.architecture.components ?? []).map((c) => ({
-    id: c.id,
-    label: c.label,
-    ...(c.sublabel ? { sublabel: c.sublabel } : {}),
-  }));
   const workflowNodes: ViewerNode[] = (bundle?.workflow.nodes ?? []).map((n) => ({
     id: n.id,
     label: n.label,
@@ -348,15 +343,14 @@ export function App(): React.JSX.Element {
                 </p>
               )}
               {tab === "architecture" && (
-                <ViewerShell viewKind="architecture" viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`} nodes={architectureNodes}>
-                  <ArchitectureView
-                    ir={bundle.architecture}
-                    onSelectComponent={(id) => {
-                      setSequenceView(null);
-                      setPassportTarget({ tab: "architecture", id });
-                    }}
-                  />
-                </ViewerShell>
+                <ArchitectureView
+                  ir={bundle.architecture}
+                  viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`}
+                  onSelectComponent={(id) => {
+                    setSequenceView(null);
+                    setPassportTarget({ tab: "architecture", id });
+                  }}
+                />
               )}
               {tab === "workflow" && (
                 <ViewerShell viewKind="workflow" viewKey={`wf-${bundle.analysisVersion}-${bundle.semanticVersion}`} nodes={workflowNodes}>

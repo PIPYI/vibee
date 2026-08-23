@@ -76,3 +76,28 @@ test("같은 입력에 두 번 계산해도 같은 좌표가 나온다 (결정�
   const second = computeWorkflowLayout(input);
   assert.deepEqual([...first.positions.entries()], [...second.positions.entries()]);
 });
+
+test("v2: laneSlot — 같은 (rank, lane)에 겹치는 노드를 barycenter로 갈라 배치한다", () => {
+  // n1(system,rank0) -> zeta,alpha(둘 다 system,rank1 — 겹침) -> zeta->p(up), alpha->q(down).
+  // id로만 정렬하면 alpha가 zeta보다 앞이지만, zeta는 "up" 쪽으로 이어지고 alpha는 "down"
+  // 쪽으로 이어지므로 barycenter는 zeta를 slot 0(위), alpha를 slot 1(아래)에 둬야 한다.
+  const layout = computeWorkflowLayout(
+    ir({
+      lanes: [
+        { id: "up", label: "위", kind: "system" },
+        { id: "system", label: "시스템", kind: "system" },
+        { id: "down", label: "아래", kind: "system" },
+      ],
+      nodes: [node("n1", "system"), node("zeta", "system"), node("alpha", "system"), node("p", "up"), node("q", "down")],
+      edges: [edge("n1", "zeta"), edge("n1", "alpha"), edge("zeta", "p"), edge("alpha", "q")],
+    }),
+  );
+  assert.equal(layout.positions.get("zeta").rank, layout.positions.get("alpha").rank);
+  assert.equal(layout.positions.get("zeta").laneIndex, layout.positions.get("alpha").laneIndex);
+  assert.equal(layout.positions.get("zeta").slotCount, 2);
+  assert.equal(layout.positions.get("zeta").laneSlot, 0);
+  assert.equal(layout.positions.get("alpha").laneSlot, 1);
+  // 겹치지 않는 흔한 경우는 항상 laneSlot 0, slotCount 1이라 기존 렌더링과 같다.
+  assert.equal(layout.positions.get("n1").laneSlot, 0);
+  assert.equal(layout.positions.get("n1").slotCount, 1);
+});

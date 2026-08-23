@@ -52,3 +52,30 @@ test("같은 입력에 두 번 계산해도 같은 좌표가 나온다 (결정�
   const second = computeArchitectureLayout(input);
   assert.deepEqual([...first.positions.entries()], [...second.positions.entries()]);
 });
+
+test("v2: 구조적 cycle은 DFS로 back edge로 잡혀 rank 계산이 폭주하지 않는다", () => {
+  const layout = computeArchitectureLayout(
+    ir([component("a"), component("b"), component("c")], [connection("a", "b"), connection("b", "c"), connection("c", "a")]),
+  );
+  assert.equal(layout.backEdgeKeys.size, 1);
+  assert.equal(layout.positions.get("a").rank, 0);
+  assert.equal(layout.positions.size, 3);
+  // 순환이 있어도 rank가 노드 수를 넘어서는 폭주가 없어야 한다.
+  for (const pos of layout.positions.values()) assert.ok(pos.rank <= 2);
+});
+
+test("v2: barycenter — X자로 꼬이는 연결을 id 정렬 대신 안 꼬이게 재배치한다", () => {
+  // rank0=[hub] rank1=[c,d](id순) rank2=[e,f](id순). 연결은 c->f, d->e — id 순서 그대로면
+  // c(위)->f(아래), d(아래)->e(위)가 서로 X자로 꼬인다. barycenter는 rank1을 [d,c]로 뒤집어
+  // d(위)->e(위), c(아래)->f(아래)로 안 꼬이게 만들어야 한다.
+  const layout = computeArchitectureLayout(
+    ir(
+      [component("hub"), component("c"), component("d"), component("e"), component("f")],
+      [connection("hub", "c"), connection("hub", "d"), connection("c", "f"), connection("d", "e")],
+    ),
+  );
+  assert.equal(layout.positions.get("d").index, 0);
+  assert.equal(layout.positions.get("c").index, 1);
+  assert.equal(layout.positions.get("e").index, 0);
+  assert.equal(layout.positions.get("f").index, 1);
+});

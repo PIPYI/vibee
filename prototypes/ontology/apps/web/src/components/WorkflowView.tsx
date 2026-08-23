@@ -21,12 +21,15 @@ const MARGIN_X = 160;
 const MARGIN_Y = 50;
 const LABEL_CHAR_WIDTH = 7.5;
 const LABEL_HEIGHT = 14;
+const SUB_SLOT_HEIGHT = 26;
 
 function x(rank: number): number {
   return MARGIN_X + rank * COL_WIDTH;
 }
-function y(laneIndex: number): number {
-  return MARGIN_Y + laneIndex * ROW_HEIGHT;
+/** `laneSlot`/`slotCount`는 같은 (rank, lane) 칸에 겹치는 노드가 둘 이상일 때만 0이 아니다. */
+function y(laneIndex: number, laneSlot = 0, slotCount = 1): number {
+  const offset = slotCount > 1 ? (laneSlot - (slotCount - 1) / 2) * SUB_SLOT_HEIGHT : 0;
+  return MARGIN_Y + laneIndex * ROW_HEIGHT + offset;
 }
 
 function labelBox(id: string, cx: number, cy: number, text: string): LabelBox {
@@ -50,13 +53,13 @@ export function WorkflowView({
   );
 
   const width = x(layout.maxRank) + BOX_WIDTH + 60;
-  const height = y(Math.max(layout.lanes.length - 1, 0)) + BOX_HEIGHT + 60;
+  const height = y(Math.max(layout.lanes.length - 1, 0)) + BOX_HEIGHT + 60 + SUB_SLOT_HEIGHT * 2;
 
   const boxes = new Map<string, Box>();
   for (const node of ir.nodes) {
     const pos = layout.positions.get(node.id);
     const left = x(pos?.rank ?? 0);
-    const top = y(pos?.laneIndex ?? 0);
+    const top = y(pos?.laneIndex ?? 0, pos?.laneSlot ?? 0, pos?.slotCount ?? 1);
     boxes.set(node.id, { id: node.id, left, top, right: left + BOX_WIDTH, bottom: top + BOX_HEIGHT, cy: top + BOX_HEIGHT / 2 });
   }
   const boxCenter = (nodeId: string): { cx: number; cy: number; left: number; right: number } => {

@@ -7,7 +7,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { rectsOverlap, resolveLabelOverlaps, routedPath, routeEdges } from "../src/layout/edgeRouting.ts";
+import {
+  countCrossings,
+  properSegmentIntersection,
+  rectsOverlap,
+  reduceCrossings,
+  resolveLabelOverlaps,
+  routedPath,
+  routedPathAvoiding,
+  routeEdges,
+  segmentIntersectsRect,
+} from "../src/layout/edgeRouting.ts";
 
 function box(id, left, top, width = 190, height = 60) {
   return { id, left, top, right: left + width, bottom: top + height, cy: top + height / 2 };
@@ -140,4 +150,101 @@ test("resolveLabelOverlaps — 입력 순서를 뒤집어도 최종 결과(겹�
   const forward = resolveLabelOverlaps(labels);
   const reversed = resolveLabelOverlaps([...labels].reverse());
   assert.deepEqual([...forward.entries()].sort(), [...reversed.entries()].sort());
+});
+
+// v2 — archify geometry.mjs 이식분 (properSegmentIntersection · segmentIntersectsRect · countCrossings)
+
+test("properSegmentIntersection — 진짜 내부 X 교차만 잡고 끝점 접촉은 무시한다", () => {
+  const crossing = properSegmentIntersection([0, 0], [10, 10], [0, 10], [10, 0]);
+  assert.ok(crossing, "대각선 X는 교차해야 한다");
+  const parallel = properSegmentIntersection([0, 0], [10, 0], [0, 5], [10, 5]);
+  assert.equal(parallel, null);
+  const touchingEndpoint = properSegmentIntersection([0, 0], [10, 0], [10, 0], [10, 10]);
+  assert.equal(touchingEndpoint, null, "끝점만 닿는 건 내부 교차가 아니다");
+});
+
+test("segmentIntersectsRect — 사각형을 관통하는 선분과 안 그런 선분을 구별한다", () => {
+  const rect = { x: 40, y: 40, width: 20, height: 20 };
+  const through = { start: [30, 50], end: [80, 50] };
+  const clear = { start: [30, 90], end: [80, 90] };
+  assert.equal(segmentIntersectsRect(through, rect), true);
+  assert.equal(segmentIntersectsRect(clear, rect), false);
+});
+
+test("countCrossings — 실제로 교차하는 두 엣지만 센다", () => {
+  const boxes = new Map(
+    [box("a", 0, 0), box("b", 0, 100), box("c", 300, 0), box("d", 300, 100)].map((b) => [b.id, b]),
+  );
+  // a(위)->d(아래), b(아래)->c(위): 서로 X자로 꼬인다
+  const crossingEdges = [
+    { key: "ad", fromId: "a", toId: "d" },
+    { key: "bc", fromId: "b", toId: "c" },
+  ];
+  assert.equal(countCrossings(routeEdges(crossingEdges, (id) => boxes.get(id))), 1);
+
+  // a->c, b->d: 안 꼬인다
+  const straightEdges = [
+    { key: "ac", fromId: "a", toId: "c" },
+    { key: "bd", fromId: "b", toId: "d" },
+  ];
+  assert.equal(countCrossings(routeEdges(straightEdges, (id) => boxes.get(id))), 0);
+});
+
+test("countCrossings — 같은 노드를 공유하는 fan-out은 교차로 세지 않는다", () => {
+  const boxes = new Map([box("a", 0, 0), box("b", 300, 0), box("c", 300, 100)].map((b) => [b.id, b]));
+  const edges = [
+    { key: "ab", fromId: "a", toId: "b" },
+    { key: "ac", fromId: "a", toId: "c" },
+  ];
+  assert.equal(countCrossings(routeEdges(edges, (id) => boxes.get(id))), 0);
+});
+
+test("routedPathAvoiding — 기본 elbow가 지나가는 장애물을 세로 구간을 옮겨 피한다", () => {
+  const from = { x: 0, y: 10 };
+  const to = { x: 200, y: 90 };
+  // 기본 midX(100)가 정확히 이 장애물 박스(90~110) 안에 있고, 세로 구간(y 10~90)과도 겹친다.
+  const obstacle = { id: "mid", left: 90, top: 0, right: 110, bottom: 100, cy: 50 };
+  const avoided = routedPathAvoiding(from, to, [obstacle]);
+  const verticalXs = [...avoided.matchAll(/[LQ] ([-\d.]+) [-\d.]+/g)].map((m) => Number(m[1]));
+  const midXs = verticalXs.filter((x) => x > from.x + 1 && x < to.x - 1);
+  assert.ok(midXs.every((x) => x < obstacle.left || x > obstacle.right), `${JSON.stringify(midXs)}가 장애물을 못 피했다`);
+});
+
+test("routedPathAvoiding — 장애물이 없으면 routedPath와 같다", () => {
+  const from = { x: 0, y: 10 };
+  const to = { x: 200, y: 90 };
+  assert.equal(routedPathAvoiding(from, to, []), routedPath(from, to));
+});
+
+test("reduceCrossings — barycenter로도 안 풀리는 X자 교차를 스왑으로 실제로 없앤다", () => {
+  const xOf = { 0: 0, 1: 200, 2: 400 };
+  const buildBoxes = (order) => {
+    const boxes = new Map();
+    for (const [rank, list] of order) {
+      list.forEach((id, index) => {
+        const left = xOf[rank];
+        const top = index * 100;
+        boxes.set(id, { id, left, top, right: left + 120, bottom: top + 60, cy: top + 30 });
+      });
+    }
+    return boxes;
+  };
+  const groups = new Map([
+    [0, ["hub"]],
+    [1, ["c", "d"]], // id 순 — c 위, d 아래
+    [2, ["e", "f"]],
+  ]);
+  const forward = [
+    { key: "hc", fromId: "hub", toId: "c" },
+    { key: "hd", fromId: "hub", toId: "d" },
+    { key: "cf", fromId: "c", toId: "f" }, // 위(c) -> 아래(f)
+    { key: "de", fromId: "d", toId: "e" }, // 아래(d) -> 위(e): c-f와 X로 꼬인다
+  ];
+  const before = countCrossings(routeEdges(forward, (id) => buildBoxes(groups).get(id)));
+  assert.equal(before, 1);
+
+  const improved = reduceCrossings(groups, buildBoxes, forward);
+  const after = countCrossings(routeEdges(forward, (id) => buildBoxes(improved).get(id)));
+  assert.equal(after, 0);
+  assert.ok(after <= before);
 });
