@@ -22,6 +22,8 @@ import {
   type AppContext,
   type AskUserInput,
   type DesignDoc,
+  type ReportDriftInput,
+  type ReviewContext,
   type ShowResultInput,
 } from "@byoa/protocol";
 import { loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
@@ -317,6 +319,83 @@ server.registerTool(
           text:
             `Design saved and rendered in the app UI.` +
             (ack.warnings.length ? `\n\nDangling references you should fix:\n- ${ack.warnings.join("\n- ")}` : ""),
+        },
+      ],
+    };
+  },
+);
+
+/**
+ * 드리프트 리뷰용 tool (docs/vibe_coding_assistant_design.md §3.3, §7.2).
+ *
+ * diff를 bridge가 만들어 넘기므로 agent에게 셸이 필요 없다. 리뷰 turn은 읽기 전용으로
+ * 돌고 내장 도구가 없다 — 이 두 tool이 리뷰어가 가진 전부다.
+ */
+server.registerTool(
+  "get_review_context",
+  {
+    title: "Get what to review",
+    description:
+      "Return the change to review and the criteria to check it against: `diff` (produced by " +
+      "the app, so you do not need to run git), `changedFiles`, and `criteria` -- the " +
+      "decisions (DEC) and rules (RULE) recorded for this project. These criteria are the " +
+      "ONLY thing to check. General code review is not what this is for.",
+    inputSchema: {},
+  },
+  async () => {
+    const context = await bridgeFetch<ReviewContext>("/internal/review-context");
+    log(
+      "get_review_context ->",
+      `base ${context.base},`,
+      `files ${context.changedFiles.length},`,
+      `criteria ${context.criteria.length}${context.truncated ? ", diff truncated" : ""}`,
+    );
+    return {
+      content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
+      structuredContent: context as unknown as Record<string, unknown>,
+    };
+  },
+);
+
+server.registerTool(
+  "report_drift",
+  {
+    title: "Report drift against the project's decisions",
+    description:
+      "Report which recorded decisions or rules this change breaks. Call this EXACTLY ONCE " +
+      "per review, including when nothing is broken -- pass an empty `findings` array in that " +
+      "case. An empty report is a normal, expected outcome; reporting things that are not in " +
+      "`criteria` is not. Do not modify any file: you are reporting, not fixing.",
+    inputSchema: {
+      findings: z
+        .array(
+          z.object({
+            criterionId: z.string().describe("The id from `criteria` that this change breaks"),
+            files: z.array(z.string()).describe("Where it broke, relative to the project"),
+            detail: z.string().describe("One sentence: what in the change contradicts it"),
+            confidence: z
+              .enum(["high", "low"])
+              .describe('"high" if you can see it in the diff, "low" if you are inferring'),
+          }),
+        )
+        .describe("Empty when the change breaks nothing. That is the common case"),
+      summary: z.string().describe("One paragraph on what you checked and what you concluded"),
+    },
+  },
+  async (input) => {
+    const report = input as ReportDriftInput;
+    const ack = await bridgeFetch<{ taskId: string | null; warnings: string[] }>("/internal/drift", {
+      method: "POST",
+      body: JSON.stringify(report),
+    });
+    log("report_drift ->", `${report.findings.length} finding(s)`, report.findings.map((f) => f.criterionId).join(", "));
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Drift report delivered to the BYOA app UI (${report.findings.length} finding(s)).` +
+            (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],
     };

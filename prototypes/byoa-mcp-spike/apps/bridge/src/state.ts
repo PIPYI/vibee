@@ -16,6 +16,8 @@ import type {
   InterviewExchange,
   InterviewState,
   PendingQuestion,
+  ReportDriftInput,
+  ReviewContext,
   SelectedItem,
   ShowResultInput,
   TaskState,
@@ -62,6 +64,13 @@ export class BridgeState {
   private readonly subscribers = new Set<(envelope: AgentEventEnvelope) => void>();
 
   private design: DesignDoc | null = null;
+
+  /**
+   * 지금 리뷰 turn이 보고 있는 것. turn 하나에 하나뿐이라 큐를 두지 않는다.
+   * 리포트가 도착하면 여기에 짝지어 둔다 — 어느 diff에 대한 판정인지 알아야 한다.
+   */
+  private reviewContext: ReviewContext | null = null;
+  private driftReport: ReportDriftInput | null = null;
 
   private pendingQuestion: PendingQuestion | null = null;
   private readonly exchanges: InterviewExchange[] = [];
@@ -135,6 +144,30 @@ export class BridgeState {
    */
   saveDesign(design: DesignDoc): void {
     this.design = design;
+  }
+
+  // ---------- 드리프트 리뷰 ----------
+
+  /** 리뷰 turn을 시작하면서 기준과 diff를 걸어 둔다. 지난 리포트는 여기서 버린다. */
+  startReview(context: ReviewContext): void {
+    this.reviewContext = context;
+    this.driftReport = null;
+  }
+
+  getReviewContext(): ReviewContext | null {
+    return this.reviewContext;
+  }
+
+  /**
+   * agent의 판정을 받는다. **위반이 없어도 호출된다** — 빈 findings와 "아예 부르지 않음"을
+   * 구분할 수 있어야 오탐 시험이 성립한다.
+   */
+  recordDrift(report: ReportDriftInput): void {
+    this.driftReport = report;
+  }
+
+  getDriftReport(): ReportDriftInput | null {
+    return this.driftReport;
   }
 
   patchAppContext(patch: AppContextPatch): AppContext {

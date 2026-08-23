@@ -166,7 +166,64 @@ export type DesignDoc = {
   decisions: DesignDecision[];
 };
 
-export type McpToolName = "get_app_context" | "show_result" | "ask_user" | "save_design";
+// ---------- 드리프트 리뷰 (docs/vibe_coding_assistant_design.md §3.3, §7.2) ----------
+
+/**
+ * 리뷰 turn이 받는 전부. **판단 기준은 범용 베스트프랙티스가 아니라 이 프로젝트가 정한 것**
+ * 하나다 — 버그·스타일 리뷰는 이미 provider가 잘 하고, 그것은 우리 몫이 아니다.
+ *
+ * diff를 우리가 만들어 넘긴다. agent에게 git을 실행시키지 않으므로 리뷰 turn에는 셸도
+ * 쓰기 권한도 필요 없다.
+ */
+export type ReviewContext = {
+  /** 어디부터의 변경인가. git ref 원문. */
+  base: string;
+  changedFiles: string[];
+  /** `git diff <base> --` 결과. 너무 크면 잘리고 `truncated`가 참이 된다. */
+  diff: string;
+  truncated: boolean;
+  /** 지켜야 할 것 전부. DEC과 RULE을 한 목록으로 준다 — agent에게는 둘 다 "정한 것"이다. */
+  criteria: ReviewCriterion[];
+};
+
+export type ReviewCriterion = {
+  /** DEC-… 또는 RULE-… . 리포트가 이 id를 되짚는다. */
+  id: string;
+  text: string;
+  /** DEC에만 있다. 왜 그렇게 정했는지. */
+  why?: string;
+  source: DesignSource;
+};
+
+/** agent가 `report_drift`로 되돌려 보내는 판정 하나. */
+export type DriftFinding = {
+  /** 어긋난 기준의 id. `ReviewContext.criteria`에 있는 것이어야 한다. */
+  criterionId: string;
+  /** 어디서 깨졌는가. 프로젝트 기준 상대 경로. */
+  files: string[];
+  /** 무엇이 어긋났는지 한 문장. */
+  detail: string;
+  confidence: "high" | "low";
+};
+
+/**
+ * 리뷰 turn의 결론. **위반이 없으면 `findings`가 빈 배열이다** — 그 경우에도 반드시
+ * 호출해야 한다. "조용히 끝났다"와 "확인했고 문제 없다"를 구분할 수 없으면 오탐 시험이
+ * 성립하지 않는다.
+ */
+export type ReportDriftInput = {
+  findings: DriftFinding[];
+  /** 무엇을 근거로 그렇게 판단했는지 한 문단. */
+  summary: string;
+};
+
+export type McpToolName =
+  | "get_app_context"
+  | "show_result"
+  | "ask_user"
+  | "save_design"
+  | "get_review_context"
+  | "report_drift";
 
 /**
  * agent가 `ask_user` MCP tool로 던지는 질문 (docs/requirements_flow.md §4.3).
@@ -234,6 +291,8 @@ export type AgentEvent =
   | { type: "mcp.tool.called"; taskId: string; tool: McpToolName | string; source: "agent-stream" | "bridge-endpoint" }
   | { type: "app.result"; taskId: string; result: ShowResultInput }
   | { type: "app.design"; taskId: string; design: DesignDoc }
+  /** 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다. */
+  | { type: "app.drift"; taskId: string; report: ReportDriftInput }
   | { type: "app.question"; taskId: string; question: PendingQuestion }
   | { type: "app.answer"; taskId: string; questionId: string; answer: string }
   | { type: "task.completed"; taskId: string }
@@ -388,6 +447,30 @@ export type StartTaskResponse = {
    * 무엇을 지웠는지 그대로 올려 보낸다.
    */
   cleared?: string[];
+};
+
+/**
+ * 드리프트 리뷰를 시작한다 (§3.3).
+ *
+ * **코드를 고치지 않는다.** 리뷰 turn은 읽기 전용이고, 어긋난 것이 나오면 그것을 고칠
+ * 프롬프트를 사용자에게 건넨다. 고치는 일은 사용자가 쓰는 agent가 한다 — 우리 앱은
+ * 코드를 쓰는 곳이 아니라 보는 곳이다.
+ */
+export type StartReviewRequest = {
+  agent: AgentId;
+  projectPath: string;
+  /** 어디부터의 변경을 볼지. git ref. 생략하면 `HEAD~1`. */
+  base?: string;
+  model?: string;
+  effort?: string;
+};
+
+export type StartReviewResponse = {
+  taskId: string;
+  base: string;
+  changedFiles: string[];
+  /** 기준이 하나도 없으면 리뷰가 성립하지 않는다. 그 사실을 조용히 넘기지 않는다. */
+  criteriaCount: number;
 };
 
 /**

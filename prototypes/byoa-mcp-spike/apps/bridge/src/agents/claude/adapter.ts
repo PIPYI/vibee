@@ -34,9 +34,13 @@ import {
 
 import { cliSpawnOptions } from "../../platform.js";
 import { describeSession } from "../../prompt.js";
+import { isReadOnlyMode } from "../types.js";
 import type { AgentAdapter, StartTaskInput, TaskMode, TaskOutcome } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Codex adapter의 ALL_MODES와 같은 이유로 둔다. */
+const ALL_MODES: readonly TaskMode[] = ["task", "interview", "review"];
 
 /** 세션 캐시 키. mode가 다르면 다른 대화다 (Codex adapter의 threadKey와 같은 이유). */
 function sessionKey(projectPath: string, mode: TaskMode): string {
@@ -137,7 +141,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const canUseTool: CanUseTool = (toolName, toolInput) =>
       Promise.resolve(this.evaluateToolUse(toolName, toolInput, input.projectPath, input.taskId, emit));
 
-    const interview = input.mode === "interview";
+    const readOnly = isReadOnlyMode(input.mode);
     const resumeFrom = this.sessionByProject.get(sessionKey(input.projectPath, input.mode));
 
     const stream = query({
@@ -145,15 +149,16 @@ export class ClaudeAdapter implements AgentAdapter {
       options: {
         cwd: input.projectPath,
         mcpServers,
-        // 인터뷰는 대화지 작업이 아니다. 내장 도구를 전부 끄면 Task(하위 에이전트)·Read·Bash가
-        // 사라지고 MCP tool 네 개만 남는다 — 인터뷰에 필요한 건 그게 전부다.
+        // 인터뷰도 리뷰도 대화지 작업이 아니다. 내장 도구를 전부 끄면 Task(하위 에이전트)·
+        // Read·Bash가 사라지고 MCP tool만 남는다 — 둘 다 필요한 건 그게 전부다.
+        // 리뷰가 볼 diff는 우리가 get_review_context로 넘기므로 셸이 필요 없다.
         // 이렇게 두지 않으면 프로젝트에 놓인 하네스를 읽고 앱을 만들기 시작한다
         // (SPIKE_FINDINGS.md §14).
-        ...(interview ? { tools: [] } : {}),
+        ...(readOnly ? { tools: [] } : {}),
         // CLAUDE.md는 `settingSources`에 "project"가 있을 때만 로드된다. 생략하면 CLI처럼
-        // 전부 로드하므로, 인터뷰에서는 명시적으로 비운다. 그 CLAUDE.md는 [4] 인계 산출물이지
-        // 인터뷰의 규칙이 아니다.
-        ...(interview ? { settingSources: [] } : {}),
+        // 전부 로드하므로, 코드를 쓰지 않는 mode에서는 명시적으로 비운다. 그 CLAUDE.md는
+        // [4] 인계 산출물이지 인터뷰의 규칙도 리뷰의 기준도 아니다.
+        ...(readOnly ? { settingSources: [] } : {}),
         // 생략하면 SDK가 사용자의 기본 모델을 쓴다.
         model: input.model,
         // 값은 `listModels()`가 신고한 이 모델의 effort 목록에서 온 것이므로 그대로 넘긴다.
@@ -241,7 +246,7 @@ export class ClaudeAdapter implements AgentAdapter {
   /** 이 프로젝트에서 지금 물고 있는 session id들 (mode별로 하나씩). */
   private heldSessions(projectPath: string): Set<string> {
     const held = new Set<string>();
-    for (const mode of ["task", "interview"] as const) {
+    for (const mode of ALL_MODES) {
       const id = this.sessionByProject.get(sessionKey(projectPath, mode));
       if (id) held.add(id);
     }
@@ -255,7 +260,7 @@ export class ClaudeAdapter implements AgentAdapter {
   resetSession(projectPath: string): void {
     // session_id 참조만 버린다. 세션 파일은 ~/.claude/projects에 그대로 남아
     // `claude --resume`으로 이어받을 수 있다.
-    for (const mode of ["task", "interview"] as const) {
+    for (const mode of ALL_MODES) {
       this.sessionByProject.delete(sessionKey(projectPath, mode));
     }
   }

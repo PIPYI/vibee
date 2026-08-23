@@ -27,9 +27,12 @@ import {
   type ExportDesignRequest,
   type InterviewMessageRequest,
   type ModelOption,
+  type ReportDriftInput,
   type ResumeSessionRequest,
   type ResetSessionRequest,
+  type ReviewCriterion,
   type ShowResultInput,
+  type StartReviewRequest,
   type StartTaskRequest,
 } from "@byoa/protocol";
 import { fixturePath, loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
@@ -47,7 +50,7 @@ import {
   suggestFirstPrompt,
   validateDesign,
 } from "./design.js";
-import { buildInterviewPrompt, buildSpikePrompt } from "./prompt.js";
+import { buildInterviewPrompt, buildReviewPrompt, buildSpikePrompt } from "./prompt.js";
 import { BridgeState } from "./state.js";
 
 const log = (...args: unknown[]): void => console.log("[bridge]", ...args);
@@ -269,6 +272,94 @@ app.post("/api/interview/message", async (req: Request, res: Response) => {
   res.json({ taskId });
 
   void runTask(adapter, taskId, projectPath, buildInterviewPrompt(body.message), "interview", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * 드리프트 리뷰 (docs/vibe_coding_assistant_design.md §3.3).
+ *
+ * **PR 리뷰와 같은 모양이되 기준이 다르다.** 범용 베스트프랙티스가 아니라 이 프로젝트가
+ * 인터뷰에서 정한 DEC/RULE 하나만 본다. 그래서 diff를 우리가 만들어 넘긴다 —
+ * agent에게 git을 실행시키지 않으므로 리뷰 turn에는 셸도 쓰기 권한도 필요 없다.
+ */
+app.post("/api/review", async (req: Request, res: Response) => {
+  const body = req.body as StartReviewRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  // 디스크를 먼저 본다. 메모리의 초안은 **다른 프로젝트의 것일 수 있다** — bridge는 오래
+  // 살아 있고 state.design에는 프로젝트 구분이 없다. 같은 프로젝트일 때만 대체재로 쓴다.
+  const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
+  const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
+  if (!design) {
+    res.status(400).json({ error: `No design found. Expected ${DESIGN_DIR}/design.json in ${projectPath}.` });
+    return;
+  }
+
+  const criteria = criteriaFrom(design);
+  if (criteria.length === 0) {
+    // 기준이 없는 리뷰는 범용 코드 리뷰가 된다. 그건 우리가 하는 일이 아니다.
+    res.status(400).json({ error: "The design has no DEC or RULE to check against." });
+    return;
+  }
+
+  const base = body.base?.trim() || "HEAD~1";
+  let changedFiles: string[];
+  let diff: string;
+  try {
+    changedFiles = await gitLines(projectPath, ["diff", "--name-only", base, "--"]);
+    diff = await gitOutput(projectPath, ["diff", base, "--"]);
+  } catch (error) {
+    res.status(400).json({ error: `git diff failed for base "${base}": ${asMessage(error)}` });
+    return;
+  }
+
+  const truncated = diff.length > MAX_DIFF_CHARS;
+  state.startReview({
+    base,
+    changedFiles,
+    diff: truncated ? `${diff.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : diff,
+    truncated,
+    criteria,
+  });
+
+  const taskId = randomUUID();
+  state.patchAppContext({ projectPath, prompt: `review ${base}`, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: `review ${base}`,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, base, changedFiles, criteriaCount: criteria.length });
+
+  void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
     model: body.model || undefined,
     effort: body.effort || undefined,
   });
@@ -571,6 +662,50 @@ app.post("/internal/design", requireToken, (req: Request, res: Response) => {
   res.json({ taskId, warnings });
 });
 
+/**
+ * 리뷰 turn이 보는 전부 — diff와 기준. 우리가 만들어 넘기므로 agent는 git을 돌리지 않는다.
+ */
+app.get("/internal/review-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_review_context");
+  const context = state.getReviewContext();
+  if (!context) {
+    res.status(409).json({ error: "No review is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+/**
+ * 리뷰 turn의 결론.
+ *
+ * **findings가 비어 있어도 정상 응답이다.** 그것이 오탐 시험의 통과 조건이다 —
+ * "확인했고 어긋난 것이 없다"와 "아예 확인하지 않았다"를 구분할 수 있어야 한다.
+ * 그래서 기준에 없는 id를 짚었을 때도 거절하지 않고 경고만 되돌린다. 무엇을 지어냈는지가
+ * 결과에 남아야 판정할 수 있기 때문이다.
+ */
+app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
+  const report = req.body as ReportDriftInput;
+  if (!Array.isArray(report?.findings) || typeof report?.summary !== "string") {
+    res.status(400).json({ error: "findings (array) and summary (string) are required" });
+    return;
+  }
+
+  const known = new Set((state.getReviewContext()?.criteria ?? []).map((c) => c.id));
+  const warnings = report.findings
+    .filter((finding) => !known.has(finding.criterionId))
+    .map((finding) => `Unknown criterion id: ${finding.criterionId}`);
+
+  state.recordDrift(report);
+  const taskId = noteMcpEndpointHit("report_drift");
+  if (taskId) emit({ type: "app.drift", taskId, report });
+  else log("report_drift arrived with no active task; stored but not routed to the UI");
+
+  log(`report_drift: ${report.findings.length}건 (${report.findings.map((f) => f.criterionId).join(", ") || "없음"})`);
+  for (const warning of warnings) log(`  ! ${warning}`);
+
+  res.json({ taskId, warnings });
+});
+
 // ---------- 연결 ----------
 
 function emit(event: AgentEvent): void {
@@ -683,6 +818,54 @@ async function isHandWritten(path: string): Promise<boolean> {
 /** 인터뷰가 프로젝트에 내보내는 것들. `create-fixture.mjs`도 같은 목록을 지운다. */
 const GENERATED_DOCS = ["app_design.md", "AGENTS.md", "CLAUDE.md"] as const;
 const DESIGN_DIR = ".project-intel";
+
+/**
+ * diff를 통째로 싣지 않는 한계선. 넘으면 자르고 잘렸다는 사실을 함께 넘긴다 —
+ * 조용히 자르면 agent가 "diff에 없으니 위반이 없다"고 판단해 버린다.
+ */
+const MAX_DIFF_CHARS = 40_000;
+
+/**
+ * 설계를 디스크에서 읽는다.
+ *
+ * 리뷰는 정의상 **인계가 끝나고 한참 뒤에** 돈다. 그때 bridge는 이미 재시작됐고 메모리에
+ * 설계가 없다. 인터뷰가 `.project-intel/design.json`에 남겨 둔 것이 유일한 원본이다
+ * (SPIKE_FINDINGS.md §13의 "인터뷰 상태의 지속성"이 여기서 필수가 된다).
+ */
+async function loadDesignFromDisk(projectPath: string): Promise<DesignDoc | null> {
+  try {
+    const raw = await readFile(join(projectPath, DESIGN_DIR, "design.json"), "utf8");
+    return JSON.parse(raw) as DesignDoc;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 리뷰가 대조할 기준 목록. **DEC과 RULE을 한 목록으로 준다** — agent에게는 둘 다
+ * "이 프로젝트가 정한 것"이고, 종류를 나눠 주면 한쪽만 보는 일이 생긴다.
+ */
+function criteriaFrom(design: DesignDoc): ReviewCriterion[] {
+  return [
+    ...design.decisions.map((d) => ({ id: d.id, text: d.text, why: d.why, source: d.source })),
+    ...design.rules.map((r) => ({ id: r.id, text: r.text, source: r.source })),
+  ];
+}
+
+/** 프로젝트에서 git을 돌리고 stdout을 그대로 돌려준다. */
+async function gitOutput(projectPath: string, args: string[]): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  // diff는 커질 수 있다. execFile 기본 버퍼(1MB)로는 큰 변경에서 터진다.
+  const { stdout } = await run("git", args, { cwd: projectPath, maxBuffer: 32 * 1024 * 1024, ...cliSpawnOptions });
+  return stdout;
+}
+
+async function gitLines(projectPath: string, args: string[]): Promise<string[]> {
+  const out = await gitOutput(projectPath, args);
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
 
 /**
  * 지난 인터뷰가 이 디렉터리에 남긴 산출물을 지운다.

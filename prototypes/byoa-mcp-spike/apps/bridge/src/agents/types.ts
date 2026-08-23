@@ -14,6 +14,9 @@ export type StartTaskInput = {
    * 없다. 특히 프로젝트에 이미 놓여 있는 AGENTS.md / CLAUDE.md는 **[4] 인계 산출물**이지
    * 인터뷰의 규칙이 아니다 — 그것이 자동으로 실려 들어오면 인터뷰 중인 agent가
    * "앱을 끝까지 만들어라"는 지시를 따르기 시작한다 (SPIKE_FINDINGS.md §14).
+   *
+   * 리뷰도 같은 이유로 격리한다. harness에는 "한 번에 끝까지 만드세요"가 들어 있어서,
+   * 그것이 실린 리뷰어는 어긋난 것을 보고하는 대신 고치기 시작한다.
    */
   mode: TaskMode;
   /** 모델·effort 오버라이드. undefined면 provider 기본값을 그대로 쓴다. */
@@ -21,7 +24,19 @@ export type StartTaskInput = {
   effort?: string;
 };
 
-export type TaskMode = "task" | "interview";
+/**
+ * `task`만 코드를 쓴다. 나머지 둘은 읽기 전용이고 프로젝트 문서를 싣지 않는다.
+ *
+ * - `interview` — 무엇을 만들지 정하는 대화 (docs/requirements_flow.md §4)
+ * - `task`      — 바이브코딩. 하네스가 실려야 맞는 유일한 mode
+ * - `review`    — 저장된 DEC/RULE과 diff를 대조한다 (§3.3). 고치지 않고 보고만 한다
+ */
+export type TaskMode = "task" | "interview" | "review";
+
+/** 코드를 쓰지 않는 mode인가. 격리 수준을 가르는 유일한 기준이다. */
+export function isReadOnlyMode(mode: TaskMode): boolean {
+  return mode !== "task";
+}
 
 /**
  * provider에 종속되지 않는 adapter 인터페이스 (문서 §21). 이 선 위쪽 — HTTP API,

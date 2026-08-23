@@ -87,6 +87,48 @@ export function buildSpikePrompt(userPrompt: string): string {
 }
 
 /**
+ * 드리프트 리뷰 프롬프트 (docs/vibe_coding_assistant_design.md §3.3, §7.2).
+ *
+ * 검증하려는 가설은 두 개이고, 어려운 쪽은 두 번째다.
+ *
+ * 1. 위반이 있는 diff에서 **어느 기준이** 깨졌는지 짚어내는가.
+ * 2. 위반이 없는 diff에서 **조용히 있는가.**
+ *
+ * 그래서 프롬프트가 유도하지 않도록 조심한다. "무엇이 잘못됐는지 찾아라"고 하면 모델은
+ * 웬만하면 무언가를 찾아낸다. 찾는 일이 아니라 **대조하는 일**로 지시하고, 아무것도 없을
+ * 때도 report_drift를 부르게 해서 침묵과 누락을 구분한다.
+ *
+ * 범용 코드 리뷰를 시키지 않는 것도 같은 이유다. 버그·스타일 지적은 provider가 이미 잘
+ * 하고, 그것이 섞여 들어오면 우리가 재는 것이 흐려진다.
+ */
+export function buildReviewPrompt(): string {
+  return [
+    "You are checking a code change against decisions this project already made.",
+    "You are inside the BYOA MCP integration spike.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_review_context` (server: byoa-spike). It returns the diff and `criteria` —",
+    "   the decisions and rules recorded for this project.",
+    "2. For EACH criterion, decide whether the diff breaks it. Work criterion by criterion,",
+    "   not file by file.",
+    "3. Call `report_drift` (server: byoa-spike) exactly once, then end your turn.",
+    "",
+    "What counts as a finding:",
+    "- ONLY a criterion from `criteria` that this diff actually breaks. Quote its id.",
+    "- Not bugs. Not style. Not missing tests. Not things you would have done differently.",
+    "  Those may be real, but they are not what this check is for, and reporting them here",
+    "  makes the result useless.",
+    "- If the diff is unrelated to every criterion, that is the normal case. Report zero",
+    "  findings. You must still call `report_drift` with an empty `findings` array — silence",
+    "  and 'checked, nothing broken' must be distinguishable.",
+    "- Use confidence \"low\" when you are inferring rather than seeing it in the diff.",
+    "",
+    "Do NOT change any file. You are not fixing anything; you are reporting. The user's own",
+    "agent will do the fixing, with a prompt this app hands them.",
+  ].join("\n");
+}
+
+/**
  * 세션 미리보기를 사람이 읽을 이름으로 바꾼다.
  *
  * provider가 주는 미리보기는 "첫 사용자 메시지"인데, 우리가 보낸 첫 메시지는 위의 래퍼다.
@@ -97,6 +139,7 @@ export function describeSession(preview: string): string {
   const text = preview.trim();
   if (!text) return "(빈 대화)";
   if (text.startsWith("You are interviewing a NON-PROGRAMMER")) return "요구사항 인터뷰";
+  if (text.startsWith("You are checking a code change")) return "드리프트 리뷰";
 
   if (text.startsWith("You are running inside the BYOA")) {
     // 래퍼는 사용자의 프롬프트를 `---` 사이에 그대로 끼워 넣는다.

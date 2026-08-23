@@ -376,6 +376,31 @@ npm run interview codex    # 하나만
 `npm run acceptance`가 "MCP 채널이 살아 있는가"를 보는 것과 달리, 이쪽은 **산출물의 형태**를
 봅니다 — FLOW에 순서가 있는지, ENTITY 관계가 도출됐는지, AI가 채운 항목이 표시됐는지.
 
+## 드리프트 리뷰
+
+인터뷰가 저장해 둔 DEC/RULE을 **코드 변경을 판정하는 기준으로** 씁니다
+(`docs/vibe_coding_assistant_design.md` §3.3). PR 리뷰와 같은 모양이되, 보는 것이 범용
+베스트프랙티스가 아니라 **이 프로젝트가 정한 것** 하나입니다.
+
+diff는 bridge가 만들어 넘기므로 agent가 git을 돌리지 않습니다. 리뷰 turn은 읽기 전용이고
+내장 도구도 프로젝트 문서도 없습니다 — **코드를 고치지 않습니다.** 어긋난 것을 고치는 일은
+사용자가 쓰는 agent가 합니다.
+
+```bash
+npm run drift              # codex, claude 순서로 모두
+npm run drift codex        # 하나만
+npm run drift codex 3      # 케이스당 3회 반복
+```
+
+케이스가 둘이고, **어려운 쪽은 두 번째**입니다.
+
+| 케이스 | 확인하는 것 |
+| --- | --- |
+| 위반 있는 변경 | 여덟 기준 중 *어느* 것이 깨졌는지 짚어내는가 |
+| 무해한 변경 | **조용히 있는가** — 일반 리뷰거리를 일부러 심어 뒀습니다 |
+
+결과와 함정은 `SPIKE_FINDINGS.md` §15에 있습니다.
+
 ## Layout
 
 ```text

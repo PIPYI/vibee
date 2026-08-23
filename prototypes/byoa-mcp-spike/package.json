@@ -23,6 +23,8 @@
     "sessions:cleanup": "node scripts/cleanup-sessions.mjs",
     "typecheck": "npm run typecheck -w @byoa/protocol && npm run typecheck -w @byoa/mcp-server && npm run typecheck -w @byoa/bridge && npm run typecheck -w @byoa/web",
     "acceptance": "node scripts/acceptance.mjs",
-    "interview": "node scripts/interview.mjs"
+    "interview": "node scripts/interview.mjs",
+    "drift": "node scripts/drift.mjs",
+    "drift:fixture": "node scripts/drift-fixture.mjs"
   }
 }
