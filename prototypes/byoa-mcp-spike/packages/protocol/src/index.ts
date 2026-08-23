@@ -249,13 +249,83 @@ export type ReportDriftInput = {
   summary: string;
 };
 
+// ---------- 위키 (docs/vibe_coding_assistant_design.md §3.5) ----------
+
+/**
+ * 세션에서 뽑아낸 대화 한 줄. provider가 다르지만 이 형태로 맞춰서 올라온다.
+ */
+export type TranscriptMessage = { role: "user" | "agent"; text: string };
+
+/**
+ * 위키 후보 키워드.
+ *
+ * **agent가 고른다.** 처음에는 빈도로 뽑았는데 완전히 실패했다 — 실제 대화에 돌리니
+ * `wait` · `getting` · `turn` 같은 것이 상위를 차지했다. 당연한 일이다.
+ * **빈도는 낯섦과 반대 방향이다** — 가장 자주 나오는 말이 가장 익숙한 말이다.
+ * "비전공자가 모를 만한 말"은 세는 일이 아니라 판단이므로 세는 쪽에 맡길 수 없다
+ * (SPIKE_FINDINGS.md §16).
+ *
+ * 세는 일은 그대로 코드가 한다 — agent가 몇 번 나왔는지를 정확히 세지는 못한다.
+ */
+export type WikiKeyword = {
+  term: string;
+  /** 왜 이 말이 궁금할 만한가. 사용자가 고를 때 보는 근거다. */
+  why: string;
+  /** 이 말이 나온 문장 하나. 사용자가 "아 이거" 하고 알아보게 하는 용도다. */
+  sample: string;
+  /** 대화에 몇 번 나왔는지. bridge가 센다. */
+  count: number;
+};
+
+/** 위키 키워드 turn이 읽는 대화. 코드 블록과 우리 래퍼를 걷어내고 상한까지 자른 것. */
+export type WikiTranscript = {
+  messages: TranscriptMessage[];
+  /** 상한에 걸려 빠진 메시지 수. */
+  skipped: number;
+};
+
+/**
+ * 위키 페이지. **순수 학습용이다** — 가치판단을 담지 않는다.
+ *
+ * "이건 위험합니다", "X가 더 낫습니다", "재검토가 필요합니다"는 전부 이 기능이 하는 일이
+ * 아니다. 드리프트 판정과 역할이 다르고, 섞이면 둘 다 못 쓰게 된다.
+ *
+ * 그리고 **일반론이면 만들 이유가 없다.** 같은 설명을 검색으로 얻을 수 있다면 우리가 할 일이
+ * 아니다. 가치는 `inThisProject`와 `where`에 있다 — 이 프로젝트에서 그 말이 무엇을 가리키는지.
+ */
+export type WikiPageInput = {
+  term: string;
+  /** 비전공자의 말로 한 줄. 기술 용어로 기술 용어를 설명하지 않는다. */
+  oneLine: string;
+  /** 이 앱에서 이것이 무엇을 하는가. 이 기능의 존재 이유다. */
+  inThisProject: string;
+  /** 근거. 실제 파일 경로 또는 REQ/FLOW/DEC id. 비어 있으면 일반론이라는 뜻이다. */
+  where: string[];
+  /** 같이 알아두면 좋은 다른 키워드. 다음에 읽을 것을 잇는다. */
+  related: string[];
+};
+
+export type WikiPage = WikiPageInput & { createdAt: string };
+
+/** 위키 turn이 받는 것. 그 말이 실제로 오간 대목과 설계를 함께 준다. */
+export type WikiContext = {
+  term: string;
+  /** 그 말이 나온 대화 대목들. 무엇을 가리키는지는 여기에 있다. */
+  mentions: string[];
+  design: DesignDoc | null;
+};
+
 export type McpToolName =
   | "get_app_context"
   | "show_result"
   | "ask_user"
   | "save_design"
   | "get_review_context"
-  | "report_drift";
+  | "report_drift"
+  | "get_wiki_transcript"
+  | "save_wiki_keywords"
+  | "get_wiki_context"
+  | "save_wiki";
 
 /**
  * agent가 `ask_user` MCP tool로 던지는 질문 (docs/requirements_flow.md §4.3).
@@ -325,6 +395,9 @@ export type AgentEvent =
   | { type: "app.design"; taskId: string; design: DesignDoc }
   /** 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다. */
   | { type: "app.drift"; taskId: string; report: ReportDriftInput }
+  | { type: "app.wiki"; taskId: string; page: WikiPage }
+  /** 위키 후보 키워드가 정해졌다. 사용자가 여기서 하나를 고른다. */
+  | { type: "app.wiki.keywords"; taskId: string; keywords: WikiKeyword[] }
   | { type: "app.question"; taskId: string; question: PendingQuestion }
   | { type: "app.answer"; taskId: string; questionId: string; answer: string }
   | { type: "task.completed"; taskId: string }
@@ -531,6 +604,34 @@ export type ReviewRun = {
   commits: string[];
   findings: DriftFinding[];
   summary: string;
+};
+
+/**
+ * 후보 키워드를 뽑는 turn을 시작한다. 결과는 `app.wiki.keywords` 이벤트로 온다.
+ * 위키 패널을 열 때 한 번 돌고, 키워드마다 돌지 않는다.
+ */
+export type StartWikiKeywordsRequest = {
+  agent: AgentId;
+  projectPath: string;
+  model?: string;
+  effort?: string;
+};
+
+export type StartWikiKeywordsResponse = {
+  /** 대화가 하나도 없으면 null. 그 경우 turn을 돌리지 않는다. */
+  taskId: string | null;
+  /** 훑은 메시지 수. */
+  messages: number;
+  /** 이미 만들어 둔 페이지의 term들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
+  existing: string[];
+};
+
+export type StartWikiRequest = {
+  agent: AgentId;
+  projectPath: string;
+  term: string;
+  model?: string;
+  effort?: string;
 };
 
 /**

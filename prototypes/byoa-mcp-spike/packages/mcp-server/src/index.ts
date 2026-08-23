@@ -25,6 +25,9 @@ import {
   type ReportDriftInput,
   type ReviewContext,
   type ShowResultInput,
+  type WikiContext,
+  type WikiPageInput,
+  type WikiTranscript,
 } from "@byoa/protocol";
 import { loadBridgeConfig, spikeRootFromModule } from "@byoa/protocol/node";
 
@@ -403,6 +406,145 @@ server.registerTool(
           text:
             `Drift report delivered to the BYOA app UI (${report.findings.length} finding(s)).` +
             (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
+        },
+      ],
+    };
+  },
+);
+
+/**
+ * 위키 후보 키워드용 tool (§3.5).
+ *
+ * 빈도로 뽑으려다 실패해서 turn을 하나 쓰게 됐다 — 가장 자주 나오는 말이 가장 익숙한 말이라
+ * 정반대의 것이 뽑혔다 (SPIKE_FINDINGS.md §16). 세는 일은 그대로 bridge가 한다.
+ */
+server.registerTool(
+  "get_wiki_transcript",
+  {
+    title: "Get the conversations to scan",
+    description:
+      "Return the conversations this person had while building the app, with code blocks and " +
+      "this tool's own prompt wrappers already removed. Scan them for words they would not be " +
+      "able to define.",
+    inputSchema: {},
+  },
+  async () => {
+    const transcript = await bridgeFetch<WikiTranscript>("/internal/wiki-transcript");
+    log("get_wiki_transcript ->", `${transcript.messages.length} messages`, transcript.skipped ? `(${transcript.skipped} older skipped)` : "");
+    return {
+      content: [{ type: "text", text: JSON.stringify(transcript, null, 2) }],
+      structuredContent: transcript as unknown as Record<string, unknown>,
+    };
+  },
+);
+
+server.registerTool(
+  "save_wiki_keywords",
+  {
+    title: "Save the words worth explaining",
+    description:
+      "Save the words to offer this person, most useful first. Frequency is not the criterion " +
+      "-- the app counts occurrences itself, and the most frequent words are always the most " +
+      "ordinary ones. Pick terms of art they could not define, in whatever language they " +
+      "appear. An empty list is a valid answer.",
+    inputSchema: {
+      keywords: z
+        .array(
+          z.object({
+            term: z.string().describe("The word exactly as it appears in the conversation"),
+            why: z.string().describe("One short line: why this person might be stuck on it"),
+            sample: z.string().describe("A sentence from the conversation where it appears, quoted as-is"),
+          }),
+        )
+        .describe("Twelve or fewer is plenty"),
+    },
+  },
+  async (input) => {
+    const { keywords } = input as { keywords: Array<{ term: string }> };
+    const ack = await bridgeFetch<{ taskId: string | null }>("/internal/wiki-keywords", {
+      method: "POST",
+      body: JSON.stringify({ keywords }),
+    });
+    log("save_wiki_keywords ->", `${keywords.length}`, keywords.map((k) => k.term).join(", "));
+    return {
+      content: [
+        { type: "text", text: `${keywords.length} keyword(s) offered to the user in the app${ack.taskId ? "" : " (no active task)"}.` },
+      ],
+    };
+  },
+);
+
+/**
+ * 위키용 tool (docs/vibe_coding_assistant_design.md §3.5).
+ *
+ * 리뷰와 달리 이쪽은 **코드를 읽어야 한다.** 어느 파일을 봐야 할지 우리가 미리 알 수 없어서
+ * 먹여 줄 수 없기 때문이다. 그래서 위키 turn에만 읽기 도구가 열려 있다.
+ */
+server.registerTool(
+  "get_wiki_context",
+  {
+    title: "Get what to explain",
+    description:
+      "Return the word to explain, `mentions` (the places it actually came up in this " +
+      "project's conversations, which is the only evidence of what it refers to here), and " +
+      "the recorded design. Read the project's own code as well before writing.",
+    inputSchema: {},
+  },
+  async () => {
+    const context = await bridgeFetch<WikiContext>("/internal/wiki-context");
+    log("get_wiki_context ->", context.term, `mentions ${context.mentions.length}`);
+    return {
+      content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
+      structuredContent: context as unknown as Record<string, unknown>,
+    };
+  },
+);
+
+server.registerTool(
+  "save_wiki",
+  {
+    title: "Save a wiki page",
+    description:
+      "Save one explanation for the non-programmer building this app. Write every field in the " +
+      "language the reader speaks in their own conversation -- a page they cannot read is " +
+      "worthless. This is a LEARNING page, not a review: never say something is wrong, risky, " +
+      "outdated, temporary or improvable, never suggest changes, and do not imply them by " +
+      "saying what it is 'not meant for'. Describe what is, and stop. A general definition the " +
+      "reader could have searched for is not worth saving -- what makes the page worth keeping " +
+      "is what this word means in THIS project.",
+    inputSchema: {
+      term: z.string().describe("The word being explained, as it appears in their conversation"),
+      oneLine: z
+        .string()
+        .describe("One sentence, in plain words. Do not explain jargon with more jargon"),
+      inThisProject: z
+        .string()
+        .describe("What this actually is in THIS app: where it happens, what it touches, why it is here"),
+      where: z
+        .array(z.string())
+        .describe(
+          "Evidence from this project: file paths you actually opened, or REQ / FLOW / DEC ids. " +
+            "Never empty -- with nothing here the page is a generic definition",
+        ),
+      related: z.array(z.string()).describe("Other words from their conversation worth reading next"),
+    },
+  },
+  async (input) => {
+    const page = input as WikiPageInput;
+    const ack = await bridgeFetch<{ taskId: string | null; warnings: string[] }>("/internal/wiki", {
+      method: "POST",
+      body: JSON.stringify(page),
+    });
+    log("save_wiki ->", page.term, `(where ${page.where?.length ?? 0})`);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            (ack.warnings.length
+              ? `The page for "${page.term}" was saved, but it has problems you should fix by ` +
+                `calling save_wiki again with the whole page corrected:\n- ${ack.warnings.join("\n- ")}`
+              : `Wiki page for "${page.term}" saved and shown in the app.`),
         },
       ],
     };

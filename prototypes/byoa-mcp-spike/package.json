@@ -25,6 +25,7 @@
     "acceptance": "node scripts/acceptance.mjs",
     "interview": "node scripts/interview.mjs",
     "drift": "node scripts/drift.mjs",
+    "wiki": "node scripts/wiki.mjs",
     "drift:fixture": "node scripts/drift-fixture.mjs"
   }
 }

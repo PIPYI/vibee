@@ -16,6 +16,9 @@ import type {
   ShowResultInput,
   StartReviewResponse,
   StartTaskResponse,
+  StartWikiKeywordsResponse,
+  WikiKeyword,
+  WikiPage,
   ToolReadiness,
 } from "@byoa/protocol";
 
@@ -49,6 +52,10 @@ export function App() {
   // git은 agent와 같은 급의 전제 조건이다 — 없으면 되돌릴 지점을 남길 수 없다.
   const [tools, setTools] = useState<ToolReadiness[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  // 위키 (§3.5). 키워드는 agent가 고르고, 사용자가 그중 하나를 눌러 페이지를 만든다.
+  const [keywords, setKeywords] = useState<WikiKeyword[] | null>(null);
+  const [wikiPage, setWikiPage] = useState<WikiPage | null>(null);
+  const [wikiDone, setWikiDone] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
@@ -233,6 +240,15 @@ export function App() {
               push(`⚠ ${finding.criterionId} 깨짐 — ${short(finding.commit)} ${where}${guess}: ${finding.detail}`, "bad");
             }
           }
+          break;
+        case "app.wiki.keywords":
+          setKeywords(event.keywords);
+          push(`위키 후보 ${event.keywords.length}개`, "mcp");
+          break;
+        case "app.wiki":
+          setWikiPage(event.page);
+          setWikiDone((prev) => (prev.includes(event.page.term) ? prev : [...prev, event.page.term]));
+          push(`위키 페이지 — ${event.page.term} (근거 ${event.page.where.length}개)`, "mcp");
           break;
         case "app.question":
           setQuestion(event.question);
@@ -428,6 +444,51 @@ export function App() {
     setRunning(true);
   }, [agent, projectPath, model, effort]);
 
+  /** 위키 패널을 연다. 후보 키워드를 뽑는 turn이 한 번 돈다 (키워드마다가 아니다). */
+  const findKeywords = useCallback(async () => {
+    setError(null);
+    setLines([]);
+    setKeywords(null);
+    setWikiPage(null);
+    const response = await fetch("/api/wiki/keywords", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath, model, effort }),
+    });
+    const data = (await response.json()) as StartWikiKeywordsResponse & { error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "키워드를 뽑지 못했습니다");
+      return;
+    }
+    setWikiDone(data.existing);
+    if (!data.taskId) {
+      setError("이 프로젝트에서 아직 대화한 기록이 없습니다");
+      return;
+    }
+    setTaskId(data.taskId);
+    setRunning(true);
+  }, [agent, projectPath, model, effort]);
+
+  const writeWiki = useCallback(
+    async (term: string) => {
+      setError(null);
+      setWikiPage(null);
+      const response = await fetch("/api/wiki", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent, projectPath, term, model, effort }),
+      });
+      const data = (await response.json()) as { taskId?: string; error?: string };
+      if (!response.ok || !data.taskId) {
+        setError(data.error ?? "페이지를 만들지 못했습니다");
+        return;
+      }
+      setTaskId(data.taskId);
+      setRunning(true);
+    },
+    [agent, projectPath, model, effort],
+  );
+
   const send = useCallback(async () => {
     setError(null);
     setLines([]);
@@ -576,6 +637,9 @@ export function App() {
           </button>
           <button onClick={() => void review()} disabled={running || !projectPath.trim()} className="secondary">
             드리프트 리뷰
+          </button>
+          <button onClick={() => void findKeywords()} disabled={running || !projectPath.trim()} className="secondary">
+            위키
           </button>
           <button onClick={() => void newSession()} disabled={running || !session} className="secondary">
             New Session
@@ -749,6 +813,46 @@ export function App() {
               <button className="link" onClick={() => void navigator.clipboard.writeText(handover.firstPrompt)}>
                 복사
               </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {(keywords || wikiPage) && (
+        <section className="panel">
+          <h2>위키</h2>
+          {keywords && keywords.length === 0 && <p className="muted">설명할 만한 말이 없었습니다.</p>}
+          {keywords && keywords.length > 0 && (
+            <>
+              <p className="muted">어떤 개념을 알고 싶으신가요?</p>
+              <div className="row">
+                {keywords.map((keyword) => (
+                  <button
+                    key={keyword.term}
+                    className="secondary"
+                    disabled={running}
+                    title={`${keyword.why}\n\n"${keyword.sample}"`}
+                    onClick={() => void writeWiki(keyword.term)}
+                  >
+                    {keyword.term} <span className="muted">×{keyword.count}</span>
+                    {wikiDone.includes(keyword.term) ? " ✓" : ""}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {wikiPage && (
+            <div>
+              <h3>{wikiPage.term}</h3>
+              <p>{wikiPage.oneLine}</p>
+              <p>{wikiPage.inThisProject}</p>
+              {/* 근거가 비면 일반론이라는 뜻이다. 그 사실을 감추지 않는다. */}
+              {wikiPage.where.length > 0 ? (
+                <p className="muted">이 프로젝트에서: {wikiPage.where.join(", ")}</p>
+              ) : (
+                <p className="muted">이 프로젝트 안에서 근거를 찾지 못했습니다.</p>
+              )}
+              {wikiPage.related.length > 0 && <p className="muted">함께 보기: {wikiPage.related.join(", ")}</p>}
             </div>
           )}
         </section>

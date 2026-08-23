@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentReadiness, ModelOption, SessionSummary } from "@byoa/protocol";
+import type { AgentEvent, AgentReadiness, ModelOption, SessionSummary, TranscriptMessage } from "@byoa/protocol";
 
 export type TaskOutcome = "completed" | "interrupted";
 
@@ -30,18 +30,33 @@ export type StartTaskInput = {
  * - `interview` — 무엇을 만들지 정하는 대화 (docs/requirements_flow.md §4)
  * - `task`      — **acceptance 검증 장치.** 제품 경로가 아니다 (아래)
  * - `review`    — 저장된 DEC/RULE과 diff를 대조한다 (§3.3). 고치지 않고 보고만 한다
+ * - `wiki`      — 대화에 나온 말을 이 프로젝트 기준으로 설명한다 (§3.5). **읽되 쓰지 않는다**
  *
  * `task`는 Phase A/B가 "브라우저 프롬프트가 로컬 agent의 turn이 되고 agent가 지정된
  * 디렉터리에서 실제로 파일을 고치는가"를 확인하려고 만든 것이다. 제품에서 코드를 쓰는
  * 주체는 사용자가 옆 창에서 돌리는 자기 agent이고, 이 앱은 그 프롬프트를 건넬 뿐이다
  * (docs/BYOA_MCP_INTEGRATION_SPIKE.md §1.2). **이 mode 위에 제품 기능을 쌓지 않는다.**
  */
-export type TaskMode = "task" | "interview" | "review";
+export type TaskMode = "task" | "interview" | "review" | "wiki";
 
 /** 코드를 쓰지 않는 mode인가. 격리 수준을 가르는 유일한 기준이다. */
 export function isReadOnlyMode(mode: TaskMode): boolean {
   return mode !== "task";
 }
+
+/**
+ * 코드를 **읽어야** 하는 mode인가.
+ *
+ * 인터뷰와 리뷰는 필요한 것을 우리가 전부 먹여 준다(문답, diff). 위키는 다르다 —
+ * "이 앱에서 JWT는 `src/auth/token.js`가 만든다"를 쓰려면 코드를 봐야 하는데, 어느 파일을
+ * 볼지 우리가 미리 알 수 없다. 그래서 읽기 도구만 열어 준다.
+ */
+export function needsReadTools(mode: TaskMode): boolean {
+  return mode === "wiki";
+}
+
+/** 위키 turn에 허용하는 Claude 내장 도구. 쓰기 도구는 하나도 없다. */
+export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 
 /**
  * provider에 종속되지 않는 adapter 인터페이스 (문서 §21). 이 선 위쪽 — HTTP API,
@@ -70,5 +85,10 @@ export interface AgentAdapter {
   listSessions(projectPath: string): Promise<SessionSummary[]>;
   /** 기존 세션에 붙는다. 다음 startTask가 이 세션을 이어받는다. */
   resumeSession(projectPath: string, sessionId: string): Promise<void>;
+  /**
+   * 이 프로젝트에서 오간 대화 전문. **우리 앱이 시작한 것만이 아니다** — 사용자가 옆 창에서
+   * 바이브코딩한 대화도 같은 곳에 남으므로 같이 읽힌다. 위키 키워드가 여기서 나온다 (§3.5).
+   */
+  readTranscript(projectPath: string): Promise<TranscriptMessage[]>;
   dispose(): Promise<void>;
 }

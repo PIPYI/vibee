@@ -18,6 +18,9 @@ import type {
   PendingQuestion,
   ReportDriftInput,
   ReviewContext,
+  TranscriptMessage,
+  WikiContext,
+  WikiTranscript,
   SelectedItem,
   ShowResultInput,
   TaskState,
@@ -71,6 +74,12 @@ export class BridgeState {
    */
   private reviewContext: ReviewContext | null = null;
   private driftReport: ReportDriftInput | null = null;
+
+  /** 지금 위키 turn이 만들고 있는 것. turn 하나에 키워드 하나다. */
+  private wikiContext: WikiContext | null = null;
+  /** 키워드 turn이 읽을 대화. 세는 일에도 쓰이므로 원본을 함께 들고 있는다. */
+  private wikiTranscript: WikiTranscript | null = null;
+  private wikiSource: TranscriptMessage[] = [];
 
   private pendingQuestion: PendingQuestion | null = null;
   private readonly exchanges: InterviewExchange[] = [];
@@ -168,6 +177,30 @@ export class BridgeState {
 
   getDriftReport(): ReportDriftInput | null {
     return this.driftReport;
+  }
+
+  // ---------- 위키 ----------
+
+  startWiki(context: WikiContext): void {
+    this.wikiContext = context;
+  }
+
+  startWikiKeywords(transcript: WikiTranscript, source: TranscriptMessage[]): void {
+    this.wikiTranscript = transcript;
+    this.wikiSource = source;
+  }
+
+  getWikiTranscript(): WikiTranscript | null {
+    return this.wikiTranscript;
+  }
+
+  /** 키워드 횟수를 셀 때 쓰는 원본. 잘라낸 것이 아니라 전부를 센다. */
+  getWikiSource(): TranscriptMessage[] {
+    return this.wikiSource;
+  }
+
+  getWikiContext(): WikiContext | null {
+    return this.wikiContext;
   }
 
   patchAppContext(patch: AppContextPatch): AppContext {
