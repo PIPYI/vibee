@@ -206,6 +206,7 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   assert.match(prompt, /viewPlan/);
   assert.match(prompt, /userMap\.journeys/);
   assert.match(prompt, /Canonical Scenario마다 하나씩/);
+  assert.match(prompt, /workflow\.mainPath의 모든 인접 node 쌍/);
   assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
 });
 

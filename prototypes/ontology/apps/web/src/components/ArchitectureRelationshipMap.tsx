@@ -42,16 +42,22 @@ function portOffset(index: number, count: number): number {
 function RelationshipCard({
   component,
   replacementSeam,
+  highlighted,
+  dimmed,
+  readingOrder,
   onSelect,
 }: {
   component: ArchitectureComponent;
   replacementSeam?: BackendReplacementSeam;
+  highlighted?: boolean;
+  dimmed?: boolean;
+  readingOrder?: number;
   onSelect?: (id: string) => void;
 }): React.JSX.Element {
   return (
     <button
       type="button"
-      className={`relationship-card relationship-card-${component.presentationType}${replacementSeam ? " relationship-card-replacement" : ""}`}
+      className={`relationship-card relationship-card-${component.presentationType}${replacementSeam ? " relationship-card-replacement" : ""}${highlighted ? " relationship-card-highlighted" : ""}${dimmed ? " relationship-card-dimmed" : ""}`}
       data-relationship-node={component.id}
       onClick={() => onSelect?.(component.id)}
       title={component.description ?? component.sublabel ?? component.label}
@@ -61,6 +67,7 @@ function RelationshipCard({
         {component.sublabel && <span>{component.sublabel}</span>}
       </span>
       <strong>{component.label}</strong>
+      {readingOrder !== undefined && <span className="relationship-reading-order" aria-label={`추천 탐색 순서 ${readingOrder}`}>{readingOrder}</span>}
       {replacementSeam && <span className="relationship-replacement-badge">⇄ API 교체 지점</span>}
     </button>
   );
@@ -165,17 +172,21 @@ export function ArchitectureRelationshipMap({
   ir,
   topology,
   sequences = [],
+  highlightedComponentIds = new Set<string>(),
+  hasExternalFocus = false,
   onSelectComponent,
 }: {
   ir: ArchitectureIR;
   topology?: RepositoryTopology;
   sequences?: SequenceIR[];
+  highlightedComponentIds?: ReadonlySet<string>;
+  hasExternalFocus?: boolean;
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
   const { lanes, layers } = useMemo(() => computeRelationshipLanes(ir), [ir]);
   const primaryIds = useMemo(() => primaryConnectionIds(ir), [ir]);
   const hasPrimaryPath = primaryIds.size > 0;
-  const [mode, setMode] = useState<"primary" | "all">(hasPrimaryPath ? "primary" : "all");
+  const [mode, setMode] = useState<"primary" | "all">("all");
   const [geometries, setGeometries] = useState<EdgeGeometry[]>([]);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [selectedConnection, setSelectedConnection] = useState<ArchitectureConnection | null>(null);
@@ -307,7 +318,7 @@ export function ArchitectureRelationshipMap({
         </div>
         <div className="relationship-mode" role="group" aria-label="표시할 관계">
           {hasPrimaryPath && (
-            <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>핵심 관계 {primaryIds.size}</button>
+            <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>처음 보기</button>
           )}
           <button type="button" aria-pressed={mode === "all"} onClick={() => setMode("all")}>모든 관계 {ir.connections.length}</button>
         </div>
@@ -347,7 +358,14 @@ export function ArchitectureRelationshipMap({
                   <div key={layer} className="relationship-cell">
                     {(lane.componentsByLayer.get(layer) ?? []).map((component) => (
                       <div key={component.id} className={mode === "primary" && hasPrimaryPath && !primaryNodeIds.has(component.id) ? "relationship-node-secondary" : undefined}>
-                        <RelationshipCard component={component} replacementSeam={replacementSeams.get(component.id)} onSelect={onSelectComponent} />
+                        <RelationshipCard
+                          component={component}
+                          replacementSeam={replacementSeams.get(component.id)}
+                          highlighted={highlightedComponentIds.has(component.id)}
+                          dimmed={hasExternalFocus && !highlightedComponentIds.has(component.id)}
+                          readingOrder={mode === "primary" ? (ir.viewPlan?.primaryPath.indexOf(component.id) ?? -1) + 1 || undefined : undefined}
+                          onSelect={onSelectComponent}
+                        />
                       </div>
                     ))}
                   </div>

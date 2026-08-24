@@ -291,7 +291,9 @@ const ASSEMBLY_RULES = [
   "9. userMap.journeys 는 active Canonical Scenario마다 하나씩 만든다. 서로 다른 사용자 목적과",
   "   시스템 목적을 한 journey에 합치지 않는다. journey.id는 Canonical Scenario id를 그대로",
   "   쓰고 goal·entryStepId·outcomeStepIds·branch/loop를 보존한다. 모든 step은 근거가 있어야 한다.",
-  "10. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
+  "10. workflow.mainPath의 모든 인접 node 쌍에는 실제 workflow.edges 항목이 정확히 하나 이상",
+  "   있어야 한다. mainPath를 제출하기 전에 인접 쌍을 순서대로 대조한다.",
+  "11. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
 ].join("\n");
 
 /**

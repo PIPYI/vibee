@@ -15,6 +15,7 @@ import type {
   McpCallSource,
   OverviewIR,
   ScenarioIR,
+  StageUsage,
   TaskState,
 } from "@onto/protocol";
 
@@ -141,12 +142,35 @@ export class BridgeState {
     if (!task.exploredFiles.includes(path)) task.exploredFiles.push(path);
   }
 
-  /** 이 turn의 누적 토큰 사용량을 갱신한다. provider가 보고할 때마다 최신 값으로 덮어쓴다. */
-  setTokenUsage(taskId: string | null, totalTokens: number): void {
+  /** 같은 turn의 누적 알림은 대체하고, 서로 다른 Stage/turn은 합산해 보존한다. */
+  recordStageUsage(taskId: string | null, usage: StageUsage): void {
     const target = taskId ?? this.activeTaskId;
     if (!target) return;
     const task = this.tasks.get(target);
-    if (task) task.tokenUsage = totalTokens;
+    if (!task) return;
+    const usages = task.stageUsages ?? [];
+    const index = usages.findIndex((item) =>
+      item.stage === usage.stage && (usage.turnId ? item.turnId === usage.turnId : item.turnId === undefined),
+    );
+    if (index >= 0) usages[index] = usage;
+    else usages.push(usage);
+    task.stageUsages = usages;
+    const totals = usages.map((item) => item.totalTokens).filter((value): value is number => typeof value === "number");
+    if (totals.length > 0) task.tokenUsage = totals.reduce((sum, value) => sum + value, 0);
+    else delete task.tokenUsage;
+  }
+
+  recordValidationRetry(taskId: string, generation?: number): number {
+    const task = this.tasks.get(taskId);
+    if (!task) return 0;
+    task.validationCorrections = (task.validationCorrections ?? 0) + 1;
+    if (generation !== undefined) task.bundleGeneration = generation;
+    return task.validationCorrections;
+  }
+
+  recordBundleCommit(taskId: string, generation: number): void {
+    const task = this.tasks.get(taskId);
+    if (task) task.bundleGeneration = generation;
   }
 
   setAnalyzeSession(taskId: string, session: AnalyzeSession): void {

@@ -9,6 +9,7 @@ import {
   transitionKey,
   type UserJourney,
 } from "../layout/userMap.js";
+import { journeyReferenceSet, referencesIntersect, stepReferenceSet } from "../layout/unifiedMap.js";
 import { EvidenceList } from "./Grounding.js";
 
 type Filter = "all" | "user" | "system";
@@ -25,44 +26,40 @@ export function UserMapView({
   userMap,
   workflow,
   sequences,
+  focusRefs = new Set<string>(),
+  onFocusJourney,
+  onFocusStep,
   onOpenSequence,
 }: {
   userMap?: UserMapIR;
   workflow: WorkflowIR;
   sequences: SequenceIR[];
+  focusRefs?: ReadonlySet<string>;
+  onFocusJourney?: (journey: UserJourney["ir"]) => void;
+  onFocusStep?: (step: ScenarioStep) => void;
   onOpenSequence: (sequence: SequenceIR) => void;
 }): React.JSX.Element {
   const journeys = useMemo(() => buildUserJourneys(userMap, workflow), [userMap, workflow]);
   const [filter, setFilter] = useState<Filter>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => journeys[0]?.ir.id ?? null);
   const selected = journeys.find((journey) => journey.ir.id === selectedId) ?? null;
 
   useEffect(() => {
-    if (selectedId && !journeys.some((journey) => journey.ir.id === selectedId)) setSelectedId(null);
+    if (selectedId && !journeys.some((journey) => journey.ir.id === selectedId)) setSelectedId(journeys[0]?.ir.id ?? null);
+    if (!selectedId && journeys.length > 0) setSelectedId(journeys[0]!.ir.id);
   }, [journeys, selectedId]);
 
   const visible = journeys.filter((journey) => filter === "all" || journey.ir.type === filter);
-
-  if (selected) {
-    return (
-      <JourneyDetail
-        journey={selected}
-        sequences={sequences}
-        onBack={() => setSelectedId(null)}
-        onOpenSequence={onOpenSequence}
-      />
-    );
-  }
 
   const primaryCount = journeys.filter((journey) => journey.source !== "legacy-support").length;
   return (
     <section className="user-map" aria-labelledby="user-map-title">
       <header className="user-map-hero">
         <div>
-          <p className="detail-eyebrow">사용자 지도</p>
+          <p className="detail-eyebrow">여정 선택</p>
           <h2 id="user-map-title">{userMap?.title ?? "프로젝트에서 할 수 있는 일"}</h2>
           <p className="dim">
-            서로 다른 목적을 한 그래프에 섞지 않았습니다. 궁금한 여정을 골라 단계와 분기를 따라가 보세요.
+            목적을 고르면 대표 경로와 그 단계에서 갈라지는 선택·재시도를 한 캔버스에서 보여줍니다.
           </p>
         </div>
         <div className="user-map-summary" aria-label="사용자 지도 요약">
@@ -73,8 +70,7 @@ export function UserMapView({
 
       {!userMap && (
         <p className="user-map-legacy-note">
-          이 분석 결과에는 목적별 여정 데이터가 없어 기존 흐름을 안전하게 다시 정리해 표시하고 있습니다.
-          최신 분석기로 다시 분석하면 vibee가 각 여정을 별도로 구성합니다.
+          이 결과에는 목적별 여정 데이터가 없습니다. 현재 확인 가능한 기존 워크플로우만 읽기 전용으로 정리했습니다.
         </p>
       )}
 
@@ -86,31 +82,37 @@ export function UserMapView({
         ))}
       </div>
 
-      <div className="journey-card-grid">
-        {visible.map((journey, index) => {
+      <div className="journey-selector" role="list" aria-label="분석된 여정">
+        {visible.map((journey) => {
           const outcomes = journey.ir.outcomeStepIds
             .map((id) => journey.ir.steps.find((step) => step.id === id)?.label)
             .filter(Boolean);
           return (
             <button
               type="button"
-              className={`journey-card journey-card-${journey.ir.type}`}
+              className={`journey-selector-item journey-selector-item-${journey.ir.type}${selectedId === journey.ir.id ? " is-selected" : ""}${referencesIntersect(journeyReferenceSet(journey.ir), focusRefs) ? " is-related" : ""}`}
               key={journey.ir.id}
-              onClick={() => setSelectedId(journey.ir.id)}
+              onClick={() => { setSelectedId(journey.ir.id); onFocusJourney?.(journey.ir); }}
             >
-              <span className="journey-card-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="journey-card-type">{typeLabel(journey.ir.type)}</span>
               <strong>{journey.ir.name}</strong>
-              <span className="journey-card-goal">{journey.ir.goal ?? "이 여정의 단계와 결과를 확인합니다."}</span>
               <span className="journey-card-meta">
                 {journey.ir.steps.length}단계 · {journey.ir.participants.length}참여자
               </span>
               {outcomes.length > 0 && <span className="journey-card-outcome">결과 · {outcomes.join(" / ")}</span>}
-              <span className="journey-card-open">여정 열기 →</span>
             </button>
           );
         })}
       </div>
+      {selected && (
+        <JourneyDetail
+          journey={selected}
+          sequences={sequences}
+          focusRefs={focusRefs}
+          onFocusStep={onFocusStep}
+          onOpenSequence={onOpenSequence}
+        />
+      )}
     </section>
   );
 }
@@ -118,12 +120,14 @@ export function UserMapView({
 function JourneyDetail({
   journey,
   sequences,
-  onBack,
+  focusRefs,
+  onFocusStep,
   onOpenSequence,
 }: {
   journey: UserJourney;
   sequences: SequenceIR[];
-  onBack: () => void;
+  focusRefs: ReadonlySet<string>;
+  onFocusStep?: (step: ScenarioStep) => void;
   onOpenSequence: (sequence: SequenceIR) => void;
 }): React.JSX.Element {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
@@ -140,7 +144,6 @@ function JourneyDetail({
 
   return (
     <section className="user-map journey-detail" aria-labelledby="journey-detail-title">
-      <button type="button" className="journey-back" onClick={onBack}>← 여정 한눈에</button>
       <header className={`journey-detail-hero journey-detail-hero-${ir.type}`}>
         <div>
           <p className="detail-eyebrow">{typeLabel(ir.type)}</p>
@@ -180,8 +183,8 @@ function JourneyDetail({
               <div className="journey-rail-unit" key={step.id}>
                 <button
                   type="button"
-                  className={`journey-step${isOutcome ? " journey-step-outcome" : ""}`}
-                  onClick={() => setSelectedStepId(step.id)}
+                  className={`journey-step${isOutcome ? " journey-step-outcome" : ""}${referencesIntersect(stepReferenceSet(step), focusRefs) ? " journey-step-related" : ""}`}
+                  onClick={() => { setSelectedStepId(step.id); onFocusStep?.(step); }}
                   aria-label={`${step.label}${isOutcome ? ", 결과 단계" : ""}`}
                 >
                   <span className="journey-step-number">{index + 1}</span>
@@ -206,39 +209,41 @@ function JourneyDetail({
             );
           })}
         </div>
-      </section>
-
-      {(otherTransitions.length > 0 || (ir.branches?.length ?? 0) > 0) && (
-        <section className="journey-branches">
-          <div className="journey-section-heading">
-            <div><p className="detail-eyebrow">다른 경로</p><h3>분기·재시도·후속 행동</h3></div>
-            <p className="dim">대표 경로와 분리해 선이 겹치지 않도록 정리했습니다.</p>
-          </div>
-          <div className="journey-branch-grid">
+        {(otherTransitions.length > 0 || (ir.branches?.length ?? 0) > 0) && (
+          <div className="journey-inline-branches" aria-label="대표 경로에서 갈라지는 분기와 재시도">
+            <p className="journey-inline-label"><span>↳</span> 각 경로가 시작되는 대표 단계 아래에 연결했습니다</p>
             {otherTransitions.map((transition, index) => {
               const from = stepById.get(transition.fromStepId);
               const to = stepById.get(transition.toStepId);
               const sequence = sequenceForTransition(journey, transition, sequences);
+              const sourceRank = Math.max(0, path.indexOf(transition.fromStepId));
               return (
-                <article className={`journey-branch${transition.loop ? " journey-branch-loop" : ""}`} key={`${transitionKey(transition)}-${index}`}>
-                  <span className="journey-branch-kind">{transition.loop ? "↺ 재시도" : "↗ 다른 경로"}</span>
-                  <strong>{from?.label ?? transition.fromStepId} <span>→</span> {to?.label ?? transition.toStepId}</strong>
+                <article
+                  className={`journey-branch journey-branch-attached${transition.loop ? " journey-branch-loop" : ""}`}
+                  style={{ gridColumnStart: sourceRank + 1 }}
+                  key={`${transitionKey(transition)}-${index}`}
+                >
+                  <span className="journey-branch-kind">{transition.loop ? "↺ 재시도" : "↗ 분기"} · {from?.label ?? transition.fromStepId}에서</span>
+                  <strong>{to?.label ?? transition.toStepId}</strong>
                   <p>{transition.condition ?? "이 단계에서 다른 흐름으로 이어집니다."}</p>
                   {sequence && <button type="button" onClick={() => onOpenSequence(sequence)}>코드 호출 보기 →</button>}
                 </article>
               );
             })}
             {(ir.branches ?? []).map((branch) => (
-              <article className="journey-branch journey-branch-decision" key={`${branch.sourceStepId}-${branch.conditionLabel}`}>
-                <span className="journey-branch-kind">◇ 선택</span>
-                <strong>{stepById.get(branch.sourceStepId)?.label ?? branch.sourceStepId}</strong>
-                <p>{branch.conditionLabel}</p>
+              <article
+                className="journey-branch journey-branch-attached journey-branch-decision"
+                style={{ gridColumnStart: Math.max(0, path.indexOf(branch.sourceStepId)) + 1 }}
+                key={`${branch.sourceStepId}-${branch.conditionLabel}`}
+              >
+                <span className="journey-branch-kind">◇ 선택 · {stepById.get(branch.sourceStepId)?.label ?? branch.sourceStepId}에서</span>
+                <strong>{branch.conditionLabel}</strong>
                 <ul>{branch.paths.map((path) => <li key={`${path.label}-${path.nextStepId}`}>{path.label} → {stepById.get(path.nextStepId)?.label ?? path.nextStepId}</li>)}</ul>
               </article>
             ))}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {(ir.stateChanges?.length ?? 0) > 0 && (
         <section className="journey-state-strip">

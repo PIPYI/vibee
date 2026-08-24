@@ -87,7 +87,7 @@ function extractThreadId(result: unknown): string {
   );
 }
 
-type TurnHandle = { threadId: string; turnId?: string };
+type TurnHandle = { threadId: string; turnId?: string; mode: StartTaskInput["mode"]; model?: string };
 
 export class CodexAdapter implements AgentAdapter {
   readonly id = "codex" as const;
@@ -204,7 +204,7 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     emit({ type: "agent.session", taskId: input.taskId, sessionId: threadId, resumed });
-    this.activeTurns.set(input.taskId, { threadId });
+    this.activeTurns.set(input.taskId, { threadId, mode: input.mode, ...(input.model ? { model: input.model } : {}) });
 
     const outcome = new Promise<TaskOutcome>((resolve) => {
       this.turnResolvers.set(input.taskId, resolve);
@@ -229,7 +229,12 @@ export class CodexAdapter implements AgentAdapter {
       ...(input.effort ? { effort: input.effort } : {}),
     })) as { turn?: { id?: string } };
     const turnId = response.turn?.id;
-    this.activeTurns.set(input.taskId, { threadId, ...(turnId ? { turnId } : {}) });
+    this.activeTurns.set(input.taskId, {
+      threadId,
+      mode: input.mode,
+      ...(turnId ? { turnId } : {}),
+      ...(input.model ? { model: input.model } : {}),
+    });
 
     try {
       return await outcome;
@@ -321,9 +326,30 @@ export class CodexAdapter implements AgentAdapter {
     // **agent-stream 증거원** (§7.3 turn/token) — `codex app-server generate-ts` 로 확인한
     // `ThreadTokenUsageUpdatedNotification { threadId, turnId, tokenUsage: { total: { totalTokens } } }`.
     if (notification.method === "thread/tokenUsage/updated") {
-      const tokenUsage = (params["tokenUsage"] ?? {}) as { total?: { totalTokens?: number } };
-      const totalTokens = tokenUsage.total?.totalTokens;
-      if (typeof totalTokens === "number") emit({ type: "agent.usage", taskId, totalTokens });
+      const tokenUsage = (params["tokenUsage"] ?? {}) as {
+        total?: {
+          totalTokens?: number;
+          inputTokens?: number;
+          outputTokens?: number;
+          cachedInputTokens?: number;
+        };
+      };
+      const total = tokenUsage.total;
+      if (typeof total?.totalTokens === "number") {
+        const handle = this.activeTurns.get(taskId);
+        const turnId = params["turnId"] ? String(params["turnId"]) : handle?.turnId;
+        emit({
+          type: "agent.usage",
+          taskId,
+          stage: handle?.mode === "analyze" ? "semantic" : handle?.mode ?? "chat",
+          ...(turnId ? { turnId } : {}),
+          ...(typeof total.inputTokens === "number" ? { inputTokens: total.inputTokens } : {}),
+          ...(typeof total.outputTokens === "number" ? { outputTokens: total.outputTokens } : {}),
+          ...(typeof total.cachedInputTokens === "number" ? { cacheReadTokens: total.cachedInputTokens } : {}),
+          totalTokens: total.totalTokens,
+          ...(handle?.model ? { model: handle.model } : {}),
+        });
+      }
       return;
     }
 

@@ -486,7 +486,8 @@ function makeEmit(taskId: string): (event: AgentEvent) => void {
       state.recordExploredFile(taskId, event.path);
     }
     if (event.type === "agent.usage") {
-      state.setTokenUsage(taskId, event.totalTokens);
+      const { type: _type, taskId: _eventTaskId, ...usage } = event;
+      state.recordStageUsage(taskId, usage);
     }
     state.emit(event);
   };
@@ -506,6 +507,11 @@ async function runTask(
   state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode });
 
   try {
+    if (mode === "view") {
+      // 온디맨드 View도 요청 하나가 세션 하나다. 사용자 chat 세션만 명시적 reset 전까지
+      // 이어지고, 분석 정확도는 누적 대화에 기대지 않는다.
+      adapter.resetSession(projectPath);
+    }
     const outcome = await adapter.startTask(
       {
         taskId,
@@ -567,6 +573,9 @@ async function runAnalyzePipeline(
 
   let stage2Outcome: TaskOutcome;
   try {
+    // V3: 분석 정확성을 프로젝트별 누적 대화에 의존하지 않는다. 세션 파일은 보존하고
+    // resume 포인터만 버려 이 Stage를 Core 상태에서 시작한다.
+    adapter.resetSession(projectPath);
     stage2Outcome = await adapter.startTask(
       { taskId, projectPath, prompt: stage2Prompt, mode: "analyze", ...modelEffort },
       emit,
@@ -617,6 +626,9 @@ async function runAnalyzePipeline(
 
   let stage3Outcome: TaskOutcome;
   try {
+    // Stage 2의 결과는 이미 SemanticStore에 커밋됐다. Assembly도 별도 세션에서 최신 Core
+    // 상태를 읽어야 이후 재분석까지 대화 문맥이 무한히 커지지 않는다.
+    adapter.resetSession(projectPath);
     stage3Outcome = await adapter.startTask(
       { taskId, projectPath, prompt: stage3Prompt, mode: "assembly", ...modelEffort },
       emit,
@@ -628,10 +640,14 @@ async function runAnalyzePipeline(
     return;
   }
 
+  if (stage3Outcome === "completed" && state.getTask(taskId)?.bundleGeneration === undefined) {
+    const message = "지도 조립 turn이 끝났지만 유효한 AnalysisBundle이 커밋되지 않았습니다.";
+    state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
+    state.emit({ type: "task.error", taskId, message });
+    return;
+  }
   state.updateTask(taskId, { status: stage3Outcome, endedAt: new Date().toISOString() });
-  state.emit(
-    stage3Outcome === "interrupted" ? { type: "task.interrupted", taskId } : { type: "task.completed", taskId },
-  );
+  state.emit(stage3Outcome === "interrupted" ? { type: "task.interrupted", taskId } : { type: "task.completed", taskId });
 }
 
 /**
@@ -1258,12 +1274,27 @@ app.post("/internal/submit-analysis-bundle", requireToken, async (req: Request, 
   const outcome = await commitAnalysisBundle(store, req.body);
 
   if (!outcome.ok) {
-    state.emit({ type: "validation.failed", taskId, tool: "submit_analysis_bundle", diagnostics: outcome.diagnostics });
+    const attempt = state.recordValidationRetry(taskId);
+    state.emit({
+      type: "validation.retrying",
+      taskId,
+      tool: "submit_analysis_bundle",
+      attempt,
+      maxAttempts: 3,
+      diagnostics: outcome.diagnostics,
+    });
     res.json({ ok: false, diagnostics: outcome.diagnostics });
     return;
   }
 
-  state.emit({ type: "bundle.ready", taskId, generation: outcome.value.generation });
+  state.recordBundleCommit(taskId, outcome.value.generation);
+  const correctedAttempts = state.getTask(taskId)?.validationCorrections;
+  state.emit({
+    type: "bundle.ready",
+    taskId,
+    generation: outcome.value.generation,
+    ...(correctedAttempts !== undefined ? { correctedAttempts } : {}),
+  });
   res.json({ ok: true, ...outcome.value, diagnostics: outcome.diagnostics });
 });
 

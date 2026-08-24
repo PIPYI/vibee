@@ -3,7 +3,7 @@
  *
  * ```text
  * NoProject → (프로젝트 열기) → Indexing → Ready(분석 시작 CTA, 이미 분석된 적 있으면 바로 Analyzed)
- * Ready → (분석 시작) → Analyzing(실시간 상황판, 별도 콘솔 탭 없음) → Analyzed(프로젝트/사용자 지도 탭)
+ * Ready → (분석 시작) → Analyzing(실시간 상황판) → Analyzed(시스템 구조+사용자 여정 통합 지도)
  * Analyzed → 블록 클릭 → Passport 우측 패널 / 엣지 라벨 클릭 → 같은 자리에 Sequence
  * ```
  *
@@ -17,24 +17,34 @@ import type {
   AnalysisBundle,
   ArchitectureComponent,
   SequenceIR,
-  WorkflowNode,
+  StageUsage,
 } from "@onto/protocol";
 
 import * as api from "./api.js";
-import { ArchitectureView } from "./components/ArchitectureView.js";
 import { DiagnosticsDrawer, PhaseStepper, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
 import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
 import { SequenceView } from "./components/SequenceView.js";
-import { UserMapView } from "./components/UserMapView.js";
+import { UnifiedMapView } from "./components/UnifiedMapView.js";
 import { useAgentEvents } from "./ws.js";
 
 type Screen = "no-project" | "indexing" | "ready" | "analyzing" | "analyzed";
-type Tab = "architecture" | "userMap";
-type PassportTarget = { tab: Tab; id: string };
+type PassportTarget = { id: string };
 
 function short(id: string): string {
   return id.slice(0, 8);
 }
+
+function compactTokens(value: number | undefined): string {
+  if (value === undefined) return "집계 대기";
+  return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value);
+}
+
+const STAGE_USAGE_LABEL: Record<StageUsage["stage"], string> = {
+  semantic: "의미 이해",
+  assembly: "지도 조립",
+  view: "상세 보기",
+  chat: "대화",
+};
 
 export function App(): React.JSX.Element {
   const [agents, setAgents] = useState<api.AgentReadiness[]>([]);
@@ -55,9 +65,9 @@ export function App(): React.JSX.Element {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const [bundle, setBundle] = useState<AnalysisBundle | null>(null);
-  const [tab, setTab] = useState<Tab>("architecture");
   const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
   const [sequenceView, setSequenceView] = useState<SequenceIR | null>(null);
+  const [stageUsages, setStageUsages] = useState<StageUsage[]>([]);
 
   useEffect(() => {
     void api.health().then((h) => setAgents(h.agents));
@@ -104,17 +114,42 @@ export function App(): React.JSX.Element {
         push(envelope.seq, event.message);
         break;
       case "agent.action.started":
-        push(envelope.seq, `▶ ${event.name}`);
+        if (!event.name.startsWith("mcp__") && !event.name.startsWith("mcp:")) push(envelope.seq, `▶ ${event.name}`);
         break;
       case "mcp.tool.called":
-        push(envelope.seq, `MCP ${event.tool} [${event.source}]`, "mcp");
+        if (event.source === "bridge-endpoint") push(envelope.seq, `${event.tool} 조회 완료`, "mcp");
+        break;
+      case "agent.usage":
+        setStageUsages((previous) => {
+          const usage: StageUsage = {
+            stage: event.stage,
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
+            ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+            ...(event.cacheReadTokens !== undefined ? { cacheReadTokens: event.cacheReadTokens } : {}),
+            ...(event.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.cacheWriteTokens } : {}),
+            ...(event.totalTokens !== undefined ? { totalTokens: event.totalTokens } : {}),
+            ...(event.model ? { model: event.model } : {}),
+          };
+          const index = previous.findIndex((item) => item.stage === usage.stage && item.turnId === usage.turnId);
+          return index < 0 ? [...previous, usage] : previous.map((item, itemIndex) => itemIndex === index ? usage : item);
+        });
         break;
       case "memory.patched":
         push(envelope.seq, `Semantic Memory 갱신 — ${event.summary}`, "good");
         break;
       case "bundle.ready":
-        push(envelope.seq, `AnalysisBundle 커밋 — generation ${event.generation}`, "good");
+        push(envelope.seq, `${event.correctedAttempts ? `${event.correctedAttempts}회 자동 보정 후 ` : ""}지도 커밋 — generation ${event.generation}`, "good");
         break;
+      case "validation.retrying": {
+        const diagnostic = event.diagnostics[0] as { code?: string; message?: string; reason?: string } | undefined;
+        push(
+          envelope.seq,
+          `자동 보정 ${event.attempt}/${event.maxAttempts} · ${diagnostic?.code ?? event.tool}${diagnostic?.message || diagnostic?.reason ? ` — ${diagnostic.message ?? diagnostic.reason}` : ""}`,
+          "info",
+        );
+        break;
+      }
       case "validation.failed":
         push(envelope.seq, `검증 실패 — ${event.tool}`, "bad");
         break;
@@ -173,18 +208,13 @@ export function App(): React.JSX.Element {
     setScreen(hasBundle ? "analyzed" : "ready");
   }, [projectPathInput, loadBundle]);
 
-  const selectTab = useCallback((next: Tab) => {
-    setTab(next);
-    setPassportTarget(null);
-    setSequenceView(null);
-  }, []);
-
   const runAnalyze = useCallback(async () => {
     if (!projectPath) return;
     setAnalyzeError(null);
     setPipelineFailed(false);
     setPipelinePhase("indexing");
     setLines([]);
+    setStageUsages([]);
     setDiagnosticsOpen(false);
     const result = await api.analyze(agent, projectPath);
     if ("error" in result) {
@@ -196,45 +226,25 @@ export function App(): React.JSX.Element {
   }, [agent, projectPath]);
 
   const componentById = new Map<string, ArchitectureComponent>((bundle?.architecture.components ?? []).map((c) => [c.id, c]));
-  const nodeById = new Map<string, WorkflowNode>((bundle?.workflow.nodes ?? []).map((n) => [n.id, n]));
 
   const passportData = ((): { subject: PassportSubject; relationships: PassportRelationship[] } | null => {
     if (!passportTarget || !bundle) return null;
-    if (passportTarget.tab === "architecture") {
-      const component = componentById.get(passportTarget.id);
-      if (!component) return null;
-      const relationships: PassportRelationship[] = bundle.architecture.connections
-        .filter((c) => c.from === passportTarget.id || c.to === passportTarget.id)
-        .map((c) => {
-          const outgoing = c.from === passportTarget.id;
-          const counterpartId = outgoing ? c.to : c.from;
-          return {
-            id: c.id,
-            label: c.label,
-            direction: outgoing ? "out" : "in",
-            counterpartId,
-            counterpartLabel: componentById.get(counterpartId)?.label ?? counterpartId,
-          };
-        });
-      return { subject: component, relationships };
-    }
-    const node = nodeById.get(passportTarget.id);
-    if (!node) return null;
-    const relationships: PassportRelationship[] = bundle.workflow.edges
-      .filter((e) => e.from === passportTarget.id || e.to === passportTarget.id)
-      .map((e) => {
-        const outgoing = e.from === passportTarget.id;
-        const counterpartId = outgoing ? e.to : e.from;
+    const component = componentById.get(passportTarget.id);
+    if (!component) return null;
+    const relationships: PassportRelationship[] = bundle.architecture.connections
+      .filter((connection) => connection.from === passportTarget.id || connection.to === passportTarget.id)
+      .map((connection) => {
+        const outgoing = connection.from === passportTarget.id;
+        const counterpartId = outgoing ? connection.to : connection.from;
         return {
-          id: e.id,
-          label: e.label,
+          id: connection.id,
+          label: connection.label,
           direction: outgoing ? "out" : "in",
           counterpartId,
-          counterpartLabel: nodeById.get(counterpartId)?.label ?? counterpartId,
-          ...(e.sequenceRef ? { sequenceRef: e.sequenceRef } : {}),
+          counterpartLabel: componentById.get(counterpartId)?.label ?? counterpartId,
         };
       });
-    return { subject: node, relationships };
+    return { subject: component, relationships };
   })();
 
   const openSequence = useCallback(
@@ -317,6 +327,15 @@ export function App(): React.JSX.Element {
         {screen === "analyzing" && (
           <section className="view-pane analyzing-pane">
             <PhaseStepper phase={pipelinePhase} failed={pipelineFailed} />
+            <div className="analysis-usage" aria-label="분석 토큰 사용량">
+              <strong>분석 사용량</strong>
+              {(["semantic", "assembly"] as const).map((stage) => {
+                const usages = stageUsages.filter((usage) => usage.stage === stage);
+                const known = usages.map((usage) => usage.totalTokens).filter((value): value is number => value !== undefined);
+                return <span key={stage}>{STAGE_USAGE_LABEL[stage]} <b>{compactTokens(known.length ? known.reduce((sum, value) => sum + value, 0) : undefined)}</b></span>;
+              })}
+              <span>총 <b>{compactTokens(stageUsages.some((usage) => usage.totalTokens !== undefined) ? stageUsages.reduce((sum, usage) => sum + (usage.totalTokens ?? 0), 0) : undefined)}</b></span>
+            </div>
             <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
           </section>
         )}
@@ -324,42 +343,16 @@ export function App(): React.JSX.Element {
         {screen === "analyzed" && bundle && (
           <>
             <section className="view-pane analyzed-pane">
-              <nav className="tab-switch" role="tablist" aria-label="분석 결과 탭">
-                <button type="button" role="tab" aria-selected={tab === "architecture"} onClick={() => selectTab("architecture")}>
-                  프로젝트 지도
-                </button>
-                <button type="button" role="tab" aria-selected={tab === "userMap"} onClick={() => selectTab("userMap")}>
-                  사용자 지도
-                </button>
-              </nav>
               {bundle.freshness === "needs_review" && (
                 <p className="freshness-banner">
                   코드가 바뀌었지만 이 화면은 아직 최신이 아닙니다 — 여전히 읽을 수 있습니다. "다시 분석"으로 갱신하세요.
                 </p>
               )}
-              {tab === "architecture" && (
-                <ArchitectureView
-                  ir={bundle.architecture}
-                  topology={bundle.repositoryTopology}
-                  sequences={bundle.sequences}
-                  viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`}
-                  onSelectComponent={(id) => {
-                    setSequenceView(null);
-                    setPassportTarget({ tab: "architecture", id });
-                  }}
-                />
-              )}
-              {tab === "userMap" && (
-                <UserMapView
-                  userMap={bundle.userMap}
-                  workflow={bundle.workflow}
-                  sequences={bundle.sequences}
-                  onOpenSequence={(sequence) => {
-                    setPassportTarget(null);
-                    setSequenceView(sequence);
-                  }}
-                />
-              )}
+              <UnifiedMapView
+                bundle={bundle}
+                onSelectComponent={(id) => { setSequenceView(null); setPassportTarget({ id }); }}
+                onOpenSequence={(sequence) => { setPassportTarget(null); setSequenceView(sequence); }}
+              />
 
               <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
             </section>
@@ -372,7 +365,7 @@ export function App(): React.JSX.Element {
               >
                 <section className="detail-modal sequence-modal" role="dialog" aria-modal="true" aria-label={sequenceView.title}>
                   <div className="sequence-modal-head">
-                    <div><p className="detail-eyebrow">사용자 지도 · 코드 호출</p><h3>{sequenceView.title}</h3></div>
+                    <div><p className="detail-eyebrow">통합 지도 · 코드 호출</p><h3>{sequenceView.title}</h3></div>
                     <button type="button" className="close-button" onClick={() => setSequenceView(null)} aria-label="닫기">×</button>
                   </div>
                   <SequenceView ir={sequenceView} />
@@ -386,7 +379,7 @@ export function App(): React.JSX.Element {
                 relationships={passportData.relationships}
                 projectPath={projectPath}
                 onClose={() => setPassportTarget(null)}
-                onSelectRelated={(id) => setPassportTarget({ tab, id })}
+                onSelectRelated={(id) => setPassportTarget({ id })}
                 onOpenSequence={openSequence}
               />
             )}

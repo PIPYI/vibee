@@ -61,6 +61,23 @@ export type McpCallRecord = {
   outcome?: "data" | "unavailable";
 };
 
+export type AnalysisStage = "semantic" | "assembly" | "view" | "chat";
+
+/**
+ * 한 provider turn의 사용량. provider가 보고하지 않은 필드는 생략한다. 0으로 채우면
+ * "사용하지 않음"과 "알 수 없음"을 구분할 수 없기 때문이다.
+ */
+export type StageUsage = {
+  stage: AnalysisStage;
+  turnId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  model?: string;
+};
+
 /**
  * provider에 종속되지 않는 이벤트 모델. Codex/Claude 프로토콜 객체는 bridge에서 이 union으로
  * 정규화되며 raw 상태로 브라우저에 도달하지 않는다.
@@ -77,13 +94,21 @@ export type AgentEvent =
    * 강제로 막지 않고 관측만 한다 — Codex/Claude 양쪽에 파일 도구를 확실히 끊을 방법이 없다.
    */
   | { type: "agent.file.explored"; taskId: string; path: string }
-  /** turn 이 소비한 누적 토큰 수 (§7.3 turn/token). provider마다 다른 usage 모양을 정규화한다 */
-  | { type: "agent.usage"; taskId: string; totalTokens: number }
+  /** turn이 소비한 사용량. 같은 stage+turnId 이벤트는 최신 누적값으로 대체한다. */
+  | ({ type: "agent.usage"; taskId: string } & StageUsage)
   | { type: "analysis.progress"; taskId: string; phase: string; message: string }
   | { type: "memory.patched"; taskId: string; semanticVersion: number; summary: string }
   | { type: "view.ready"; taskId: string; viewKind: string; requestId: string }
   /** schema3 §5.2 Stage 4 — AnalysisBundle이 검증을 통과해 generation에 커밋되었다. */
-  | { type: "bundle.ready"; taskId: string; generation: number }
+  | { type: "bundle.ready"; taskId: string; generation: number; correctedAttempts?: number }
+  | {
+      type: "validation.retrying";
+      taskId: string;
+      tool: string;
+      attempt: number;
+      maxAttempts: number;
+      diagnostics: unknown[];
+    }
   | { type: "validation.failed"; taskId: string; tool: string; diagnostics: unknown[] }
   | { type: "task.completed"; taskId: string }
   | { type: "task.interrupted"; taskId: string }
@@ -114,8 +139,14 @@ export type TaskState = {
   mcpCalls: McpCallRecord[];
   /** native 도구(shell/Read)로 직접 읽은 파일 경로 (중복 없음). §7.3 index-only arm이 "탐색했는가"를 여기서 잰다 */
   exploredFiles: string[];
-  /** 이 turn이 소비한 누적 토큰 수. provider가 보고하지 않으면 없다 */
+  /** 호환용 task 합계. StageUsage 중 provider가 보고한 total만 합산한다. */
   tokenUsage?: number;
+  /** V3: Semantic/Assembly/View turn을 덮어쓰지 않고 별도로 보존한다. */
+  stageUsages?: StageUsage[];
+  /** AnalysisBundle 제출이 Core 검증으로 자동 보정된 횟수. */
+  validationCorrections?: number;
+  /** 이 task에서 실제 커밋된 generation. 없으면 Assembly 성공으로 간주하지 않는다. */
+  bundleGeneration?: number;
 };
 
 /**
