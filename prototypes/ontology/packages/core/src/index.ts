@@ -107,3 +107,19 @@ export {
   type SystemFactProposalContext,
   type ValidatedSystemFactBatch,
 } from "./system-fact-proposal.js";
+export {
+  buildIncrementalAnalysisPlan,
+  buildSystemImpactSet,
+  acknowledgeSystemFactReview,
+  isSystemImpactEmpty,
+  previousSystemDigest,
+  reconcileSystemFactStore,
+} from "./system-fact-lifecycle.js";
+export {
+  buildExternalIntegrationCatalog,
+  planDiscoveryGaps,
+} from "./discovery.js";
+export {
+  applyAnalysisBundlePatch,
+  validateAnalysisBundlePatchScope,
+} from "./analysis-bundle-patch.js";

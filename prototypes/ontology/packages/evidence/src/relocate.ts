@@ -274,9 +274,40 @@ function findDegradedWindow(
 // ---------------------------------------------------------------------------
 
 export type AgentCarryReport = {
-  relocated: Array<{ id: string; confidence: "exact" | "degraded" }>;
+  relocated: Array<{ id: string; confidence: "exact" | "degraded"; fromFilePath?: string; toFilePath?: string }>;
   missing: Array<{ id: string; reason: string }>;
 };
+
+function crossFileRelocation(
+  item: Evidence,
+  next: EvidenceIndex,
+  readFile: (relPath: string) => string | null,
+  cache: Map<string, string | null>,
+): { filePath: string; text: string; result: Exclude<ReturnType<typeof relocateExtent>, { status: "missing" }> } | null {
+  const original = item.filePath;
+  if (!original) return null;
+  const extension = original.includes(".") ? original.slice(original.lastIndexOf(".")) : "";
+  const candidates: Array<{
+    filePath: string;
+    text: string;
+    result: Exclude<ReturnType<typeof relocateExtent>, { status: "missing" }>;
+  }> = [];
+  for (const filePath of Object.keys(next.fileHashes).sort()) {
+    if (filePath === original || (extension && !filePath.endsWith(extension))) continue;
+    if (!cache.has(filePath)) cache.set(filePath, readFile(filePath));
+    const text = cache.get(filePath);
+    if (text === null || text === undefined) continue;
+    const result = relocateExtent(text, {
+      fingerprint: item.normalizedFingerprint,
+      extent: item.excerpt ?? "",
+      profile: item.normalizationProfile,
+    });
+    if (result.status !== "missing") candidates.push({ filePath, text, result });
+    // 유일성 검증에 필요한 두 개를 찾으면 더 읽을 이유가 없다.
+    if (candidates.length > 1) break;
+  }
+  return candidates.length === 1 ? candidates[0]! : null;
+}
 
 /**
  * 재인덱싱 결과에 agent evidence를 이어 붙인다 (커밋 1, §6.9).
@@ -315,7 +346,31 @@ export function carryAgentEvidence(
     if (!cache.has(relPath)) cache.set(relPath, readFile(relPath));
     const text = cache.get(relPath) ?? null;
     if (text === null) {
-      report.missing.push({ id: item.id, reason: "file-unreadable" });
+      const moved = crossFileRelocation(item, next, readFile, cache);
+      if (!moved) {
+        report.missing.push({ id: item.id, reason: "file-unreadable-or-cross-file-ambiguous" });
+        continue;
+      }
+      const currentHash = sha256(moved.text);
+      fileHashes[moved.filePath] = currentHash;
+      report.relocated.push({
+        id: item.id,
+        confidence: moved.result.confidence,
+        fromFilePath: relPath,
+        toFilePath: moved.filePath,
+      });
+      carried.push({
+        ...item,
+        filePath: moved.filePath,
+        location: moved.result.location,
+        excerpt: moved.result.extent,
+        rawHash: rawHashOf(moved.result.extent),
+        normalizedFingerprint: fingerprintOf(moved.result.extent, item.normalizationProfile),
+        relocationConfidence: moved.result.confidence,
+        fileContentHash: currentHash,
+        observedAtVersion: next.analysisVersion,
+        status: "present",
+      });
       continue;
     }
 
@@ -333,7 +388,31 @@ export function carryAgentEvidence(
       profile: item.normalizationProfile,
     });
     if (result.status === "missing") {
-      report.missing.push({ id: item.id, reason: result.reason });
+      const moved = crossFileRelocation(item, next, readFile, cache);
+      if (!moved) {
+        report.missing.push({ id: item.id, reason: result.reason });
+        continue;
+      }
+      const movedHash = sha256(moved.text);
+      fileHashes[moved.filePath] = movedHash;
+      report.relocated.push({
+        id: item.id,
+        confidence: moved.result.confidence,
+        fromFilePath: relPath,
+        toFilePath: moved.filePath,
+      });
+      carried.push({
+        ...item,
+        filePath: moved.filePath,
+        location: moved.result.location,
+        excerpt: moved.result.extent,
+        rawHash: rawHashOf(moved.result.extent),
+        normalizedFingerprint: fingerprintOf(moved.result.extent, item.normalizationProfile),
+        relocationConfidence: moved.result.confidence,
+        fileContentHash: movedHash,
+        observedAtVersion: next.analysisVersion,
+        status: "present",
+      });
       continue;
     }
 

@@ -23,7 +23,7 @@ export const DEFAULT_BRIDGE_PORT = 43220;
  * 프로토콜 모양이 바뀌는 릴리스에서 이 값을 함께 올리면 그 조합을 분석 시작 전에 막는다.
  */
 export const ONTO_PROTOCOL_VERSION = "4.0";
-export const ONTO_BUILD_ID = "v4-system-facts-phase3-1";
+export const ONTO_BUILD_ID = "v4-incremental-discovery-phase6-1";
 
 export type RuntimeIdentity = {
   protocolVersion: string;
@@ -64,6 +64,7 @@ export type McpToolName =
   | "get_impact_context"
   | "get_impact_context_batch"
   | "get_system_facts"
+  | "get_incremental_analysis_context"
   | "propose_evidence"
   | "propose_system_facts"
   | "submit_semantic_patch"

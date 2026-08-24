@@ -8,7 +8,13 @@
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
 import type { EvidenceGraph } from "@onto/core";
-import { analysisContractDigest, type EvidenceIndex, type SemanticWorkSet, type ViewRequest } from "@onto/protocol";
+import {
+  analysisContractDigest,
+  type EvidenceIndex,
+  type IncrementalAnalysisPlan,
+  type SemanticWorkSet,
+  type ViewRequest,
+} from "@onto/protocol";
 
 const EVIDENCE_RULES = [
   "규칙:",
@@ -18,6 +24,7 @@ const EVIDENCE_RULES = [
   "3. Core adapter가 모르는 runtime·route·외부 SDK·저장소와 실제 호출 관계를 발견했다면",
   "   source anchor + 신규 entity + link를 propose_system_facts로 한 번에 제안하라.",
   "   config나 README 이름만으로 grounded 외부 호출을 주장하지 마라. source contract가 부족하면 inferred로 제출하라.",
+  "   System Fact를 제안했다면 의미 변경이 없어도 빈 Semantic Patch를 제출해 같은 generation에 커밋하라.",
   "4. 사용자에게 보이는 label 은 파일명·함수명이 아니라 이 순서로 고른다:",
   "   ① Intent 에서 이미 쓴 용어  ② 저장소의 도메인 용어  ③ 네가 복원한 제품 의미",
   "   기술 세부는 Trace View 에서만 노출한다.",
@@ -33,7 +40,8 @@ export function buildFullAnalyzePrompt(projectPath: string): string {
     "",
     "순서:",
     "1. get_project_semantic_memory 로 현재 상태를 확인한다 (비어 있을 것이다).",
-    "2. get_evidence 로 Evidence Index 를 훑고, **저장소를 직접 탐색하며** 무엇이 중요한지 판단한다.",
+    "2. get_incremental_analysis_context의 discovery gap과 filePaths부터 조사한다.",
+    "   manifest·entrypoint·route와 gap의 인접 파일 밖으로 확장할 때는 이유가 있어야 한다.",
     "3. 비전공자가 이해할 수 있는 Concept 와 Claim 을 만든다.",
     "4. 대표적인 사용자/시스템 목적(예: \"팔로우하기\")을 하나 이상 Scenario 로 등록한다.",
     "   submit_semantic_patch 의 addedScenarios 에 { id, name, type, goal?, anchorConceptIds, status }",
@@ -150,9 +158,33 @@ export function selectAnalyzePrompt(
   projectPath: string,
   work: SemanticWorkSet,
   bundle: string,
+  plan?: IncrementalAnalysisPlan,
 ): string {
-  if (mode === "index-only") return buildIndexOnlyPrompt(projectPath, bundle);
-  return isFirst ? buildFullAnalyzePrompt(projectPath) : buildIncrementalAnalyzePrompt(projectPath, work);
+  const base = mode === "index-only"
+    ? buildIndexOnlyPrompt(projectPath, bundle)
+    : isFirst
+      ? buildFullAnalyzePrompt(projectPath)
+      : buildIncrementalAnalyzePrompt(projectPath, work);
+  if (!plan) return base;
+  const gapLines = plan.discoveryGaps.slice(0, 20).flatMap((gap) => [
+    `- ${gap.id} [${gap.priority}/${gap.kind}] ${gap.reason}`,
+    `  files: ${gap.filePaths.join(", ") || "(adapter/global)"}`,
+  ]);
+  return [
+    base,
+    "",
+    "## V4 증분 실행 계약",
+    `mode: ${plan.mode} · fullDiscovery: ${plan.fullDiscovery} · 이유: ${plan.reason}`,
+    "먼저 get_incremental_analysis_context를 호출하라. 아래 gap과 영향 ID 밖을 다시 조사하거나 수정하지 마라.",
+    ...(gapLines.length > 0 ? gapLines : ["- discovery gap 없음"]),
+    `재검토 System Entity: ${plan.impact.systemEntityIds.join(", ") || "(없음)"}`,
+    `재검토 System Link: ${plan.impact.systemLinkIds.join(", ") || "(없음)"}`,
+    `재검토 Concept/Claim/Scenario: ${[
+      ...plan.impact.conceptIds,
+      ...plan.impact.claimIds,
+      ...plan.impact.scenarioIds,
+    ].join(", ") || "(없음)"}`,
+  ].join("\n");
 }
 
 const VIEW_RULES = [
@@ -296,8 +328,9 @@ const ASSEMBLY_RULES = [
   "   쓰고 goal·entryStepId·outcomeStepIds·branch/loop를 보존한다. 모든 step은 근거가 있어야 한다.",
   "10. workflow.mainPath의 모든 인접 node 쌍에는 실제 workflow.edges 항목이 정확히 하나 이상",
   "   있어야 한다. mainPath를 제출하기 전에 인접 쌍을 순서대로 대조한다.",
-  "11. 최초 submit_analysis_bundle이 실패하면 응답의 draftId와 diagnostics를 사용해",
-  "   patch_analysis_bundle로 실패 경로만 고쳐라. 전체 Bundle을 다시 출력하지 마라.",
+  "11. 증분 assembly는 기존 draftId로 patch_analysis_bundle을 바로 사용한다. 전체 assembly의",
+  "   최초 submit_analysis_bundle이 실패하면 응답의 draftId와 diagnostics로 실패 경로만 고쳐라.",
+  "   어느 경우에도 전체 Bundle을 다시 출력하지 마라.",
   "   retryable=false면 자동 보정 한도를 쓴 것이므로 더 제출하지 마라.",
 ].join("\n");
 
@@ -354,6 +387,42 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
   ].join("\n");
 }
 
+/** Phase 5 — 기존 Bundle draft에서 ImpactSet의 ID만 고치는 assembly turn. */
+export function buildIncrementalAssemblyPrompt(
+  projectPath: string,
+  draftId: string,
+  plan: IncrementalAnalysisPlan,
+  skeletonSummary: string,
+): string {
+  return [
+    "기존 AnalysisBundle 전체를 다시 만들지 말고, 영향받은 지도 조각만 증분 보정한다.",
+    `프로젝트 경로: ${projectPath}`,
+    `서버가 보존한 draftId: ${draftId}`,
+    "",
+    "## Evidence 골격 변화 요약",
+    "```",
+    skeletonSummary,
+    "```",
+    "",
+    "순서:",
+    "1. get_incremental_analysis_context를 호출해 정확한 ImpactSet, draftId와 bundleTargets의",
+    "   현재 path/value를 확인한다. 배열 index를 추측하지 마라.",
+    "2. get_system_facts에서 needs_review/stale/missing 및 그 주변 1~2 hop만 확인한다.",
+    "3. 아래 ID에 해당하는 항목만 RFC 6902 operation으로 만든다.",
+    `   architecture components: ${plan.impact.architectureComponentIds.join(", ") || "(없음)"}`,
+    `   architecture connections: ${plan.impact.architectureConnectionIds.join(", ") || "(없음)"}`,
+    `   workflow nodes: ${plan.impact.workflowNodeIds.join(", ") || "(없음)"}`,
+    `   workflow edges: ${plan.impact.workflowEdgeIds.join(", ") || "(없음)"}`,
+    `   user journeys: ${plan.impact.scenarioIds.join(", ") || "(없음)"}`,
+    `   sequences: ${plan.impact.sequenceIds.join(", ") || "(없음)"}`,
+    `4. patch_analysis_bundle({ draftId: ${JSON.stringify(draftId)}, operations })로 제출한다.`,
+    "   전체 architecture/workflow/userMap/sequences 배열을 replace하지 마라.",
+    "5. 검증 실패 시 같은 draftId와 diagnostics 경로만 다시 고친다.",
+    "",
+    ASSEMBLY_RULES,
+  ].join("\n");
+}
+
 /**
  * 세션 미리보기를 사람이 읽을 이름으로 바꾼다.
  *
@@ -369,6 +438,7 @@ export function describeSession(preview: string): string {
   if (text.startsWith("이 프로젝트가 무엇을 하는지")) return "Overview 생성";
   if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
   if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/User Map/Sequence 조립";
+  if (text.startsWith("기존 AnalysisBundle 전체를 다시 만들지 말고")) return "증분 Architecture/User Map/Sequence 보정";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 

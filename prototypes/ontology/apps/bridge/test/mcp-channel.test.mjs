@@ -129,6 +129,7 @@ test("MCP server 가 §48 의 tool 들을 노출한다", async () => {
     "get_evidence",
     "get_impact_context",
     "get_impact_context_batch",
+    "get_incremental_analysis_context",
     "get_project_semantic_memory",
     "get_scenario_context",
     "get_system_facts",

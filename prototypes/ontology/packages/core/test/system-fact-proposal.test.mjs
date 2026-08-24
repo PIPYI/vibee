@@ -59,7 +59,19 @@ test("Phase 2 — 기존 index에 없는 OpenAI entity와 두 call link를 Seman
   const committed = await commitPatch(store, {
     head,
     transaction,
-    patch: patchWith(head),
+    patch: patchWith(head, {
+      addedConcepts: [{
+        id: "concept:openai-answer",
+        name: "외부 AI 답변",
+        evidenceRefs: [proposed.value.anchorIds["create-call"]],
+        status: "active",
+      }],
+    }),
+    impactSet: {
+      evidenceIds: [], systemEntityIds: [], systemLinkIds: [], conceptIds: [], claimIds: [], scenarioIds: [],
+      architectureComponentIds: [], architectureConnectionIds: [], workflowNodeIds: [], workflowEdgeIds: [], sequenceIds: [],
+      discoveryRoots: ["gap:openai"], requiresFullDiscovery: false, requiresFullAssembly: false, reasons: [],
+    },
   });
   assert.equal(committed.ok, true, JSON.stringify(committed.diagnostics, null, 2));
   assert.equal(committed.value.committedSystemLinkIds.length, 2);

@@ -249,7 +249,7 @@ export function validateSystemFactProposal(
         }),
       );
     }
-    entityByLocalId.set(item.localId, prior ?? {
+    entityByLocalId.set(item.localId, {
       id,
       ref,
       kind: item.kind,
@@ -258,7 +258,7 @@ export function validateSystemFactProposal(
       evidenceRefs: unique(anchors.map((anchor) => anchor.evidence.id)),
       dependsOnEvidenceRefs: unique(anchors.map((anchor) => anchor.evidence.id)),
       status: certainty === "inferred" ? "needs_review" : "valid",
-      firstSeenVersion: context.observedAtVersion,
+      firstSeenVersion: prior?.firstSeenVersion ?? context.observedAtVersion,
       lastValidatedVersion: context.observedAtVersion,
     });
   }

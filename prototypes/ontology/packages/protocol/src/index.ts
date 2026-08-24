@@ -188,6 +188,85 @@ export type SystemFactStore = {
   diagnostics: Diagnostic[];
 };
 
+/** Evidence diff에서 최종 지도 조각까지 닫힌 증분 영향 범위(V4 Phase 4). */
+export type SystemImpactSet = {
+  evidenceIds: string[];
+  systemEntityIds: string[];
+  systemLinkIds: string[];
+  conceptIds: string[];
+  claimIds: string[];
+  scenarioIds: string[];
+  architectureComponentIds: string[];
+  architectureConnectionIds: string[];
+  workflowNodeIds: string[];
+  workflowEdgeIds: string[];
+  sequenceIds: string[];
+  discoveryRoots: string[];
+  requiresFullDiscovery: boolean;
+  requiresFullAssembly: boolean;
+  reasons: string[];
+};
+
+export type DiscoveryGapKind =
+  | "manifest-dependency"
+  | "unresolved-import-call"
+  | "config-consumer"
+  | "runtime-boundary"
+  | "adapter-degraded"
+  | "semantic-coverage";
+
+/** Vibee가 저장소 전체 대신 조사할 결정론적 open-world root. */
+export type DiscoveryGap = {
+  id: string;
+  kind: DiscoveryGapKind;
+  reason: string;
+  filePaths: string[];
+  evidenceRefs: string[];
+  packageName?: string;
+  configKeys?: string[];
+  priority: "high" | "medium" | "low";
+};
+
+/** 특정 provider를 hard-code하지 않고 import/call/config를 묶은 외부 연동 후보. */
+export type ExternalIntegrationCandidate = {
+  id: string;
+  packageName: string;
+  providerKey: string;
+  manifestPaths: string[];
+  importPaths: string[];
+  callPaths: string[];
+  configKeys: string[];
+  coveredBySystemFactIds: string[];
+  status: "covered" | "discovery-gap";
+};
+
+/** 증분 turn에 전체 이전 상태 대신 전달하는 작은 digest. */
+export type PreviousSystemDigest = {
+  analysisVersion: number;
+  entityCount: number;
+  linkCount: number;
+  reusableEntityIds: string[];
+  reusableLinkIds: string[];
+  reviewEntityIds: string[];
+  reviewLinkIds: string[];
+  impact: SystemImpactSet;
+};
+
+export type IncrementalAnalysisMode = "full" | "incremental" | "fast-path";
+
+export type IncrementalAnalysisPlan = {
+  mode: IncrementalAnalysisMode;
+  semanticTurnRequired: boolean;
+  assemblyTurnRequired: boolean;
+  fullDiscovery: boolean;
+  fullAssembly: boolean;
+  reason: string;
+  impact: SystemImpactSet;
+  previousSystemDigest: PreviousSystemDigest;
+  discoveryGaps: DiscoveryGap[];
+  integrationCatalog: ExternalIntegrationCandidate[];
+};
+
 /**
  * 이 evidence가 Trace 그래프에서 무엇인가 (T2).
  *
@@ -1133,4 +1212,17 @@ export type AnalysisBundle = {
   /** agent 입력이 아니라 Core가 저장소와 최종 Architecture를 대조해 커밋 시점에 만든다. */
   repositoryTopology?: RepositoryTopology;
   freshness: ViewFreshness;
+};
+
+export type AnalysisBundlePatchOperation = {
+  op: "add" | "remove" | "replace";
+  /** RFC 6902 JSON pointer. Core가 ImpactSet의 section/ID 범위로 제한한다. */
+  path: string;
+  value?: unknown;
+};
+
+export type AnalysisBundlePatch = {
+  baseAnalysisVersion: number;
+  baseSemanticVersion: number;
+  operations: AnalysisBundlePatchOperation[];
 };

@@ -189,11 +189,17 @@ export function mergeProposedSystemFacts(
       entities.set(candidate.id, candidate);
       continue;
     }
-    const keepPreviousTruth = certaintyRank(previous.certainty) >= certaintyRank(candidate.certainty);
+    // 같은 certainty의 재제안은 Phase 4 needs_review를 해제하는 명시적 재검증이다.
+    // 이전 값을 우선하면 grounded fact가 영원히 needs_review에 갇힌다.
+    const keepPreviousTruth = certaintyRank(previous.certainty) > certaintyRank(candidate.certainty);
     entities.set(candidate.id, {
       ...(keepPreviousTruth ? previous : candidate),
-      evidenceRefs: uniqueSorted([...previous.evidenceRefs, ...candidate.evidenceRefs]),
-      dependsOnEvidenceRefs: uniqueSorted([...previous.dependsOnEvidenceRefs, ...candidate.dependsOnEvidenceRefs]),
+      evidenceRefs: keepPreviousTruth
+        ? uniqueSorted([...previous.evidenceRefs, ...candidate.evidenceRefs])
+        : uniqueSorted(candidate.evidenceRefs),
+      dependsOnEvidenceRefs: keepPreviousTruth
+        ? uniqueSorted([...previous.dependsOnEvidenceRefs, ...candidate.dependsOnEvidenceRefs])
+        : uniqueSorted(candidate.dependsOnEvidenceRefs),
       firstSeenVersion: Math.min(previous.firstSeenVersion, candidate.firstSeenVersion),
       lastValidatedVersion: Math.max(previous.lastValidatedVersion, candidate.lastValidatedVersion),
     });
@@ -206,11 +212,15 @@ export function mergeProposedSystemFacts(
       links.set(candidate.id, candidate);
       continue;
     }
-    const keepPreviousTruth = certaintyRank(previous.certainty) >= certaintyRank(candidate.certainty);
+    const keepPreviousTruth = certaintyRank(previous.certainty) > certaintyRank(candidate.certainty);
     links.set(candidate.id, {
       ...(keepPreviousTruth ? previous : candidate),
-      evidenceRefs: uniqueSorted([...previous.evidenceRefs, ...candidate.evidenceRefs]),
-      dependsOnEvidenceRefs: uniqueSorted([...previous.dependsOnEvidenceRefs, ...candidate.dependsOnEvidenceRefs]),
+      evidenceRefs: keepPreviousTruth
+        ? uniqueSorted([...previous.evidenceRefs, ...candidate.evidenceRefs])
+        : uniqueSorted(candidate.evidenceRefs),
+      dependsOnEvidenceRefs: keepPreviousTruth
+        ? uniqueSorted([...previous.dependsOnEvidenceRefs, ...candidate.dependsOnEvidenceRefs])
+        : uniqueSorted(candidate.dependsOnEvidenceRefs),
       firstSeenVersion: Math.min(previous.firstSeenVersion, candidate.firstSeenVersion),
       lastValidatedVersion: Math.max(previous.lastValidatedVersion, candidate.lastValidatedVersion),
     });

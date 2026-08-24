@@ -11,6 +11,7 @@ import { test } from "node:test";
 import {
   buildAssemblyPrompt,
   buildEvidenceBundle,
+  buildIncrementalAssemblyPrompt,
   buildOverviewPrompt,
   buildScenarioPrompt,
   buildSkeletonSummary,
@@ -123,9 +124,9 @@ test("mode가 index-only면 isFirst와 무관하게 항상 bundle 프롬프트�
   }
 });
 
-test("mode가 없으면 기존 isFirst 분기(full/incremental)를 그대로 쓴다", () => {
+test("mode가 없으면 isFirst를 유지하되 V4 full은 discovery gap부터 조사한다", () => {
   const full = selectAnalyzePrompt(undefined, true, "/tmp/proj", EMPTY_WORK_SET, "(안 씀)");
-  assert.match(full, /저장소를 직접 탐색하며/);
+  assert.match(full, /discovery gap과 filePaths부터 조사/);
   assert.doesNotMatch(full, /Evidence Index 요약/);
 
   const incremental = selectAnalyzePrompt(undefined, false, "/tmp/proj", EMPTY_WORK_SET, "(안 씀)");
@@ -209,6 +210,25 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   assert.match(prompt, /Canonical Scenario마다 하나씩/);
   assert.match(prompt, /workflow\.mainPath의 모든 인접 node 쌍/);
   assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
+});
+
+test("V4 증분 Assembly 프롬프트는 기존 draft와 ImpactSet ID만 수정하게 한다", () => {
+  const impact = {
+    evidenceIds: ["ev-1"], systemEntityIds: [], systemLinkIds: ["link-1"], conceptIds: [], claimIds: [], scenarioIds: [],
+    architectureComponentIds: ["component-1"], architectureConnectionIds: ["connection-1"], workflowNodeIds: [], workflowEdgeIds: [], sequenceIds: [],
+    discoveryRoots: [], requiresFullDiscovery: false, requiresFullAssembly: false, reasons: [],
+  };
+  const prompt = buildIncrementalAssemblyPrompt("/tmp/proj", "draft-1", {
+    mode: "incremental", semanticTurnRequired: true, assemblyTurnRequired: true,
+    fullDiscovery: false, fullAssembly: false, reason: "local",
+    impact,
+    previousSystemDigest: { analysisVersion: 2, entityCount: 1, linkCount: 1, reusableEntityIds: [], reusableLinkIds: [], reviewEntityIds: [], reviewLinkIds: ["link-1"], impact },
+    discoveryGaps: [], integrationCatalog: [],
+  }, "entity 2개, link 1개");
+  assert.match(prompt, /draft-1/);
+  assert.match(prompt, /component-1/);
+  assert.match(prompt, /connection-1/);
+  assert.match(prompt, /전체 .*배열을 replace하지 마라/);
 });
 
 test("describeSession은 Assembly 프롬프트를 식별한다", () => {

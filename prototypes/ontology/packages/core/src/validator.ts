@@ -32,6 +32,7 @@ import type {
   Outcome,
   SemanticDiffSummary,
   SemanticPatch,
+  SystemImpactSet,
 } from "@onto/protocol";
 import { eventsPath } from "@onto/protocol/node";
 
@@ -45,6 +46,7 @@ import { applyPatch, evidenceRefSites, referencedEvidenceIds, type PatchResult }
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
 import type { LoadedState, SemanticStore } from "./store.js";
 import { mergeProposedSystemFacts } from "./system-facts.js";
+import { acknowledgeSystemFactReview } from "./system-fact-lifecycle.js";
 import type { AnalyzeTransaction } from "./transaction.js";
 
 export type ValidateInput = {
@@ -56,6 +58,8 @@ export type ValidateInput = {
    * 모르면 churn 경고를 내지 않는다 — 근거 없이 경고하지 않는다.
    */
   dirtyEvidenceCount?: number;
+  /** V4 Phase 5 — 없으면 레거시/full turn, 있으면 이 closure 밖의 의미 수정은 거절한다. */
+  impactSet?: SystemImpactSet;
 };
 
 export type ValidateResult = {
@@ -66,6 +70,72 @@ export type ValidateResult = {
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function semanticPatchScopeDiagnostics(
+  patch: SemanticPatch,
+  impact: SystemImpactSet,
+  additionalEvidenceIds: readonly string[] = [],
+): Diagnostic[] {
+  if (impact.requiresFullDiscovery) return [];
+  const allowedConcepts = new Set(impact.conceptIds);
+  const allowedClaims = new Set(impact.claimIds);
+  const allowedScenarios = new Set(impact.scenarioIds);
+  const allowedEvidence = new Set([...impact.evidenceIds, ...additionalEvidenceIds]);
+  const diagnostics: Diagnostic[] = [];
+  const reject = (kind: string, id: string, path: string, allowed: ReadonlySet<string>): void => {
+    if (allowed.has(id)) return;
+    diagnostics.push(diagnostic(
+      "semantic-patch/id-outside-impact",
+      "error",
+      `${kind} ${id}는 현재 SystemImpactSet의 수정 범위 밖입니다.`,
+      {
+        subject: { path, id, kind },
+        evidence: { allowedIds: [...allowed].slice(0, 50) },
+        supportedFixes: ["증분 context에 명시된 ID만 갱신하거나 전체 분석이 필요한 이유를 기록한다"],
+      },
+    ));
+  };
+  for (const [index, item] of (patch.updatedConcepts ?? []).entries()) reject("Concept", item.id, `/updatedConcepts/${index}`, allowedConcepts);
+  for (const [index, id] of (patch.removedConceptIds ?? []).entries()) reject("Concept", id, `/removedConceptIds/${index}`, allowedConcepts);
+  for (const [index, item] of (patch.updatedClaims ?? []).entries()) reject("Claim", item.id, `/updatedClaims/${index}`, allowedClaims);
+  for (const [index, id] of (patch.removedClaimIds ?? []).entries()) reject("Claim", id, `/removedClaimIds/${index}`, allowedClaims);
+  for (const [index, item] of (patch.updatedScenarios ?? []).entries()) reject("Scenario", item.id, `/updatedScenarios/${index}`, allowedScenarios);
+  for (const [index, id] of (patch.removedScenarioIds ?? []).entries()) reject("Scenario", id, `/removedScenarioIds/${index}`, allowedScenarios);
+  for (const [index, item] of (patch.groundingUpdates ?? []).entries()) {
+    if (item.target === "concept") reject("Concept", item.conceptId, `/groundingUpdates/${index}`, allowedConcepts);
+    else reject("Claim", item.claimId, `/groundingUpdates/${index}`, allowedClaims);
+  }
+  const newItems = [
+    ...(patch.addedConcepts ?? []).map((item, index) => ({ id: item.id, refs: item.evidenceRefs, path: `/addedConcepts/${index}` })),
+    ...(patch.addedClaims ?? []).map((item, index) => ({ id: item.id, refs: item.evidenceRefs, path: `/addedClaims/${index}` })),
+  ];
+  for (const item of newItems) {
+    if (item.refs.some((ref) => allowedEvidence.has(ref))) continue;
+    diagnostics.push(diagnostic(
+      "semantic-patch/new-item-outside-impact",
+      "error",
+      `신규 의미 ${item.id}가 현재 영향 근거와 연결되지 않았습니다.`,
+      {
+        subject: { path: item.path, id: item.id },
+        supportedFixes: ["ImpactSet의 dirty/discovery evidence를 grounding으로 사용한다"],
+      },
+    ));
+  }
+  const addedConceptIds = new Set((patch.addedConcepts ?? []).map((item) => item.id));
+  for (const [index, scenario] of (patch.addedScenarios ?? []).entries()) {
+    if (scenario.anchorConceptIds.some((id) => allowedConcepts.has(id) || addedConceptIds.has(id))) continue;
+    diagnostics.push(diagnostic(
+      "semantic-patch/new-scenario-outside-impact",
+      "error",
+      `신규 Scenario ${scenario.id}가 영향받은 Concept 또는 이번 patch의 신규 Concept를 anchor로 쓰지 않습니다.`,
+      {
+        subject: { path: `/addedScenarios/${index}`, id: scenario.id },
+        supportedFixes: ["ImpactSet의 Concept 또는 이번 patch가 근거와 함께 추가한 Concept를 anchor로 사용한다"],
+      },
+    ));
+  }
+  return diagnostics;
 }
 
 /**
@@ -143,6 +213,14 @@ export function validatePatch(input: ValidateInput): ValidateResult {
   // --- ① Schema -------------------------------------------------------------
   diagnostics.push(...validateAgainst("semantic-patch", patch));
   if (hasError(diagnostics)) return { diagnostics };
+  if (input.impactSet) {
+    diagnostics.push(...semanticPatchScopeDiagnostics(
+      patch,
+      input.impactSet,
+      [...transaction.systemFactEvidenceRefs()],
+    ));
+    if (hasError(diagnostics)) return { diagnostics };
+  }
 
   // --- ② Evidence -----------------------------------------------------------
   //
@@ -552,6 +630,13 @@ export async function commitPatch(
           entities: transaction.pendingSystemEntities,
           links: transaction.pendingSystemLinks,
         });
+        if (input.impactSet) {
+          snapshot.systemFacts = acknowledgeSystemFactReview(
+            snapshot.systemFacts,
+            input.impactSet,
+            snapshot.project.analysisVersion,
+          );
+        }
         snapshot.memory = projected.memory;
         snapshot.grounding = projected.grounding;
         // 인덱스는 그대로다. 의미만 올라간다.

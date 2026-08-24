@@ -59,6 +59,26 @@ test("acceptance 6 — 지어낸 evidence id 를 가리키는 patch 를 거절�
   assert.match(failure.message, /addedConcepts\/0 \(id: "c1"\) \/evidenceRefs\/0/u);
 });
 
+test("V4 Phase 5 — 증분 Semantic Patch는 SystemImpactSet 밖의 신규 의미를 거절한다", async () => {
+  const { head, transaction, symbolId } = await setup();
+  const emptyImpact = {
+    evidenceIds: [], systemEntityIds: [], systemLinkIds: [], conceptIds: [], claimIds: [], scenarioIds: [],
+    architectureComponentIds: [], architectureConnectionIds: [], workflowNodeIds: [], workflowEdgeIds: [], sequenceIds: [],
+    discoveryRoots: [], requiresFullDiscovery: false, requiresFullAssembly: false, reasons: [],
+  };
+  const patch = patchWith(head, { addedConcepts: [concept("outside", "범위 밖", [symbolId])] });
+  const rejected = validatePatch({ head, transaction, patch, impactSet: emptyImpact });
+  assert.ok(codesOf(rejected.diagnostics).includes("semantic-patch/new-item-outside-impact"));
+
+  const allowed = validatePatch({
+    head,
+    transaction,
+    patch,
+    impactSet: { ...emptyImpact, evidenceIds: [symbolId] },
+  });
+  assert.equal(codesOf(allowed.diagnostics).includes("semantic-patch/new-item-outside-impact"), false);
+});
+
 test("acceptance 6 — missing 이 된 근거를 새로 가리키면 거절한다", async () => {
   const { dir, head, transaction, symbolId } = await setup();
 

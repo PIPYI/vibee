@@ -19,7 +19,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AnalyzeSession,
   SemanticStore,
-  buildEngineSystemFactStore,
+  applyAnalysisBundlePatch,
+  buildIncrementalAnalysisPlan,
+  buildSystemImpactSet,
   buildEvidenceGraph,
   commitAnalysisBundle,
   commitPatch,
@@ -29,8 +31,10 @@ import {
   findSystemEntity,
   hasError,
   initialProjectState,
+  planDiscoveryGaps,
   projectReachability,
   projectTrace,
+  reconcileSystemFactStore,
   validateViewIR,
   type LoadedState,
 } from "@onto/core";
@@ -47,6 +51,7 @@ import type {
   AgentId,
   AgentReadiness,
   AnalysisPipelineStage,
+  AnalysisBundle,
   AnalysisStage,
   AnalysisStageState,
   AnalyzeRequest,
@@ -57,6 +62,7 @@ import type {
   ScenarioIR,
   SemanticPatch,
   SemanticWorkSet,
+  IncrementalAnalysisPlan,
   SystemFactProposal,
   TaskMode,
   ViewKind,
@@ -74,7 +80,7 @@ import { WebSocketServer } from "ws";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter, TaskOutcome } from "./agents/types.js";
-import { applyBundlePatch, type BundlePatchOperation } from "./bundle-patch.js";
+import type { BundlePatchOperation } from "./bundle-patch.js";
 import {
   conceptContext,
   impactContext,
@@ -89,6 +95,7 @@ import { onShutdown } from "./platform.js";
 import { modelSelectionError } from "./model-selection.js";
 import {
   buildAssemblyPrompt,
+  buildIncrementalAssemblyPrompt,
   buildEvidenceBundle,
   buildOverviewPrompt,
   buildScenarioPrompt,
@@ -116,6 +123,11 @@ const RUNTIME_CAPABILITIES = [
   "system-fact-store-v4",
   "propose-system-facts-v4",
   "analysis-bundle-i20-v4",
+  "system-fact-lifecycle-v4",
+  "system-impact-set-v4",
+  "scoped-bundle-patch-v4",
+  "open-world-discovery-v4",
+  "provider-zero-fast-path-v4",
 ] as const;
 
 const state = new BridgeState();
@@ -360,6 +372,57 @@ app.get("/internal/system-facts", requireToken, (req: Request, res: Response) =>
   respondWithSystemFacts(req, res);
 });
 
+app.get("/internal/incremental-analysis-context", requireToken, (_req: Request, res: Response) => {
+  recordArrival("get_incremental_analysis_context");
+  const taskId = state.getActiveTaskId();
+  const plan = taskId ? state.getIncrementalPlan(taskId) : undefined;
+  if (!taskId || !plan) {
+    res.json({ error: "incremental_context_unavailable", next_step: "활성 analyze/assembly task에서 사용하세요." });
+    return;
+  }
+  const draft = state.getBundleDraft(taskId);
+  const bundle = draft?.bundle as AnalysisBundle | undefined;
+  const targets = bundle ? {
+    architectureComponents: bundle.architecture.components
+      .map((value, index) => ({ path: `/architecture/components/${index}`, value }))
+      .filter((item) => plan.impact.architectureComponentIds.includes(item.value.id)),
+    architectureConnections: bundle.architecture.connections
+      .map((value, index) => ({ path: `/architecture/connections/${index}`, value }))
+      .filter((item) => plan.impact.architectureConnectionIds.includes(item.value.id)),
+    workflowNodes: bundle.workflow.nodes
+      .map((value, index) => ({ path: `/workflow/nodes/${index}`, value }))
+      .filter((item) => plan.impact.workflowNodeIds.includes(item.value.id)),
+    workflowEdges: bundle.workflow.edges
+      .map((value, index) => ({ path: `/workflow/edges/${index}`, value }))
+      .filter((item) => plan.impact.workflowEdgeIds.includes(item.value.id)),
+    journeys: (bundle.userMap?.journeys ?? [])
+      .map((value, index) => ({ path: `/userMap/journeys/${index}`, value }))
+      .filter((item) => plan.impact.scenarioIds.includes(item.value.id)),
+    sequences: bundle.sequences
+      .map((value, index) => ({ path: `/sequences/${index}`, value }))
+      .filter((item) => plan.impact.sequenceIds.includes(item.value.id)),
+    addPaths: {
+      architectureComponent: "/architecture/components/-",
+      architectureConnection: "/architecture/connections/-",
+      workflowNode: "/workflow/nodes/-",
+      workflowEdge: "/workflow/edges/-",
+      journey: "/userMap/journeys/-",
+      sequence: "/sequences/-",
+    },
+  } : undefined;
+  res.json({ taskId, ...plan, draftId: draft?.draftId, ...(targets ? { bundleTargets: targets } : {}) });
+});
+
+app.get("/api/tasks/:taskId/incremental-plan", (req: Request, res: Response) => {
+  const taskId = String(req.params["taskId"]);
+  const plan = state.getIncrementalPlan(taskId);
+  if (!plan) {
+    res.status(404).json({ error: `증분 계획을 찾을 수 없습니다: ${taskId}` });
+    return;
+  }
+  res.json({ taskId, ...plan });
+});
+
 /**
  * 결정론적 재인덱싱만 (agent turn 없음).
  *
@@ -495,7 +558,13 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
     const prepared = await reindex(projectPath, taskId, body.gitBase, body.mode);
     stopIndexHeartbeat();
     state.updateTask(taskId, { prompt: prepared.prompt });
-    recordStage(taskId, "indexing", "completed", "프로젝트 근거 인덱싱 완료");
+    const incrementalPlan = state.getIncrementalPlan(taskId);
+    recordStage(
+      taskId,
+      "indexing",
+      "completed",
+      incrementalPlan ? `프로젝트 근거 인덱싱 완료 · ${incrementalPlan.reason}` : "프로젝트 근거 인덱싱 완료",
+    );
     res.json({ taskId, ...prepared.summary });
     void runAnalyzePipeline(adapter, taskId, projectPath, prepared.prompt, body);
   } catch (error) {
@@ -524,6 +593,7 @@ type ReindexOutcome = {
   nextVersion: number;
   work: SemanticWorkSet;
   agentCarry: AgentCarryReport;
+  plan: IncrementalAnalysisPlan;
 };
 
 /**
@@ -550,6 +620,7 @@ async function performReindex(
   store: SemanticStore,
   projectPath: string,
   gitBase: string | undefined,
+  mode?: AnalyzeRequest["mode"],
 ): Promise<ReindexOutcome> {
   store.cleanOrphans();
   if (!store.isInitialized()) {
@@ -570,27 +641,51 @@ async function performReindex(
   const diffs = diffEvidence(before.evidence, withAgent);
   const withMissing = carryMissingEvidence(before.evidence, withAgent);
   const work = buildWorkSet(diffs, before.memory, before.grounding);
-  const workEmpty =
-    work.dirtyEvidence.length === 0 && work.ungroundedAppearedEvidenceIds.length === 0;
+  const facts = reconcileSystemFactStore({ previous: before.systemFacts, evidence: withMissing, diffs });
+  const discovery = planDiscoveryGaps({ projectPath, evidence: withMissing, facts });
+  const firstAnalysis = before.project.semanticVersion === 0 && before.memory.concepts.length === 0;
+  const impact = buildSystemImpactSet({
+    diffs,
+    facts,
+    memory: before.memory,
+    grounding: before.grounding,
+    bundle: before.analysisBundle,
+    discoveryGaps: discovery.gaps,
+    firstAnalysis,
+  });
+  const plan = buildIncrementalAnalysisPlan({
+    facts,
+    impact,
+    discoveryGaps: discovery.gaps,
+    integrationCatalog: discovery.catalog,
+    firstAnalysis,
+    forceFull: mode === "full" || mode === "index-only",
+  });
 
-  const after = await store.commit("repository re-index", "index", (snapshot) => {
+  const after = await store.commit(`repository re-index · ${plan.reason}`, "index", (snapshot) => {
     snapshot.project.analysisVersion = nextVersion;
     // 의미는 아직 아무것도 바뀌지 않았다.
-    if (workEmpty) {
+    if (!plan.semanticTurnRequired) {
       // 포매팅만 바뀐 경우다. agent 를 부르지 않고 reconcile 을 따라잡는다 (V1).
       snapshot.project.semanticReconciledAnalysisVersion = nextVersion;
     }
     snapshot.evidence = withMissing;
-    // V4 Phase 1 — 결정론적 Evidence Graph를 같은 generation의 System Fact Store로 승격한다.
-    // 이전 store는 stable fact의 firstSeenVersion을 보존하는 데만 사용한다.
-    snapshot.systemFacts = buildEngineSystemFactStore(withMissing, snapshot.systemFacts);
+    snapshot.systemFacts = facts;
+    if (plan.mode === "fast-path" && snapshot.analysisBundle) {
+      snapshot.analysisBundle = {
+        ...snapshot.analysisBundle,
+        analysisVersion: nextVersion,
+        semanticVersion: snapshot.project.semanticVersion,
+        freshness: "current",
+      };
+    }
     return snapshot;
   });
 
   // 뷰어의 grounding 배지가 본다 — evidence.json 에는 이 분류가 남지 않는다(§6.2 T1).
   state.setLastEvidenceDiffs(diffs);
 
-  return { after, nextVersion, work, agentCarry };
+  return { after, nextVersion, work, agentCarry, plan };
 }
 
 /**
@@ -607,16 +702,19 @@ async function reindex(
 ): Promise<{ prompt: string; summary: Record<string, unknown> }> {
   const store = new SemanticStore(projectPath);
   const before = store.isInitialized() ? store.load() : undefined;
-  const { after, nextVersion, work, agentCarry } = await performReindex(store, projectPath, gitBase);
+  const { after, nextVersion, work, agentCarry, plan } = await performReindex(store, projectPath, gitBase, mode);
 
-  state.setAnalyzeSession(
-    taskId,
-    new AnalyzeSession(taskId, projectPath, {
-      baseAnalysisVersion: nextVersion,
-      index: after.evidence,
-      systemFacts: after.systemFacts,
-    }),
-  );
+  state.setIncrementalPlan(taskId, plan);
+  if (plan.semanticTurnRequired) {
+    state.setAnalyzeSession(
+      taskId,
+      new AnalyzeSession(taskId, projectPath, {
+        baseAnalysisVersion: nextVersion,
+        index: after.evidence,
+        systemFacts: after.systemFacts,
+      }),
+    );
+  }
   state.setDirtyEvidenceCount(taskId, work.dirtyEvidence.length);
 
   state.emit({
@@ -626,11 +724,12 @@ async function reindex(
     message:
       `analysisVersion ${nextVersion} · dirty ${work.dirtyEvidence.length} · ` +
       `새 근거 ${work.ungroundedAppearedEvidenceIds.length} · ` +
-      `agent evidence relocate ${agentCarry.relocated.length} (missing ${agentCarry.missing.length})`,
+      `agent evidence relocate ${agentCarry.relocated.length} (missing ${agentCarry.missing.length}) · ` +
+      `${plan.mode === "fast-path" ? "provider turn 0" : `${plan.discoveryGaps.length} discovery root`}`,
   });
 
   const isFirst = (before?.project.semanticVersion ?? 0) === 0 && (before?.memory.concepts.length ?? 0) === 0;
-  const prompt = selectAnalyzePrompt(mode, isFirst, projectPath, work, buildEvidenceBundle(after.evidence));
+  const prompt = selectAnalyzePrompt(mode, isFirst, projectPath, work, buildEvidenceBundle(after.evidence), plan);
 
   return {
     prompt,
@@ -638,6 +737,7 @@ async function reindex(
       analysisVersion: nextVersion,
       semanticVersion: after.project.semanticVersion,
       readmePresent: hasProjectReadme(projectPath),
+      incrementalPlan: plan,
       workSetSize: {
         dirtyEvidence: work.dirtyEvidence.length,
         affectedConcepts: work.affectedConceptIds.length,
@@ -795,6 +895,13 @@ async function runAnalyzePipeline(
   body: AnalyzeRequest,
 ): Promise<void> {
   const emit = makeEmit(taskId);
+  const incrementalPlan = state.getIncrementalPlan(taskId);
+  if (!incrementalPlan) {
+    const message = "증분 분석 계획을 찾을 수 없습니다.";
+    state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
+    state.emit({ type: "task.error", taskId, message });
+    return;
+  }
   const modelEffort = {
     ...(body.model ? { model: body.model } : {}),
     ...(body.effort ? { effort: body.effort } : {}),
@@ -802,6 +909,23 @@ async function runAnalyzePipeline(
 
   state.updateTask(taskId, { status: "running" });
   state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode: "analyze" });
+
+  if (incrementalPlan.mode === "fast-path") {
+    recordStage(taskId, "semantic", "completed", "영향받은 의미 없음 · provider turn 0회");
+    recordStage(taskId, "retrieval", "completed", "기존 System Fact와 지도를 그대로 재사용");
+    recordStage(taskId, "assembly", "completed", "영향받은 지도 조각 없음 · 조립 생략");
+    recordStage(taskId, "validation", "completed", "기존 불변식과 generation hash 재사용");
+    recordStage(taskId, "commit", "completed", "증분 fast path 완료");
+    state.emit({
+      type: "analysis.progress",
+      taskId,
+      phase: "assembly",
+      message: "코드 구조에 영향을 주는 변경이 없어 Vibee 호출 없이 기존 지도를 재사용했습니다.",
+    });
+    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
+    state.emit({ type: "task.completed", taskId });
+    return;
+  }
   recordStage(taskId, "semantic", "running", "코드 근거를 프로젝트 의미로 정리하는 중");
   const stopSemanticHeartbeat = startStageHeartbeat(taskId, "semantic");
 
@@ -844,6 +968,29 @@ async function runAnalyzePipeline(
     return;
   }
 
+  const assemblyPlan = state.getIncrementalPlan(taskId) ?? incrementalPlan;
+  if (!assemblyPlan.assemblyTurnRequired) {
+    const store = new SemanticStore(projectPath);
+    await store.commit("analysis bundle fast-forward", "bundle", (snapshot) => {
+      if (snapshot.analysisBundle) {
+        snapshot.analysisBundle = {
+          ...snapshot.analysisBundle,
+          analysisVersion: snapshot.project.analysisVersion,
+          semanticVersion: snapshot.project.semanticVersion,
+          freshness: "current",
+        };
+      }
+      return snapshot;
+    });
+    recordStage(taskId, "retrieval", "completed", "영향받은 지도 조각 없음");
+    recordStage(taskId, "assembly", "completed", "기존 AnalysisBundle을 현재 generation으로 승계");
+    recordStage(taskId, "validation", "completed", "증분 범위에 지도 변경 없음");
+    recordStage(taskId, "commit", "completed", "AnalysisBundle fast-forward 완료");
+    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
+    state.emit({ type: "task.completed", taskId });
+    return;
+  }
+
   state.emit({
     type: "analysis.progress",
     taskId,
@@ -857,11 +1004,23 @@ async function runAnalyzePipeline(
   const head = new SemanticStore(projectPath).load();
   const skeleton = buildEvidenceGraph(head.evidence);
   const topology = detectRepositoryTopology(projectPath, head.evidence);
-  const stage3Prompt = buildAssemblyPrompt(
-    projectPath,
-    buildSkeletonSummary(skeleton),
-    describeRepositoryTopology(topology),
-  );
+  let stage3Prompt: string;
+  if (!assemblyPlan.fullAssembly && head.analysisBundle) {
+    const draftId = randomUUID();
+    state.setBundleDraft(taskId, draftId, structuredClone(head.analysisBundle));
+    stage3Prompt = buildIncrementalAssemblyPrompt(
+      projectPath,
+      draftId,
+      assemblyPlan,
+      buildSkeletonSummary(skeleton),
+    );
+  } else {
+    stage3Prompt = buildAssemblyPrompt(
+      projectPath,
+      buildSkeletonSummary(skeleton),
+      describeRepositoryTopology(topology),
+    );
+  }
   recordStage(taskId, "retrieval", "completed", "지도 조립에 필요한 Core 근거 준비 완료");
 
   state.updateTask(taskId, { mode: "assembly", prompt: stage3Prompt });
@@ -1433,15 +1592,51 @@ app.post("/internal/semantic-patch", requireToken, async (req: Request, res: Res
   const store = new SemanticStore(projectPath);
   const head = store.load();
   const dirtyEvidenceCount = state.getDirtyEvidenceCount(taskId);
+  const incrementalPlan = state.getIncrementalPlan(taskId);
 
   const outcome = await commitPatch(store, {
     head,
     transaction: session.transaction,
     patch: req.body as SemanticPatch,
     ...(dirtyEvidenceCount !== undefined ? { dirtyEvidenceCount } : {}),
+    ...(incrementalPlan && !incrementalPlan.fullDiscovery ? { impactSet: incrementalPlan.impact } : {}),
   });
 
   if (outcome.ok) {
+    if (incrementalPlan) {
+      const unique = (values: readonly string[]): string[] => [...new Set(values)].sort();
+      const committedFactStore = store.load().systemFacts;
+      const boundaryChangingEntity = outcome.value.committedSystemEntityIds.some((id) => {
+        const item = committedFactStore.entities.find((candidate) => candidate.id === id);
+        return item?.kind.toLowerCase() === "runtime" ||
+          (item?.ref.kind === "resource" && item.ref.namespace.toLowerCase() === "runtime");
+      });
+      const impact = {
+        ...incrementalPlan.impact,
+        evidenceIds: unique([...incrementalPlan.impact.evidenceIds, ...outcome.value.committedEvidenceIds]),
+        systemEntityIds: unique([
+          ...incrementalPlan.impact.systemEntityIds,
+          ...outcome.value.committedSystemEntityIds,
+        ]),
+        systemLinkIds: unique([
+          ...incrementalPlan.impact.systemLinkIds,
+          ...outcome.value.committedSystemLinkIds,
+        ]),
+      };
+      state.setIncrementalPlan(taskId, {
+        ...incrementalPlan,
+        assemblyTurnRequired:
+          incrementalPlan.assemblyTurnRequired ||
+          outcome.value.committedSystemEntityIds.length > 0 ||
+          outcome.value.committedSystemLinkIds.length > 0,
+        fullAssembly: incrementalPlan.fullAssembly || boundaryChangingEntity,
+        reason: boundaryChangingEntity
+          ? `${incrementalPlan.reason} · 신규 runtime boundary로 전체 Assembly 필요`
+          : incrementalPlan.reason,
+        impact,
+        previousSystemDigest: { ...incrementalPlan.previousSystemDigest, impact },
+      });
+    }
     state.emit({
       type: "memory.patched",
       taskId,
@@ -1703,8 +1898,18 @@ app.post("/internal/patch-analysis-bundle", requireToken, async (req: Request, r
     return;
   }
   try {
-    const candidate = applyBundlePatch(draft.bundle, body.operations);
-    const result = await validateBundleCandidate(active.projectPath, active.taskId, candidate, "patch_analysis_bundle");
+    const plan = state.getIncrementalPlan(active.taskId);
+    const applied = applyAnalysisBundlePatch(
+      draft.bundle as AnalysisBundle,
+      body.operations,
+      plan && !plan.fullAssembly ? plan.impact : undefined,
+    );
+    if (!applied.bundle) {
+      state.emit({ type: "validation.failed", taskId: active.taskId, tool: "patch_analysis_bundle", diagnostics: applied.diagnostics });
+      res.status(200).json({ ok: false, retryable: true, draftId: draft.draftId, diagnostics: applied.diagnostics });
+      return;
+    }
+    const result = await validateBundleCandidate(active.projectPath, active.taskId, applied.bundle, "patch_analysis_bundle");
     res.status(result.status).json(result.body);
   } catch (error) {
     res.status(400).json({ error: "invalid_bundle_patch", detail: asMessage(error) });
@@ -1784,4 +1989,4 @@ if (isMainModule) {
   });
 }
 
-export { app, config, server, state };
+export { app, config, performReindex, server, state };

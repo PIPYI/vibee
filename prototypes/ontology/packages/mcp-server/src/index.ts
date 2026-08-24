@@ -125,6 +125,7 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
   · 여러 anchor의 관계를 한 번에 조회하려면          -> get_impact_context_batch
   · 검증된 시스템 entity/link ID를 조회하려면          -> get_system_facts
+  · 이번 증분 분석의 gap·영향 ID·patch 범위를 보려면    -> get_incremental_analysis_context
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
   · 엔진이 모르는 시스템 대상과 관계를 등록하려면   -> propose_system_facts
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
@@ -172,8 +173,9 @@ server.registerTool(
   {
     title: "AnalysisBundle draft 부분 보정",
     description:
-      "submit_analysis_bundle이 retryable=true와 draftId를 돌려준 뒤에만 쓴다. 전체 Bundle을 " +
-      "다시 출력하지 말고 diagnostics.subject.path가 가리키는 실패 경로만 RFC 6902 형태로 " +
+      "증분 assembly에서는 get_incremental_analysis_context의 기존 draftId로 바로 쓰고, 전체 assembly에서는 " +
+      "submit_analysis_bundle이 retryable=true와 draftId를 돌려준 뒤 쓴다. 전체 Bundle을 " +
+      "다시 출력하지 말고 ImpactSet 또는 diagnostics.subject.path가 가리키는 경로만 RFC 6902 형태로 " +
       "add/remove/replace한다. 허용 root는 /architecture, /workflow, /userMap, /sequences뿐이다. " +
       "최대 검증 횟수는 최초 제출을 포함해 3회이며 retryable=false 뒤에는 다시 호출하지 마라.",
     inputSchema: {
@@ -288,6 +290,20 @@ server.registerTool(
   },
   async ({ origin, certainty, status, entityId, limit }) =>
     reply(await callBridge(`/internal/system-facts${query({ origin, certainty, status, entityId, limit })}`)),
+);
+
+server.registerTool(
+  "get_incremental_analysis_context",
+  {
+    title: "V4 증분 분석 범위",
+    description:
+      "현재 task의 PreviousSystemDigest, SystemImpactSet, discovery gaps, provider-neutral integration " +
+      "catalog, 기존 Bundle draftId와 영향받은 조각의 정확한 JSON path/value(bundleTargets)를 돌려준다. " +
+      "증분 turn에서는 저장소 전체나 Bundle 전체를 다시 " +
+      "출력하지 말고 이 응답의 filePaths와 허용 ID만 조사·수정한다.",
+    inputSchema: {},
+  },
+  async () => reply(await callBridge("/internal/incremental-analysis-context")),
 );
 
 // ---------------------------------------------------------------------------

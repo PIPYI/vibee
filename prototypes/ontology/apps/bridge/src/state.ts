@@ -15,6 +15,7 @@ import type {
   AgentEventEnvelope,
   CachedView,
   EvidenceDiff,
+  IncrementalAnalysisPlan,
   McpCallSource,
   OverviewIR,
   ScenarioIR,
@@ -63,6 +64,8 @@ export class BridgeState {
   private readonly bundleDrafts = new Map<string, { draftId: string; bundle: unknown }>();
   /** 같은 task 안의 동일 bounded retrieval을 다시 계산·전송하지 않기 위한 작은 cache. */
   private readonly retrievalCache = new Map<string, Map<string, unknown>>();
+  /** V4 Phase 4~6 — 현재 task의 provider 범위와 허용 patch ID. */
+  private readonly incrementalPlans = new Map<string, IncrementalAnalysisPlan>();
 
   /**
    * 가장 최근 재인덱싱의 EvidenceDiff (evidenceId → diff). **재인덱싱마다 통째로 갈아 끼운다**
@@ -258,6 +261,14 @@ export class BridgeState {
 
   setAnalyzeSession(taskId: string, session: AnalyzeSession): void {
     this.analyzeSessions.set(taskId, session);
+  }
+
+  setIncrementalPlan(taskId: string, plan: IncrementalAnalysisPlan): void {
+    this.incrementalPlans.set(taskId, plan);
+  }
+
+  getIncrementalPlan(taskId: string): IncrementalAnalysisPlan | undefined {
+    return this.incrementalPlans.get(taskId);
   }
 
   getAnalyzeSession(taskId: string): AnalyzeSession | undefined {

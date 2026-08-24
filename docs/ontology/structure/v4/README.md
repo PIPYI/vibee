@@ -2,7 +2,7 @@
 
 ## 0. 문서 상태와 버전 경계
 
-- 상태: 구현 중 — Phase 0 기준 fixture와 Phase 1~3 완료
+- 상태: 구현 중 — Phase 0 기준 fixture와 Phase 1~6 완료
 - 기준 구현: V3.2
 - 문서 역할: V4의 분석 권한 모델, IR, 증분 상태, I20 대체 규칙과 구현 순서를 정의하는
   source of truth
@@ -53,17 +53,36 @@ Semantic Memory, RepositoryTopology, AnalysisBundle, 사용자 여정과 검증�
 - multi-hop 연속성, component membership, 방향, certainty/status, present Evidence를 검증한다.
 - V3 `traceLinkRefs` Bundle은 동일 link Evidence를 가진 SystemLink로 읽기 migration한다.
 - runtime wire identity를 protocol `4.0`으로 올렸다.
+- agent Evidence를 같은 파일 안의 줄 이동뿐 아니라 유일한 fingerprint로 확인되는 파일 이동까지
+  carry/relocate한다.
+- System Fact를 `valid | relocated | needs_review | stale | missing`으로 재계산하고, 검토 완료
+  version과 Bundle의 잔존 참조를 분리한다.
+- dirty Evidence에서 System Fact, Semantic Memory, Scenario, Architecture, Workflow, Sequence까지
+  닫히는 `SystemImpactSet`을 구현했다.
+- no-op·cosmetic·구조와 무관한 CSS 변경은 Semantic/Assembly provider turn 0회 fast path로
+  기존 Bundle을 현재 generation에 승계한다.
+- `PreviousSystemDigest`와 증분 실행 계획을 만들고, 전체 discovery/assembly 선택 이유를
+  generation history와 Stage ledger에 기록한다.
+- Semantic Patch와 AnalysisBundle Patch가 ImpactSet 밖의 기존 ID/section을 수정하면 거절한다.
+- 기존 AnalysisBundle을 서버 draft로 보존하고 증분 Assembly는 전체 Bundle 재출력 없이
+  RFC 6902 부분 patch만 제출한다.
+- manifest dependency, 실제 import/call, config consumer, framework boundary, adapter degradation을
+  provider 중립 integration catalog와 discovery gap으로 계산한다.
+- `get_incremental_analysis_context` MCP로 gap file, stable ID, patch scope, draft ID를 한 번에
+  조회하고, 영향받은 Bundle 조각의 현재 JSON path/value를 `bundleTargets`로 제공한다.
+- README 이름만 있는 서비스와 manifest가 없는 Node/Python built-in import는 discovery 후보에서
+  제외한다.
 
 아직 구현하지 않음:
 
 - Phase 0의 실제 프로젝트별 시간·토큰·provider 호출 수 계측
-- System Fact relocation/invalidation, `SystemImpactSet`, 증분 Bundle patch
-- open-world discovery와 V4 UI
+- Phase 7 V4 UI와 설명 가능성
+- Phase 8 shadow rollout, 실제 provider 비교 계측과 V4 전환
 
-따라서 현재 `system-facts.json`에는 결정론적 engine fact와 Core가 source contract를 검증한
-Vibee fact가 함께 들어간다. 기존 agent Evidence를 `engine-confirmed`로 자동 승격하지 않는다.
-Phase 4 전까지 재인덱싱은 Vibee fact를 삭제하지 않고 carry하지만, Evidence diff에 따른
-`relocated | stale | missing | needs_review` 정밀 상태 전이와 영향 범위 계산은 아직 수행하지 않는다.
+현재 `system-facts.json`에는 결정론적 engine fact와 Core가 source contract를 검증한 Vibee fact가
+같은 증분 수명 규칙으로 들어간다. 기존 agent Evidence를 `engine-confirmed`로 자동 승격하지 않는다.
+`stale | missing` fact는 감사와 이전 generation 복원을 위해 남기되, 관련 Bundle 참조가 제거되고
+검토 version이 따라잡으면 같은 사유로 provider를 반복 호출하지 않는다.
 
 ### 0.2 Phase 2~3 구현 결정 — 2026-08-24
 
@@ -78,6 +97,23 @@ Phase 4 전까지 재인덱싱은 Vibee fact를 삭제하지 않고 carry하지�
   통해 migration할 수 있을 때만 승인한다.
 - 확정 Architecture connection은 `confirmed | grounded`이면서 `valid | relocated`인 Link만 사용할
   수 있고, Link의 모든 직접 Evidence가 현재 `present`여야 한다.
+
+### 0.3 Phase 4~6 구현 결정 — 2026-08-24
+
+- relocation은 semantic dirty와 독립이다. exact relocation은 `relocated`로 자동 승인하고,
+  degraded relocation은 `needs_review`로 올린다.
+- direct Evidence가 전부 사라지면 `missing`, 일부 direct 또는 dependency가 사라지면 `stale`,
+  normalized fingerprint가 바뀌면 `needs_review`다.
+- missing/stale fact를 즉시 삭제하지 않는다. Semantic 검토가 끝나면 `lastValidatedVersion`을
+  전진시키고, 이전 Bundle이 계속 참조하는 동안에만 patch 대상에 남긴다.
+- 작은 Bundle은 한 Link가 전체 비율의 대부분을 차지할 수 있으므로 비율만으로 full Assembly를
+  선택하지 않는다. 20개 이상인 Bundle에서 impact closure가 60%를 넘을 때만 full로 올린다.
+- incremental Semantic/Bundle patch는 ImpactSet 밖 ID를 수정할 수 없다. 신규 항목은 dirty 또는
+  discovery Evidence와 직접 연결될 때만 범위 안으로 인정한다.
+- provider-neutral catalog는 서비스 이름 목록을 hard-code하지 않는다. manifest dependency와
+  실제 source import/call/config를 묶어 후보를 만들며 README는 입력에서 제외한다.
+- `mode: full` 또는 `index-only`는 사용자의 명시적 전체 실행으로 기록한다. 그 외 같은 snapshot,
+  cosmetic, 구조와 무관한 CSS 변경은 provider turn 0회다.
 
 ## 1. 문제 정의
 
@@ -772,6 +808,8 @@ OpenAI Entity의 직접 근거:
 
 ### Phase 4 — 증분 System Fact 수명
 
+구현 상태: **완료** (2026-08-24)
+
 산출물:
 
 - agent anchor carry/relocate를 System Fact dependency까지 확장
@@ -788,6 +826,8 @@ OpenAI Entity의 직접 근거:
 - source call 삭제 시 해당 Link와 연결된 Bundle 조각만 stale/missing이 된다.
 
 ### Phase 5 — 증분 Semantic/Bundle Patch
+
+구현 상태: **완료** (2026-08-24)
 
 산출물:
 
@@ -807,6 +847,8 @@ OpenAI Entity의 직접 근거:
 ### Phase 6 — Open-world Discovery
 
 증분 기반을 먼저 완성한 뒤 open-world 탐색을 기본 경로에 켠다.
+
+구현 상태: **완료** (2026-08-24)
 
 산출물:
 
