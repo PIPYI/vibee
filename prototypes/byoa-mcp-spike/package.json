@@ -26,6 +26,8 @@
     "interview": "node scripts/interview.mjs",
     "drift": "node scripts/drift.mjs",
     "wiki": "node scripts/wiki.mjs",
-    "drift:fixture": "node scripts/drift-fixture.mjs"
+    "architecture": "node scripts/architecture.mjs",
+    "drift:fixture": "node scripts/drift-fixture.mjs",
+    "architecture:fixture": "node scripts/architecture-fixture.mjs"
   }
 }

@@ -439,6 +439,36 @@ Obsidian 같은 도구를 직접 연동하지 않는 이유이기도 합니다 �
 
 결과와 함정은 `SPIKE_FINDINGS.md` §16에 있습니다.
 
+## 아키텍처·기술부채
+
+이미 완성된 코드베이스에서 여러 커밋에 걸쳐 조금씩 쌓인 구조 문제를 점검합니다. 범용
+아키텍처 리뷰가 아니라 사용자가 실제로 겪은 다음 세 가지에만 집중합니다.
+
+| 검출 대상 | 코드가 먼저 준비하는 것 | agent가 판단하는 것 |
+| --- | --- | --- |
+| 한 파일에 쌓인 책임 | 파일 크기 + 설계 REQ/ENTITY 매핑 | 설계 경계를 실제로 넘었는가 |
+| 의미가 같은 로직 중복 | 함수/메서드 시그니처와 위치 | 표현은 달라도 같은 일을 하는가 |
+| 방치된 임시 조치 | TODO/임시 마커 + git blame 나이 | 후속 코드가 쌓여 제거가 어려워졌는가 |
+
+**크다, TODO가 있다**만으로 finding을 만들지 않습니다. agent는 준비된 목록을 받은 뒤 관련
+파일만 열어 의미를 확인합니다. 결합도·응집도·순환 의존·레이어 위반과 스타일 평가는 현재
+범위 밖입니다.
+
+각 finding에는 사용자 영향·구체적 근거·관련 설계 id·다음 행동이 나오며, **해소 프롬프트
+복사**로 같은 프로젝트를 공유하는 Codex/Claude Code에 리팩터링을 맡길 수 있습니다. 분석
+turn은 `mode: "architecture"`의 새 세션에서 읽기 전용으로 실행됩니다. 앱은 소스 코드를
+고치지 않고 현재 snapshot을 `.project-intel/architecture.json`과 `architecture.md`에
+저장합니다. 다음 실행이 두 파일을 덮어쓰며 추세는 git 이력이 대신합니다. Wiki·Drift 등
+다른 기능의 상태는 초기화하지 않습니다.
+
+```bash
+npm run architecture              # codex, claude 순서로 모두
+npm run architecture codex        # 하나만
+```
+
+실제 두 provider로 전체 경로를 통과한 결과(13/13)와 아직 검증하지 않은 범위는
+`SPIKE_FINDINGS.md` §17에 있습니다.
+
 ## Layout
 
 ```text
@@ -450,7 +480,7 @@ prototypes/byoa-mcp-spike/
 │  └─ web/                   React + Vite UI
 ├─ packages/
 │  ├─ protocol/              브라우저·bridge·MCP가 공유하는 타입
-│  └─ mcp-server/            stdio MCP server (get_app_context, show_result)
+│  └─ mcp-server/            stdio MCP server (context/result/architecture tools)
 ├─ scripts/                  register/unregister/status/fixture/acceptance/cleanup
 ├─ SPIKE_FINDINGS.md         검증 결과와 Findings
 └─ README.md

@@ -1705,3 +1705,132 @@ Notion MCP·OpenWiki류 엔진·Stanford STORM을 검토했으나 채택하지 �
 - **위키와 드리프트의 데이터가 실제로 섞이지 않는지.** 둘 다 `.project-intel/`에 쓰지만
   같은 디렉터리를 공유하지는 않는다(`wiki/` vs `reviews.json`) — 다만 두 기능을 번갈아
   많이 썼을 때의 상호작용은 보지 않았다.
+
+---
+
+## 17. 아키텍처·기술부채 읽기 전용 보고서 (2026-08-24)
+
+`docs/product_flow_decisions.md` 질문 5의 최신 결정을 구현했다. 최초 초안은 agent에게 전체
+코드를 읽히고 결합도·순환 의존 같은 일반 아키텍처 항목을 찾게 했지만, 문서와 대조하자
+**명시적으로 범위 밖인 것**을 구현했다는 사실이 드러났다. 실제 검증 전에 폐기하고 아래 세
+가지만 남겼다.
+
+### 판단 전에 코드가 준비하는 것
+
+| 검출 | 결정론적 입력 | agent의 판단 |
+| --- | --- | --- |
+| 파일/모듈 비대화 | source 파일의 bytes·lines, 설계 REQ/ENTITY 이름의 exact match | 크기가 아니라 여러 프로젝트 책임이 실제로 한 파일에 쌓였는가 |
+| 의미 중복 | 함수/메서드 시그니처·파일·줄 | 이름과 텍스트가 달라도 같은 프로젝트 동작인가 |
+| 임시 조치 잔존 | TODO/FIXME/HACK/임시 마커, `git blame`, 이후 커밋 수 | 뒤에 기능이 쌓여 제거 비용이 커졌는가 |
+
+agent는 `get_architecture_context`로 이 목록을 먼저 받고 관련 파일만 Read/Grep/Glob으로
+확인한다. `report_architecture`는 위 세 category 외의 값을 스키마에서 거부한다. 크기나
+마커 자체는 finding의 충분조건이 아니며, finding은 실제 파일·구체적 근거·설계 id·사용자
+영향을 함께 내야 한다.
+
+Bridge는 finding마다 LLM 없이 해소 프롬프트를 렌더한다. 사용자는 이를 복사해 같은
+workspace의 Codex/Claude Code에 주고, 우리 앱의 분석 turn은 파일을 고치지 않는다. 결과는
+`.project-intel/architecture.json`(원본)과 `architecture.md`(파생물)에 현재 snapshot으로
+저장한다. 실행할 때마다 덮어쓰고, 별도 이력 배열·북마크 대신 git이 추세를 남긴다.
+
+`mode: "architecture"`는 읽기 전용이고 실행할 때 그 mode의 세션만 새로 만든다. 다른 mode의
+세션 참조와 Wiki·Drift 상태는 건드리지 않는다.
+
+### 실측 결과
+
+격리한 `tmp/architecture-fixture`에 세 증상을 함께 심었다: 회원·도서·대출 책임이 한 파일에
+모인 구조, 서로 다른 이름의 동일한 이름 정규화, 첫 커밋 뒤 5개 커밋 동안 남은 임시 저장소
+TODO. Codex `gpt-5.6-luna`(effort `low`)가 실제 MCP로 `get_architecture_context`와
+`report_architecture`를 호출해 **세 category를 각각 1건씩** 제출했고 task가 `completed`가
+됐다.
+
+세 finding 모두 실제 파일과 설계 id를 들었고, 임시 조치는 최초 commit과 `commitsSince: 5`를
+근거로 사용했다. JSON·Markdown·해소 프롬프트가 만들어졌으며, `git diff -- src package.json
+.project-intel/design.json`은 비어 있어 분석 중 소스/설계를 고치지 않았음을 확인했다. fixture
+자체 테스트 1/1, 전체 workspace의 `npm run typecheck`와 `npm run build`도 통과했다.
+`npm run acceptance codex` 9/9도 통과해 mode/session 변경 이후 기존 작업 경로의 회귀가
+없음을 확인했다.
+
+### 이것이 확인해 주지 않는 것
+
+- Claude provider의 실제 제출 경로는 아직 돌리지 않았다. 타입과 read-only 도구 제한만
+  기존 adapter 경계에서 확인했다.
+- source 확장자와 정규식 기반 시그니처 추출이다. 지원 목록 밖의 언어, 여러 줄 선언,
+  동적으로 만든 함수는 후보에서 빠질 수 있다.
+- 설계 매핑은 이름 exact match다. 코드 식별자가 번역돼 있거나 이름이 달라졌으면 agent가
+  `designRefs`와 실제 코드를 보고 보완해야 한다.
+- 큰 저장소 상한은 source 2,000개, 크기 목록 300개, 시그니처 1,000개, 임시 마커 100개다.
+  잘린 개수는 context에 드러나지만 이 상한의 적절성은 실측하지 않았다.
+- finding 정확도를 여러 현실 저장소의 정답표와 대조하지 않았다. 이번 검증은 의도한 세
+  category의 end-to-end 제출, git 나이, 저장, 해소 프롬프트, 소스 read-only 경계를 본 것이다.
+
+### 리뷰에서 나온 두 가지와 후속 조치 (같은 날, 다른 세션의 리뷰)
+
+이 절이 커밋되기 전에 별도 세션이 코드와 `docs/product_flow_decisions.md`를 대조해
+리뷰했다. 범위·격리·해소 handoff는 문서와 정확히 일치한다고 확인했지만, 두 가지를
+짚었다.
+
+**1. 회귀 검증 스크립트가 없었다.** 위 실측은 임시 fixture로 한 번 돌려본 것이라
+재현 가능한 형태로 남지 않았다 — Drift(`scripts/drift.mjs`)·Wiki(`scripts/wiki.mjs`)와
+다른 점이었다. `scripts/architecture-fixture.mjs`(세 증상을 심은 fixture, 6커밋)와
+`scripts/architecture.mjs`(`npm run architecture`)를 추가해 이 격차를 없앴다. 검증
+결과를 다시 실측하니 **두 provider 모두 13/13**으로 통과했다 — 위에서 "아직 돌리지
+않았다"고 적어 둔 Claude 경로도 이번에 실제로 확인됐다.
+
+```
+codex  (gpt-5.6-luna, low)  13/13
+claude (haiku)              13/13
+```
+
+**2. 함수 시그니처 목록의 문자 수 캡이 없었다.** 개수 상한(`MAX_SIGNATURES = 1,000`)만
+있어서, 항목당 최대 240자 기준으로 최악의 경우 24만 자에 달할 수 있었다 — Wiki 전체
+대화 캡(4만 자)의 6배, Drift 커밋 하나 diff 캡(2만 자)의 12배다. 질문 5에서 막 정한
+"토큰 비용은 항상 줄이는 방향으로"와 어긋나는 지점이었다. `architecture.ts`에
+`MAX_SIGNATURE_CHARS = 40_000`(Wiki와 같은 규모)를 추가해 개수 상한과 별개로 문자
+예산으로도 자르게 했다. 이 fixture는 작아서 어느 캡도 걸리지 않으므로, 이 변경은
+`npm run typecheck`/`build`로만 확인했다 — 큰 저장소에서 실제로 캡이 걸리는지는
+아직 실측하지 않았다.
+
+두 조치 모두 `npm run typecheck`·`npm run build`·`npm run acceptance codex`(9/9, 회귀
+없음)로 재확인했다.
+
+### 후속 결정 — design.json이 없는 "기존 코드베이스" 진입 경로 (같은 날, 이어진 대화)
+
+리뷰 직후 사용자가 짚었다 — `oversized-module`이 `designRefs`(REQ/ENTITY)에 의존하는데,
+**"이미 코드가 있는 프로젝트를 여는" 진입 경로는 애초에 인터뷰(그래서 design.json)를
+거치지 않는다**(`docs/product_flow_decisions.md` "프로젝트 진입 경로"). 즉 이 카테고리가
+가장 필요할 법한 경우에 근거가 통째로 사라지는 구조였다. 같은 문제를 Drift도 이미
+갖고 있었다("기존 코드베이스에 DEC/RULE이 없을 때 무엇을 기준으로 할지 미정") — 다만
+그때는 미정으로 남겨 뒀을 뿐 풀지 않았었다.
+
+**확정**: design.json이 있으면 그것으로 REQ/ENTITY 경계를 판단하고, 없으면 agent가
+코드를 직접 읽어 "실제로 서로 다른 책임이 한 파일에 있다"고 판단하는 것을 허용한다.
+이 경우 `designIds`는 비워 두고 근거는 `evidence`에 코드 판단으로 직접 적는다.
+
+**잡힌 회귀**: 처음에는 이 규칙을 8줄짜리 긴 문단으로 풀어 썼는데, 그러자 `oversized-
+module` 카테고리의 with-design 시나리오에서 Codex(`gpt-5.6-luna`, low)가 **2번 연속
+`report_architecture`를 아예 호출하지 않고 turn을 끝냈다** — `get_architecture_context`는
+불렀지만 그 뒤로 진행하지 않았다. 짧은 프롬프트(§17 본문)로는 안정적으로 통과하던
+시나리오가 문장을 늘렸다는 이유만으로 깨졌다 — **약한 모델은 지시가 길어질수록 마지막
+tool 호출까지 못 간다**는 것을 실측으로 확인한 셈이다. 3줄로 줄여 같은 규칙을 표현하자
+다시 안정적으로 통과했다. 프롬프트를 고칠 때는 길이 자체를 회귀 위험으로 본다.
+
+`scripts/architecture-fixture.mjs`에 `withDesign: false` 옵션(design.json 없이 같은
+세 증상을 심는 변형, `tmp/architecture-fixture-no-design`)을 추가하고,
+`scripts/architecture.mjs`가 두 provider 모두에서 두 시나리오(설계 있음/없음)를 전부
+확인하도록 늘렸다. 도중에 검증 스크립트 자체의 버그도 하나 잡았다 — `isSourceClean`이
+`git status --porcelain`을 기본 옵션으로 불러서, design.json이 없는 변형에서는
+`.project-intel/`이 처음 생기는 디렉터리라 `?? .project-intel/` 한 줄로 뭉뚱그려져
+그 안에 정말 `architecture.json`/`.md`만 생겼는지 확인할 수 없었다.
+`--untracked-files=all`로 고쳤다.
+
+```
+codex  (gpt-5.6-luna, low)  19/19 (기존 13 + 설계 없음 6)
+claude (haiku)              19/19
+```
+
+`npm run typecheck`·`npm run build`·`npm run acceptance`(codex·claude 9/9, 회귀 없음)도
+다시 확인했다. Drift 쪽의 같은 문제(DEC/RULE 없는 기존 저장소)는 이번에 풀지 않았다 —
+Drift는 "이 프로젝트가 정한 것 하나만 본다"는 원칙 자체가 명시적 결정에 의존하므로,
+코드만 보고 대신 판단하는 fallback이 architecture와 같은 방식으로 성립하는지는 별도로
+봐야 한다.

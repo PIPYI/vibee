@@ -41,7 +41,7 @@ import type { AgentAdapter, StartTaskInput, TaskMode, TaskOutcome } from "../typ
 const execFileAsync = promisify(execFile);
 
 /** Codex adapter의 ALL_MODES와 같은 이유로 둔다. */
-const ALL_MODES: readonly TaskMode[] = ["task", "interview", "review", "wiki"];
+const ALL_MODES: readonly TaskMode[] = ["task", "interview", "review", "wiki", "architecture"];
 
 /** 세션 캐시 키. mode가 다르면 다른 대화다 (Codex adapter의 threadKey와 같은 이유). */
 function sessionKey(projectPath: string, mode: TaskMode): string {
@@ -294,9 +294,13 @@ export class ClaudeAdapter implements AgentAdapter {
     this.running.get(taskId)?.abortController.abort();
   }
 
-  resetSession(projectPath: string): void {
+  resetSession(projectPath: string, mode?: TaskMode): void {
     // session_id 참조만 버린다. 세션 파일은 ~/.claude/projects에 그대로 남아
     // `claude --resume`으로 이어받을 수 있다.
+    if (mode) {
+      this.sessionByProject.delete(sessionKey(projectPath, mode));
+      return;
+    }
     for (const mode of ALL_MODES) {
       this.sessionByProject.delete(sessionKey(projectPath, mode));
     }

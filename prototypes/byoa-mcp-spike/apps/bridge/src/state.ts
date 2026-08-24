@@ -8,6 +8,8 @@
 import type {
   AgentEvent,
   AgentEventEnvelope,
+  ArchitectureContext,
+  ArchitectureDebtReport,
   AppContext,
   AppContextPatch,
   AskUserInput,
@@ -74,6 +76,11 @@ export class BridgeState {
    */
   private reviewContext: ReviewContext | null = null;
   private driftReport: ReportDriftInput | null = null;
+
+  /** 프로젝트 전체를 읽는 architecture turn의 독립된 결과. */
+  private architectureReport: ArchitectureDebtReport | null = null;
+  /** 구조 점검 turn에 코드가 결정론적으로 준비한 세 목록. */
+  private architectureContext: ArchitectureContext | null = null;
 
   /** 지금 위키 turn이 만들고 있는 것. turn 하나에 키워드 하나다. */
   private wikiContext: WikiContext | null = null;
@@ -177,6 +184,25 @@ export class BridgeState {
 
   getDriftReport(): ReportDriftInput | null {
     return this.driftReport;
+  }
+
+  // ---------- 아키텍처·기술부채 ----------
+
+  startArchitecture(context: ArchitectureContext): void {
+    this.architectureReport = null;
+    this.architectureContext = context;
+  }
+
+  recordArchitecture(report: ArchitectureDebtReport): void {
+    this.architectureReport = report;
+  }
+
+  getArchitectureReport(): ArchitectureDebtReport | null {
+    return this.architectureReport;
+  }
+
+  getArchitectureContext(): ArchitectureContext | null {
+    return this.architectureContext;
   }
 
   // ---------- 위키 ----------

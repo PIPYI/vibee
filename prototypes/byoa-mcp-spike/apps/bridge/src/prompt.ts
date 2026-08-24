@@ -139,6 +139,50 @@ export function buildReviewPrompt(): string {
 }
 
 /**
+ * 기존 코드베이스의 아키텍처·기술부채 구조 점검 프롬프트.
+ *
+ * 전체 코드를 문맥에 던지는 대신 코드가 준비한 세 목록을 먼저 준다. agent는 목록에서 의미를
+ * 판단하고 필요한 파일만 읽어 확인한다. 결합도·순환 의존 같은 범용 리뷰로 넓어지지 않게
+ * 확정한 세 범주만 열어 둔다 (`docs/product_flow_decisions.md` 질문 5).
+ */
+export function buildArchitecturePrompt(): string {
+  return [
+    "You are doing a focused structure check of an EXISTING codebase for a NON-PROGRAMMER.",
+    "You are inside the BYOA MCP integration spike. Write the report in Korean.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_architecture_context` (server: byoa-spike). Code has already scanned the",
+    "   project and prepared file sizes/design mappings, function signatures and temporary",
+    "   markers with git age.",
+    "2. Judge only the three categories below. Use Read/Grep/Glob to open the relevant candidate",
+    "   files and confirm meaning before reporting a finding.",
+    "3. Call `report_architecture` (server: byoa-spike) exactly ONCE, then end your turn.",
+    "",
+    "The ONLY allowed categories:",
+    "- `oversized-module`: a file has accumulated multiple distinct project responsibilities.",
+    "  Size alone is NOT a finding. Cite `designIds` when `designRefs` has REQ/ENTITY entries;",
+    "  if `designRefs` is empty, judge purely from reading the file and leave `designIds` empty.",
+    "- `duplicated-logic`: functions with different text/signatures actually perform the same",
+    "  project behavior, so changing one can leave the others inconsistent.",
+    "- `stale-temporary-workaround`: a TODO/temporary workaround has remained while later commits",
+    "  built on it, making removal materially harder. A marker alone is NOT a finding.",
+    "",
+    "Rules:",
+    "- Do NOT report coupling, cohesion, dependency cycles, layer violations, style, naming,",
+    "  formatting, generic best practices or raw line-count thresholds.",
+    "- Every finding must cite real project-relative files you opened plus concrete evidence from",
+    "  the supplied lists. Use designIds only when the supplied context contains those ids.",
+    "- Explain what becomes harder for this app's user in plain language.",
+    "- An empty findings array is valid when there is no evidence of material technical debt.",
+    "- Put scan truncation, missing design data, unsupported languages or unverified candidates in",
+    "  `limitations`; do not turn uncertainty into a finding.",
+    "",
+    "Do NOT change any file. Suggestions are bounded refactoring actions for the user's connected",
+    "coding agent to perform later, not work to perform in this turn.",
+  ].join("\n");
+}
+
+/**
  * 해소 프롬프트 (docs/vibe_coding_assistant_design.md §3.3 표의 "해소 프롬프트" 행).
  *
  * 검출은 절반이다. 나머지 절반 — 무엇을 고칠지 정하고 실제로 고치는 일 — 은 우리가 하지
