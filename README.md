@@ -81,6 +81,12 @@ Phase F가 남긴 것은 커버리지다. 평가 표현을 거르는 필터(`fin
 
 ## 핵심 기능
 
+아래 다섯은 하나로 이어지는 파이프라인이 아니라 **서로 다른 목적을 가진 별개 기능**이다.
+같은 프로젝트 디렉터리를 공유하므로 필요하면 서로의 산출물을 읽지만, 하나의 세션이나
+상태를 공유하지는 않는다. 진입 경로·실행 모델은
+[`docs/vibe_coding_assistant_design.md`](./docs/vibe_coding_assistant_design.md)의
+"기능은 독립적이다" 절에 정리돼 있다.
+
 ### 1. 요구사항 / 설계 문서 공동 작성
 
 단발성 "PRD 생성"이 아니라, AI와 멀티턴 대화로 요구사항을 점진적으로 구체화하고 구조화해 저장한다.
@@ -134,9 +140,12 @@ LoginPage → POST /api/login → AuthController → AuthService → UserReposit
 
 Architecture / Requirement / Decision Drift, 의존성 증가, 높은 결합도, 낮은 응집도, 순환 의존성, 레이어 위반, 임시 구현·TODO의 장기 잔존.
 
-### 5. Bookmark / Wiki / Project Memory
+### 5. Wiki — 완성 후 대화를 되짚는 학습 기능
 
-대화 중 중요한 판단을 이유·출처·관련 코드와 함께 저장하고, 이후 코드 변경과 자동으로 연결한다.
+최초 결과물이 끝까지 완성된 뒤, 구현 과정에서 에이전트와 나눈 채팅 기록을 훑어 비전공자가
+모를 만한 말을 골라 **이 프로젝트 기준으로** 설명한다. 순수 학습용이다 — 가치판단이나
+개선 권고는 하지 않는다(그건 3번 Drift의 몫이다). 새 커밋이 생겼다고 자동으로 갱신하지
+않는다.
 
 ---
 
@@ -238,27 +247,11 @@ App / Core / MCP가 공유하는 Source of Truth. App은 자기 상태를 MCP를
 
 ## MVP 범위
 
-모든 기능을 만들지 않고 **하나의 end-to-end cycle**을 완성한다.
-
-1. 사용자가 repository를 연다.
-2. App에서 Agent와 대화하며 기능 요구사항 하나를 구체화한다.
-3. Agent가 Requirement / Decision을 구조화하여 저장한다.
-4. Core가 관련 코드를 Use Case로 연결한다.
-5. App이 Use Case Map을 보여준다.
-6. 코드가 변경된다.
-7. Agent가 기존 Decision과 변경 코드를 비교한다.
-8. Drift를 발견하면 App에 표시한다.
-
-데모 시나리오:
-
-```text
-사용자: "MVP 회원가입에는 이메일 인증을 넣지 않을 거야."   → DEC-003 저장
-이후 Agent가 EmailVerificationService를 생성            → 기존 Decision과 충돌 감지
-
-⚠ 기존 설계 의도와 충돌
-DEC-003: "MVP 회원가입에서는 이메일 인증을 사용하지 않는다."
-[기존 결정 유지] [현재 구현 승인] [새 결정으로 교체]
-```
+모든 기능을 처음부터 만들지 않고, "새 앱을 만드는" 진입 경로 하나를 끝까지 완성하는 것이
+1차 목표다 — 인터뷰 → 인계 → 사용자의 Codex/Claude Code가 전체 구현 → Drift 검출·해소.
+구체적인 단계와 데모 시나리오는 중복 유지하지 않고
+[`docs/vibe_coding_assistant_design.md` §13](./docs/vibe_coding_assistant_design.md)에만
+둔다.
 
 ---
 
