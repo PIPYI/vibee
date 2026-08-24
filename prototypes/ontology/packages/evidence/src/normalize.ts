@@ -178,7 +178,7 @@ export function normalizedText(text: string, profile: NormalizationProfile): str
 }
 
 /** TypeScript/JavaScript로 파싱되는 확장자. 그 외는 `prose`가 기본이다. */
-const CODE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+const CODE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 
 export function isCodeFile(filePath: string): boolean {
   const lower = filePath.toLowerCase();

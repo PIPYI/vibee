@@ -25,12 +25,14 @@ import {
   linkEvidenceBaseId,
   rawHashOf,
   resolveLinkIds,
+  sha1,
   sha256,
   symbolEvidenceId,
   type LinkIdCandidate,
 } from "./ids.js";
-import { collectSourceFiles, isTestFile, readSource } from "./lang.js";
+import { collectSourceFiles, isPythonSourceFile, isTestFile, isTypeScriptSourceFile, readSource } from "./lang.js";
 import { defaultProfileFor } from "./normalize.js";
+import { parsePythonSource, type PythonSymbol } from "./python.js";
 import {
   collectSymbolSites,
   enclosingStatement,
@@ -123,7 +125,8 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
 
   const indexed = [...sources.keys()].sort();
   const indexedSet = new Set(indexed);
-  const parsed = indexed.filter((relPath) => sourcePaths.includes(relPath));
+  const parsed = indexed.filter((relPath) => sourcePaths.includes(relPath) && isTypeScriptSourceFile(relPath));
+  const pythonPaths = indexed.filter((relPath) => sourcePaths.includes(relPath) && isPythonSourceFile(relPath));
 
   const program = ts.createProgram({
     rootNames: parsed.map((relPath) => `${projectRoot}/${relPath}`),
@@ -136,6 +139,7 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   const pending: Array<{ candidate: LinkIdCandidate; build: (id: string) => Evidence }> = [];
   const bySymbolId = new Map<string, SymbolSite>();
   const sitesByFile = new Map<string, SymbolSite[]>();
+  const pythonByFile = new Map(pythonPaths.map((relPath) => [relPath, parsePythonSource(relPath, sources.get(relPath)!)]));
 
   const queueLink = (spec: PendingLinkSpec): void => {
     const localFingerprint = fingerprintOf(spec.extentText, "code");
@@ -183,6 +187,74 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
       observedAtVersion: version,
       status: "present",
     });
+
+    const python = pythonByFile.get(relPath);
+    if (python) {
+      for (const symbol of python.symbols) {
+        const extent = symbol.extentText;
+        const location = { startLine: symbol.startLine, endLine: symbol.endLine };
+        evidence.push({
+          id: symbolEvidenceId(symbol.symbolId),
+          kind: "symbol",
+          origin: "engine",
+          filePath: relPath,
+          symbolId: symbol.symbolId,
+          location,
+          rawHash: rawHashOf(extent),
+          normalizedFingerprint: fingerprintOf(extent, "code"),
+          normalizationProfile: "code",
+          excerpt: extent.split(/\r?\n/u)[0]?.trim() ?? "",
+          graph: { role: "entity", entity: { kind: "symbol", symbolId: symbol.symbolId }, label: symbol.qualifiedName },
+          summary: `${symbol.qualifiedName} (${relPath})`,
+          fileContentHash: fileHash,
+          observedAtVersion: version,
+          status: "present",
+        });
+        queueLink({
+          linkKind: "contains",
+          from: fileEntity,
+          to: { kind: "symbol", symbolId: symbol.symbolId },
+          extentText: `${relPath}#${symbol.qualifiedName}`,
+          location,
+          startColumn: symbol.indent,
+          filePath: relPath,
+          fileContentHash: fileHash,
+          summary: `${relPath} 이 ${symbol.qualifiedName} 를 담고 있다`,
+        });
+      }
+      for (const route of python.routes) {
+        const routeEntity: EntityRef = { kind: "route", routeKey: route.routeKey };
+        const location = { startLine: route.line, endLine: route.line };
+        evidence.push({
+          id: `ev:route:${sha1(route.routeKey)}`,
+          kind: "route",
+          origin: "engine",
+          filePath: relPath,
+          location,
+          rawHash: rawHashOf(route.extentText),
+          normalizedFingerprint: fingerprintOf(route.extentText, "code"),
+          normalizationProfile: "code",
+          excerpt: route.extentText.split(/\r?\n/u)[0]?.trim() ?? "",
+          graph: { role: "entity", entity: routeEntity, label: route.routeKey },
+          summary: `${route.routeKey} (${relPath})`,
+          fileContentHash: fileHash,
+          observedAtVersion: version,
+          status: "present",
+        });
+        queueLink({
+          linkKind: "api_handler",
+          from: routeEntity,
+          to: { kind: "symbol", symbolId: route.handlerSymbolId },
+          extentText: route.extentText,
+          location,
+          startColumn: 0,
+          filePath: relPath,
+          fileContentHash: fileHash,
+          summary: `${route.routeKey} 를 ${route.handlerSymbolId} 가 처리한다`,
+        });
+      }
+      continue;
+    }
 
     if (!parsed.includes(relPath)) continue;
 
@@ -307,6 +379,34 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
         filePath: relPath,
         level: "error",
         message: `참조 해석에 실패했습니다: ${String(error)}`,
+      });
+    }
+  }
+
+  // Python은 이름이 프로젝트 안에서 유일한 직접 호출만 연결한다. attribute·동적 dispatch는 추정하지 않는다.
+  const pythonNames = new Map<string, PythonSymbol[]>();
+  for (const parsedPython of pythonByFile.values()) {
+    for (const symbol of parsedPython.symbols.filter((item) => item.kind === "function")) {
+      const bucket = pythonNames.get(symbol.name) ?? [];
+      bucket.push(symbol);
+      pythonNames.set(symbol.name, bucket);
+    }
+  }
+  for (const [relPath, parsedPython] of pythonByFile) {
+    const fileHash = fileHashes[relPath]!;
+    for (const call of parsedPython.calls) {
+      const targets = pythonNames.get(call.targetName) ?? [];
+      if (targets.length !== 1) continue;
+      queueLink({
+        linkKind: "call",
+        from: { kind: "symbol", symbolId: call.fromSymbolId },
+        to: { kind: "symbol", symbolId: targets[0]!.symbolId },
+        extentText: call.extentText,
+        location: { startLine: call.line, endLine: call.line },
+        startColumn: call.column,
+        filePath: relPath,
+        fileContentHash: fileHash,
+        summary: `${call.fromSymbolId} 이 ${targets[0]!.symbolId} 를 호출한다`,
       });
     }
   }

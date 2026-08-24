@@ -5,6 +5,8 @@
  * 공유하지 않는다"는 경계는 지킨다: Analyzing 동안은 애초에 제품 캔버스가 없고, Analyzed
  * 이후에는 접힌 보조 패널일 뿐 아키텍처/워크플로우 노드와 섞이지 않는다).
  */
+import type { AnalysisPipelineStage, AnalysisStageState } from "@onto/protocol";
+
 export type PipelinePhase = "indexing" | "semantic-memory" | "assembly" | "done";
 
 const PHASE_ORDER: PipelinePhase[] = ["indexing", "semantic-memory", "assembly", "done"];
@@ -35,6 +37,67 @@ export function PhaseStepper({ phase, failed }: { phase: PipelinePhase; failed?:
         );
       })}
     </ol>
+  );
+}
+
+const STAGE_LABEL: Record<AnalysisPipelineStage, string> = {
+  indexing: "근거 인덱싱",
+  semantic: "의미 이해",
+  retrieval: "조립 근거 준비",
+  assembly: "지도 조립",
+  validation: "계약 검증",
+  commit: "결과 저장",
+};
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder > 0 ? `${minutes}분 ${remainder}초` : `${minutes}분`;
+}
+
+export function StageLedger({
+  states,
+  heartbeat,
+}: {
+  states: AnalysisStageState[];
+  heartbeat: { stage: AnalysisPipelineStage; elapsedSeconds: number; idleSeconds: number } | null;
+}): React.JSX.Element {
+  const active = [...states].reverse().find((state) => state.status === "running" || state.status === "correcting");
+  const activeHeartbeat = active && heartbeat?.stage === active.stage ? heartbeat : null;
+  return (
+    <section className="stage-ledger" aria-label="분석 단계별 진행 상태">
+      <div className="stage-ledger-head">
+        <div>
+          <span className="stage-live-dot" aria-hidden="true" />
+          <strong>{active ? STAGE_LABEL[active.stage] : "분석 상태"}</strong>
+        </div>
+        {activeHeartbeat && <span>{formatDuration(activeHeartbeat.elapsedSeconds)} 경과</span>}
+      </div>
+      <p className="stage-current-message">
+        {active?.message ?? states.find((state) => state.status === "failed")?.message ?? "분석 준비 중"}
+      </p>
+      {activeHeartbeat && (
+        <p className="stage-activity">
+          {activeHeartbeat.idleSeconds >= 90
+            ? `모델 응답을 기다리는 중 · 마지막 활동 ${formatDuration(activeHeartbeat.idleSeconds)} 전`
+            : `작업이 계속 진행 중 · 마지막 활동 ${formatDuration(activeHeartbeat.idleSeconds)} 전`}
+        </p>
+      )}
+      <ol className="stage-ledger-list">
+        {states.map((state) => (
+          <li key={state.stage} className={`stage-ledger-${state.status}`}>
+            <span>{STAGE_LABEL[state.stage]}</span>
+            <b>{
+              state.status === "pending" ? "대기" :
+              state.status === "running" ? "진행 중" :
+              state.status === "correcting" ? "자동 보정" :
+              state.status === "completed" ? "완료" : "실패"
+            }</b>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

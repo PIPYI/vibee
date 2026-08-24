@@ -16,8 +16,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { BRIDGE_TOKEN_HEADER } from "@onto/protocol";
+import { ANALYSIS_BUNDLE_SCHEMA, BRIDGE_TOKEN_HEADER, analysisContractDigest } from "@onto/protocol";
 import { loadBridgeConfig, protoRootFromModule } from "@onto/protocol/bridge-config";
+import { jsonSchemaToZod } from "./json-schema-zod.js";
 
 function log(...args: unknown[]): void {
   console.error("[onto-mcp]", ...args);
@@ -122,9 +123,11 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence
   · 이 기능은 어떻게 동작하는가 (흐름)            -> get_scenario_context
   · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
+  · 여러 anchor의 관계를 한 번에 조회하려면          -> get_impact_context_batch
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
   · 아키텍처/워크플로우/시퀀스 한 벌을 제출하려면    -> submit_analysis_bundle (assembly turn 전용)
+  · Bundle 검증 오류의 일부 경로만 고치려면         -> patch_analysis_bundle (draftId 필요)
 
 중요한 규칙:
 
@@ -159,6 +162,33 @@ server.registerTool(
     },
   },
   async ({ detail }) => reply(await callBridge(`/internal/memory${query({ detail })}`)),
+);
+
+server.registerTool(
+  "patch_analysis_bundle",
+  {
+    title: "AnalysisBundle draft 부분 보정",
+    description:
+      "submit_analysis_bundle이 retryable=true와 draftId를 돌려준 뒤에만 쓴다. 전체 Bundle을 " +
+      "다시 출력하지 말고 diagnostics.subject.path가 가리키는 실패 경로만 RFC 6902 형태로 " +
+      "add/remove/replace한다. 허용 root는 /architecture, /workflow, /userMap, /sequences뿐이다. " +
+      "최대 검증 횟수는 최초 제출을 포함해 3회이며 retryable=false 뒤에는 다시 호출하지 마라.",
+    inputSchema: {
+      draftId: z.string().min(1),
+      operations: z.array(z.object({
+        op: z.enum(["add", "remove", "replace"]),
+        path: z.string().startsWith("/"),
+        value: z.unknown().optional(),
+      }).strict()).min(1),
+    },
+  },
+  async ({ draftId, operations }) =>
+    reply(
+      await callBridge("/internal/patch-analysis-bundle", {
+        method: "POST",
+        body: JSON.stringify({ draftId, operations }),
+      }),
+    ),
 );
 
 server.registerTool(
@@ -402,6 +432,8 @@ server.registerTool(
  * schema3 §5.2 Stage 3~4 — assembly turn 전용. `ir`의 shape을 zod로 다시 베끼지 않는 것은
  * `submit_view_ir`와 같은 이유다(Core의 ajv schema가 유일한 출처, A6).
  */
+const analysisBundleInputSchema = jsonSchemaToZod(ANALYSIS_BUNDLE_SCHEMA);
+
 server.registerTool(
   "submit_analysis_bundle",
   {
@@ -429,19 +461,16 @@ server.registerTool(
       "그 연결을 뒷받침하는 골격 link의 evidence id여야 한다 — 지어낸 연결은 거절된다(I20). " +
       "edge.sequenceRef와 그 SequenceIR.triggeredByEdgeId는 서로 일치해야 한다(1엣지-1시퀀스). " +
       "presentationType은 표시용 분류일 뿐이다 — 확신이 없으면 \"unknown\"을 쓴다.\n\n" +
-      "실패하면 diagnostics로 이유와 supportedFixes가 온다 — 같은 turn에서 고쳐 다시 제출하라.",
-    inputSchema: {
-      architecture: z.record(z.unknown()).describe("ArchitectureIR"),
-      workflow: z.record(z.unknown()).describe("WorkflowIR"),
-      userMap: z.record(z.unknown()).optional().describe("UserMapIR"),
-      sequences: z.array(z.record(z.unknown())).describe("SequenceIR[]"),
-    },
+      "자주 틀리는 정확한 계약:\n" + analysisContractDigest() + "\n\n" +
+      "실패하면 diagnostics로 이유와 supportedFixes가 온다. retryable=false면 자동 보정 한도를 " +
+      "사용한 것이므로 더 제출하지 마라.",
+    inputSchema: analysisBundleInputSchema,
   },
-  async ({ architecture, workflow, userMap, sequences }) =>
+  async (bundle) =>
     reply(
       await callBridge("/internal/submit-analysis-bundle", {
         method: "POST",
-        body: JSON.stringify({ architecture, workflow, ...(userMap ? { userMap } : {}), sequences }),
+        body: JSON.stringify(bundle),
       }),
     ),
 );
@@ -472,6 +501,27 @@ server.registerTool(
   },
   async ({ anchor, direction, hops }) =>
     reply(await callBridge(`/internal/impact-context${query({ anchor, direction, hops })}`)),
+);
+
+server.registerTool(
+  "get_impact_context_batch",
+  {
+    title: "Authored Reachability 일괄 조회",
+    description:
+      "둘 이상의 중요한 Concept/Scenario anchor를 같은 direction·hops로 확인할 때 쓴다. " +
+      "anchor마다 get_impact_context를 반복 호출하지 말고 최대 12개를 한 요청으로 묶는다. " +
+      "결과는 anchor별로 분리되며 이것도 실행 시 impact가 아니라 인덱싱된 authored reachability다.",
+    inputSchema: {
+      anchors: z.array(z.string().min(1)).min(1).max(12),
+      direction: z.enum(["upstream", "downstream"]),
+      hops: z.number().int().min(1).max(6).optional(),
+    },
+  },
+  async ({ anchors, direction, hops }) =>
+    reply(await callBridge("/internal/impact-context-batch", {
+      method: "POST",
+      body: JSON.stringify({ anchors, direction, hops }),
+    })),
 );
 
 const transport = new StdioServerTransport();

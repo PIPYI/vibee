@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { SemanticStore } from "@onto/core";
+import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 import { checkCoverage } from "./coverage.mjs";
 import { writeFixtureTo } from "./create-fixture.mjs";
@@ -84,7 +85,12 @@ async function runArm(baseUrl, agent, projectPath, mode) {
   const started = await fetchJson(`${baseUrl}/api/analyze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agent, projectPath, ...(mode ? { mode } : {}) }),
+    body: JSON.stringify({
+      agent,
+      projectPath,
+      clientRuntime: { protocolVersion: ONTO_PROTOCOL_VERSION, buildId: ONTO_BUILD_ID },
+      ...(mode ? { mode } : {}),
+    }),
   });
   if (!started.ok) throw new Error(`analyze 시작 실패(${mode ?? "agent-first"}): ${JSON.stringify(started.body)}`);
   const taskId = started.body.taskId;

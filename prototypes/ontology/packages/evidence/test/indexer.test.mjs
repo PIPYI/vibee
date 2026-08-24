@@ -95,6 +95,22 @@ test("acceptance 1 — 인덱싱이 evidence를 만들고 analysisVersion 을 �
   assert.deepEqual(ids, [...ids].sort());
 });
 
+test("V3.2 — README가 없는 Python 백엔드의 symbol·route·직접 call을 Core가 인덱싱한다", () => {
+  const root = scratch({
+    "backend/main.py": `from fastapi import FastAPI\n\napp = FastAPI()\n\ndef load_rules():\n    return []\n\n@app.get("/rules")\ndef list_rules():\n    return load_rules()\n`,
+  });
+  const index = indexProject(root, { analysisVersion: 1 });
+  const symbols = index.evidence.filter((item) => item.kind === "symbol").map((item) => item.symbolId);
+  const routes = index.evidence.filter((item) => item.kind === "route").map((item) => item.graph?.role === "entity" ? item.graph.entity : null);
+  const calls = index.evidence.filter((item) => item.kind === "call");
+
+  assert.deepEqual(symbols.sort(), ["backend/main.py#list_rules", "backend/main.py#load_rules"]);
+  assert.ok(routes.some((entity) => entity?.kind === "route" && entity.routeKey === "GET /rules"));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].graph.from.symbolId, "backend/main.py#list_rules");
+  assert.equal(calls[0].graph.to.symbolId, "backend/main.py#load_rules");
+});
+
 test("같은 입력을 두 번 인덱싱하면 결과가 동일하다", () => {
   const root = scratch({ "src/follow.js": FOLLOW, "src/service.js": CALLER });
   const first = indexProject(root, { analysisVersion: 1 });

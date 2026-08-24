@@ -32,6 +32,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { SemanticStore } from "@onto/core";
+import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 import { checkCoverage } from "./coverage.mjs";
 import { computeEvidenceOriginStats, computeStabilityMetrics } from "./stability.mjs";
@@ -281,7 +282,11 @@ async function analyzeTurn(baseUrl, agent, label) {
   const started = await fetchJson(`${baseUrl}/api/analyze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agent, projectPath: FIXTURE_DIR }),
+    body: JSON.stringify({
+      agent,
+      projectPath: FIXTURE_DIR,
+      clientRuntime: { protocolVersion: ONTO_PROTOCOL_VERSION, buildId: ONTO_BUILD_ID },
+    }),
   });
   if (!started.ok) {
     throw new Error(`${label} 시작 실패: ${JSON.stringify(started.body)}`);

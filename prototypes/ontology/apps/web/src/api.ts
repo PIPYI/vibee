@@ -18,6 +18,7 @@ import type {
   ViewAnchor,
   ViewKind,
 } from "@onto/protocol";
+import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 export type Unavailable = { error: "memory_unavailable"; reason: string; next_step: string };
 
@@ -55,6 +56,7 @@ export function selectProject(projectPath: string): Promise<{ projectPath: strin
 export type IndexResponse = {
   analysisVersion: number;
   semanticVersion: number;
+  readmePresent: boolean;
   workSetSize: { dirtyEvidence: number; affectedConcepts: number; affectedClaims: number; ungroundedAppearedEvidence: number };
 };
 /** 결정론적 재인덱싱만. agent turn 없이 Trace를 바로 보여줄 때 쓴다(§6.6). */
@@ -68,7 +70,12 @@ export function analyze(
   projectPath: string,
   extra: { model?: string; effort?: string } = {},
 ): Promise<AnalyzeResponse | { error: string }> {
-  return postJson("/api/analyze", { agent, projectPath, ...extra });
+  return postJson("/api/analyze", {
+    agent,
+    projectPath,
+    clientRuntime: { protocolVersion: ONTO_PROTOCOL_VERSION, buildId: ONTO_BUILD_ID },
+    ...extra,
+  });
 }
 
 export function stopTask(taskId: string): Promise<{ ok: true } | { error: string }> {

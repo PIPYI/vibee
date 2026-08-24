@@ -693,3 +693,15 @@ export const ANALYSIS_BUNDLE_SCHEMA = {
     freshness: { enum: ["current", "needs_review"] },
   },
 } as const;
+
+/** 전체 schema 대신 모델이 자주 틀리는 제약을 source schema에서 뽑아 한 번만 전달한다. */
+export function analysisContractDigest(): string {
+  const values = (items: readonly string[]): string => items.map((value) => `\`${value}\``).join(" | ");
+  return [
+    `architecture.connections[].role: ${values(architectureConnection.properties.role.enum)}`,
+    `workflow.lanes[].kind: ${values(workflowLane.properties.kind.enum)}`,
+    `workflow.edges[].role: ${values(workflowEdge.properties.role.enum)}`,
+    `userMap.journeys[].transitions[] 허용 필드: ${Object.keys(scenarioTransition.properties).join(", ")} (id·label 금지)`,
+    "workflow.mainPath의 모든 인접 node 쌍에는 실제 workflow.edges 항목이 필요함",
+  ].join("\n");
+}

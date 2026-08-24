@@ -8,7 +8,7 @@
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
 import type { EvidenceGraph } from "@onto/core";
-import type { EvidenceIndex, SemanticWorkSet, ViewRequest } from "@onto/protocol";
+import { analysisContractDigest, type EvidenceIndex, type SemanticWorkSet, type ViewRequest } from "@onto/protocol";
 
 const EVIDENCE_RULES = [
   "규칙:",
@@ -293,7 +293,9 @@ const ASSEMBLY_RULES = [
   "   쓰고 goal·entryStepId·outcomeStepIds·branch/loop를 보존한다. 모든 step은 근거가 있어야 한다.",
   "10. workflow.mainPath의 모든 인접 node 쌍에는 실제 workflow.edges 항목이 정확히 하나 이상",
   "   있어야 한다. mainPath를 제출하기 전에 인접 쌍을 순서대로 대조한다.",
-  "11. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
+  "11. 최초 submit_analysis_bundle이 실패하면 응답의 draftId와 diagnostics를 사용해",
+  "   patch_analysis_bundle로 실패 경로만 고쳐라. 전체 Bundle을 다시 출력하지 마라.",
+  "   retryable=false면 자동 보정 한도를 쓴 것이므로 더 제출하지 마라.",
 ].join("\n");
 
 /**
@@ -319,10 +321,13 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     topologySummary,
     "```",
     "",
+    "## 제출 계약 핵심",
+    analysisContractDigest(),
+    "",
     "순서:",
     "1. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다.",
-    "2. 각 CanonicalScenario 또는 중요한 Concept 의 anchor 에 대해 get_impact_context 나",
-    "   get_scenario_context 를 불러 그 골격 서브그래프를 확인한다.",
+    "2. CanonicalScenario와 중요한 Concept anchor가 둘 이상이면 get_impact_context_batch로",
+    "   한 번에 조회한다. 하나만 더 확인할 때만 get_impact_context/get_scenario_context를 쓴다.",
     "3. architecture.components 를 만든다. 각 component 는 entityRefs 로 실제 골격 entity를",
     "   하나 이상 가리켜야 하고, evidenceRefs 는 그 entity 들의 근거를 합친 것이다.",
     "   description 을 쓰려면 evidenceRefs 가 반드시 있어야 한다(I9).",

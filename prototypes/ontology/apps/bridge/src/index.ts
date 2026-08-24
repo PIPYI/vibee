@@ -11,7 +11,7 @@
  * **이 파일은 OS 를 알지 않는다** — 실행 파일 해석과 프로세스 정리는 `./platform.js` 에만 있다.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,6 +44,9 @@ import type {
   AgentEvent,
   AgentId,
   AgentReadiness,
+  AnalysisPipelineStage,
+  AnalysisStage,
+  AnalysisStageState,
   AnalyzeRequest,
   CachedView,
   EvidenceProposal,
@@ -56,7 +59,11 @@ import type {
   ViewKind,
   ViewRequest,
 } from "@onto/protocol";
-import { BRIDGE_TOKEN_HEADER } from "@onto/protocol";
+import {
+  BRIDGE_TOKEN_HEADER,
+  ONTO_BUILD_ID,
+  ONTO_PROTOCOL_VERSION,
+} from "@onto/protocol";
 import { loadBridgeConfig, protoRootFromModule } from "@onto/protocol/bridge-config";
 import express, { type Request, type Response } from "express";
 import { WebSocketServer } from "ws";
@@ -64,6 +71,7 @@ import { WebSocketServer } from "ws";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter, TaskOutcome } from "./agents/types.js";
+import { applyBundlePatch, type BundlePatchOperation } from "./bundle-patch.js";
 import {
   conceptContext,
   impactContext,
@@ -90,6 +98,17 @@ import { hashViewRequest, viewCacheKeyString, VIEW_PLANNER_VERSION } from "./vie
 const protoRoot = protoRootFromModule(import.meta.url);
 const config = loadBridgeConfig(protoRoot);
 const mcpServerPath = join(protoRoot, "packages", "mcp-server", "dist", "index.js");
+const serverStartedAt = new Date().toISOString();
+const RUNTIME_CAPABILITIES = [
+  "analysis-stage-ledger",
+  "stage-session-identity",
+  "stage-usage-v2",
+  "validation-retry-events",
+  "analysis-bundle-schema-contract",
+  "bundle-draft-patch",
+  "impact-context-batch",
+  "python-evidence-v1",
+] as const;
 
 const state = new BridgeState();
 const adapters = new Map<AgentId, AgentAdapter>([
@@ -121,6 +140,14 @@ function canonicalizeProjectPath(input: string): string {
   return realpathSync(resolved);
 }
 
+function hasProjectReadme(projectPath: string): boolean {
+  try {
+    return readdirSync(projectPath).some((name) => /^readme(?:\.[^.]+)?$/iu.test(name));
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 브라우저용 API
 // ---------------------------------------------------------------------------
@@ -134,6 +161,12 @@ app.get("/api/health", async (_req: Request, res: Response) => {
     ok: true,
     agents: readiness,
     projectPath: state.getProjectPath(),
+    runtime: {
+      protocolVersion: ONTO_PROTOCOL_VERSION,
+      buildId: ONTO_BUILD_ID,
+      serverStartedAt,
+      capabilities: [...RUNTIME_CAPABILITIES],
+    },
   };
   res.json(payload);
 });
@@ -278,6 +311,7 @@ app.post("/api/index", async (req: Request, res: Response) => {
     res.json({
       analysisVersion: nextVersion,
       semanticVersion: after.project.semanticVersion,
+      readmePresent: hasProjectReadme(projectPath),
       workSetSize: {
         dirtyEvidence: work.dirtyEvidence.length,
         affectedConcepts: work.affectedConceptIds.length,
@@ -292,6 +326,19 @@ app.post("/api/index", async (req: Request, res: Response) => {
 
 app.post("/api/analyze", async (req: Request, res: Response) => {
   const body = req.body as AnalyzeRequest;
+  if (
+    !body.clientRuntime ||
+    body.clientRuntime.protocolVersion !== ONTO_PROTOCOL_VERSION ||
+    body.clientRuntime.buildId !== ONTO_BUILD_ID
+  ) {
+    res.status(409).json({
+      error: "Web과 분석 엔진의 실행 버전이 다릅니다. Bridge를 다시 시작한 뒤 재시도하세요.",
+      code: "runtime/incompatible-client",
+      expected: { protocolVersion: ONTO_PROTOCOL_VERSION, buildId: ONTO_BUILD_ID },
+      received: body.clientRuntime ?? null,
+    });
+    return;
+  }
   const adapter = adapters.get(body?.agent);
   if (!adapter) {
     res.status(400).json({ error: `지원하지 않는 agent: ${String(body?.agent)}` });
@@ -318,26 +365,49 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
 
   state.setProjectPath(projectPath);
   const taskId = randomUUID();
+  const startedAt = new Date().toISOString();
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    mode: "analyze",
+    prompt: "",
+    status: "starting",
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.effort ? { effort: body.effort } : {}),
+    startedAt,
+    mcpCalls: [],
+    exploredFiles: [],
+    stageStates: [
+      { stage: "indexing", status: "running", startedAt, lastActivityAt: startedAt, message: "프로젝트 근거를 인덱싱하는 중" },
+      { stage: "semantic", status: "pending", message: "인덱싱 뒤 시작" },
+      { stage: "retrieval", status: "pending", message: "의미 이해 뒤 시작" },
+      { stage: "assembly", status: "pending", message: "근거 준비 뒤 시작" },
+      { stage: "validation", status: "pending", message: "지도 초안 제출 뒤 시작" },
+      { stage: "commit", status: "pending", message: "검증 통과 뒤 시작" },
+    ],
+  });
+  state.emit({
+    type: "analysis.stage.updated",
+    taskId,
+    state: state.getTask(taskId)!.stageStates![0]!,
+  });
+  const stopIndexHeartbeat = startStageHeartbeat(taskId, "indexing");
 
   try {
     const prepared = await reindex(projectPath, taskId, body.gitBase, body.mode);
-    state.createTask({
-      taskId,
-      agent: adapter.id,
-      projectPath,
-      mode: "analyze",
-      prompt: prepared.prompt,
-      status: "starting",
-      ...(body.model ? { model: body.model } : {}),
-      ...(body.effort ? { effort: body.effort } : {}),
-      startedAt: new Date().toISOString(),
-      mcpCalls: [],
-      exploredFiles: [],
-    });
+    stopIndexHeartbeat();
+    state.updateTask(taskId, { prompt: prepared.prompt });
+    recordStage(taskId, "indexing", "completed", "프로젝트 근거 인덱싱 완료");
     res.json({ taskId, ...prepared.summary });
     void runAnalyzePipeline(adapter, taskId, projectPath, prepared.prompt, body);
   } catch (error) {
-    res.status(500).json({ error: asMessage(error) });
+    stopIndexHeartbeat();
+    const message = asMessage(error);
+    recordStage(taskId, "indexing", "failed", message);
+    state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
+    state.disposeAnalyzeSession(taskId, "indexing failed");
+    res.status(500).json({ error: message });
   }
 });
 
@@ -463,6 +533,7 @@ async function reindex(
     summary: {
       analysisVersion: nextVersion,
       semanticVersion: after.project.semanticVersion,
+      readmePresent: hasProjectReadme(projectPath),
       workSetSize: {
         dirtyEvidence: work.dirtyEvidence.length,
         affectedConcepts: work.affectedConceptIds.length,
@@ -473,12 +544,62 @@ async function reindex(
   };
 }
 
+function usageStageForMode(mode: TaskMode): AnalysisStage {
+  return mode === "analyze" ? "semantic" : mode;
+}
+
+function recordStage(
+  taskId: string,
+  stage: AnalysisPipelineStage,
+  status: AnalysisStageState["status"],
+  message: string,
+  extra: Partial<AnalysisStageState> = {},
+): AnalysisStageState | undefined {
+  const now = new Date().toISOString();
+  const previous = state.getTask(taskId)?.stageStates?.find((item) => item.stage === stage);
+  const next = state.recordStageState(taskId, {
+    stage,
+    status,
+    ...(!previous?.startedAt && status !== "pending" ? { startedAt: now } : {}),
+    ...(status === "completed" || status === "failed" ? { endedAt: now } : {}),
+    ...(status === "running" || status === "correcting" ? { lastActivityAt: now } : {}),
+    message,
+    ...extra,
+  });
+  if (next) state.emit({ type: "analysis.stage.updated", taskId, state: next });
+  return next;
+}
+
+/** provider가 침묵하는 긴 생성 구간에도 "멈춤"과 "작업 중"을 구별할 근거를 보낸다. */
+function startStageHeartbeat(taskId: string, stage: AnalysisPipelineStage): () => void {
+  const timer = setInterval(() => {
+    const current = state.getTask(taskId)?.stageStates?.find((item) => item.stage === stage);
+    if (!current?.startedAt || (current.status !== "running" && current.status !== "correcting")) return;
+    const now = Date.now();
+    const startedAt = Date.parse(current.startedAt);
+    const lastActivityAt = Date.parse(current.lastActivityAt ?? current.startedAt);
+    state.emit({
+      type: "analysis.heartbeat",
+      taskId,
+      stage,
+      elapsedSeconds: Math.max(0, Math.floor((now - startedAt) / 1000)),
+      idleSeconds: Math.max(0, Math.floor((now - lastActivityAt) / 1000)),
+    });
+  }, 15_000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 /**
  * `AgentEvent`를 그대로 브로드캐스트하기 전에 task별 파생 상태(MCP 호출·탐색 파일·토큰
  * 사용량)를 갱신한다. `runTask`와 `runAnalyzePipeline`이 공유한다.
  */
 function makeEmit(taskId: string): (event: AgentEvent) => void {
   return (event: AgentEvent): void => {
+    const task = state.getTask(taskId);
+    if (event.type === "agent.session" && task) {
+      state.recordStageSession(taskId, usageStageForMode(task.mode), event.sessionId, event.resumed);
+    }
     if (event.type === "mcp.tool.called") {
       state.recordMcpCall(taskId, event.tool, event.source);
     }
@@ -488,6 +609,13 @@ function makeEmit(taskId: string): (event: AgentEvent) => void {
     if (event.type === "agent.usage") {
       const { type: _type, taskId: _eventTaskId, ...usage } = event;
       state.recordStageUsage(taskId, usage);
+    }
+    if (
+      event.type === "agent.action.started" ||
+      event.type === "agent.action.completed" ||
+      event.type === "agent.message.delta"
+    ) {
+      state.touchStage(taskId);
     }
     state.emit(event);
   };
@@ -570,6 +698,8 @@ async function runAnalyzePipeline(
 
   state.updateTask(taskId, { status: "running" });
   state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode: "analyze" });
+  recordStage(taskId, "semantic", "running", "코드 근거를 프로젝트 의미로 정리하는 중");
+  const stopSemanticHeartbeat = startStageHeartbeat(taskId, "semantic");
 
   let stage2Outcome: TaskOutcome;
   try {
@@ -581,19 +711,24 @@ async function runAnalyzePipeline(
       emit,
     );
   } catch (error) {
+    stopSemanticHeartbeat();
     const message = asMessage(error);
+    recordStage(taskId, "semantic", "failed", message);
     state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
     state.emit({ type: "task.error", taskId, message });
     state.disposeAnalyzeSession(taskId, "stage2(analyze) failed");
     return;
   }
+  stopSemanticHeartbeat();
 
   if (stage2Outcome === "interrupted") {
+    recordStage(taskId, "semantic", "failed", "사용자가 의미 이해를 중단했습니다.");
     state.updateTask(taskId, { status: "interrupted", endedAt: new Date().toISOString() });
     state.emit({ type: "task.interrupted", taskId });
     state.disposeAnalyzeSession(taskId, "stage2(analyze) interrupted");
     return;
   }
+  recordStage(taskId, "semantic", "completed", "프로젝트 의미와 시나리오 정리 완료");
 
   // Stage 2가 끝났다 — submit_semantic_patch의 transaction은 더 필요 없다.
   state.disposeAnalyzeSession(taskId, "stage2(analyze) completed, entering stage3(assembly)");
@@ -612,6 +747,8 @@ async function runAnalyzePipeline(
     message: "아키텍처 · 워크플로우 · 시퀀스를 조립하는 중",
   });
 
+  recordStage(taskId, "retrieval", "running", "최신 의미 메모리와 저장소 경계를 준비하는 중");
+
   // Stage 2가 방금 커밋한 semantic memory를 반영한 최신 상태에서 골격을 다시 만든다.
   const head = new SemanticStore(projectPath).load();
   const skeleton = buildEvidenceGraph(head.evidence);
@@ -621,8 +758,11 @@ async function runAnalyzePipeline(
     buildSkeletonSummary(skeleton),
     describeRepositoryTopology(topology),
   );
+  recordStage(taskId, "retrieval", "completed", "지도 조립에 필요한 Core 근거 준비 완료");
 
   state.updateTask(taskId, { mode: "assembly", prompt: stage3Prompt });
+  recordStage(taskId, "assembly", "running", "근거를 아키텍처·사용자 여정·시퀀스로 조립하는 중");
+  const stopAssemblyHeartbeat = startStageHeartbeat(taskId, "assembly");
 
   let stage3Outcome: TaskOutcome;
   try {
@@ -634,14 +774,19 @@ async function runAnalyzePipeline(
       emit,
     );
   } catch (error) {
+    stopAssemblyHeartbeat();
     const message = asMessage(error);
+    recordStage(taskId, "assembly", "failed", message);
     state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
     state.emit({ type: "task.error", taskId, message });
     return;
   }
+  stopAssemblyHeartbeat();
 
   if (stage3Outcome === "completed" && state.getTask(taskId)?.bundleGeneration === undefined) {
     const message = "지도 조립 turn이 끝났지만 유효한 AnalysisBundle이 커밋되지 않았습니다.";
+    const assemblyState = state.getTask(taskId)?.stageStates?.find((item) => item.stage === "assembly");
+    if (assemblyState?.status !== "completed") recordStage(taskId, "assembly", "failed", message);
     state.updateTask(taskId, { status: "error", error: message, endedAt: new Date().toISOString() });
     state.emit({ type: "task.error", taskId, message });
     return;
@@ -1063,6 +1208,19 @@ app.get("/internal/scenario-context", requireToken, (req: Request, res: Response
 });
 
 /** `get_impact_context` (schema2 §6) — M12에서 활성화되었다. Reachability의 bounded 조회 판. */
+function cachedImpactContext(
+  loaded: LoadedState,
+  taskId: string | null,
+  input: { anchor: string; direction: "upstream" | "downstream"; hops?: number },
+): unknown {
+  const key = JSON.stringify(input);
+  const cached = taskId ? state.getRetrievalCache(taskId, key) : undefined;
+  if (cached !== undefined) return cached;
+  const result = impactContext(loaded, input);
+  if (taskId) state.setRetrievalCache(taskId, key, result);
+  return result;
+}
+
 app.get("/internal/impact-context", requireToken, (req: Request, res: Response) => {
   recordArrival("get_impact_context");
   const loaded = loadState(state.getProjectPath());
@@ -1071,13 +1229,31 @@ app.get("/internal/impact-context", requireToken, (req: Request, res: Response) 
     return;
   }
   const direction = req.query["direction"] === "upstream" ? "upstream" : "downstream";
-  res.json(
-    impactContext(loaded, {
-      anchor: String(req.query["anchor"] ?? ""),
-      direction,
-      ...(req.query["hops"] ? { hops: Number(req.query["hops"]) } : {}),
-    }),
-  );
+  res.json(cachedImpactContext(loaded, state.getActiveTaskId(), {
+    anchor: String(req.query["anchor"] ?? ""),
+    direction,
+    ...(req.query["hops"] ? { hops: Number(req.query["hops"]) } : {}),
+  }));
+});
+
+app.post("/internal/impact-context-batch", requireToken, (req: Request, res: Response) => {
+  recordArrival("get_impact_context_batch");
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const body = req.body as { anchors?: string[]; direction?: "upstream" | "downstream"; hops?: number };
+  const direction = body.direction === "upstream" ? "upstream" : "downstream";
+  const anchors = [...new Set(body.anchors ?? [])].slice(0, 12);
+  const taskId = state.getActiveTaskId();
+  res.json({
+    count: anchors.length,
+    results: anchors.map((anchor) => ({
+      anchor,
+      context: cachedImpactContext(loaded, taskId, { anchor, direction, ...(body.hops ? { hops: body.hops } : {}) }),
+    })),
+  });
 });
 
 /**
@@ -1257,45 +1433,155 @@ app.post("/internal/submit-view-ir", requireToken, (req: Request, res: Response)
  * 필요 없다 — `task.mode === "assembly"`인 활성 task가 있으면 그것으로 충분하다(§5.2, Stage 3는
  * `propose_evidence`/`submit_semantic_patch`를 쓰지 않으므로 transaction도 필요 없다).
  */
-app.post("/internal/submit-analysis-bundle", requireToken, async (req: Request, res: Response) => {
-  recordArrival("submit_analysis_bundle");
+const MAX_BUNDLE_VALIDATION_ATTEMPTS = 3;
+
+function activeAssembly(): { projectPath: string; taskId: string } | undefined {
   const projectPath = state.getProjectPath();
   const taskId = state.getActiveTaskId();
   const task = taskId ? state.getTask(taskId) : undefined;
-  if (!projectPath || !taskId || !task || task.mode !== "assembly") {
-    res.json({
-      error: "no_active_transaction",
-      next_step: "assembly turn 이 진행 중일 때만 submit_analysis_bundle 를 쓸 수 있습니다.",
-    });
-    return;
+  return projectPath && taskId && task?.mode === "assembly" ? { projectPath, taskId } : undefined;
+}
+
+function compactDiagnosticGroups(diagnostics: Array<{ code?: string; subject?: Record<string, unknown>; supportedFixes?: string[] }>): Array<{
+  code: string;
+  count: number;
+  samplePaths: string[];
+  supportedFixes: string[];
+}> {
+  const groups = new Map<string, { count: number; paths: Set<string>; fixes: Set<string> }>();
+  for (const diagnostic of diagnostics) {
+    const code = diagnostic.code ?? "validation/error";
+    const group = groups.get(code) ?? { count: 0, paths: new Set<string>(), fixes: new Set<string>() };
+    group.count += 1;
+    const path = diagnostic.subject?.["path"];
+    if (typeof path === "string" && group.paths.size < 5) group.paths.add(path);
+    for (const fix of diagnostic.supportedFixes ?? []) if (group.fixes.size < 3) group.fixes.add(fix);
+    groups.set(code, group);
+  }
+  return [...groups.entries()].map(([code, group]) => ({
+    code,
+    count: group.count,
+    samplePaths: [...group.paths],
+    supportedFixes: [...group.fixes],
+  }));
+}
+
+async function validateBundleCandidate(
+  projectPath: string,
+  taskId: string,
+  bundle: unknown,
+  tool: "submit_analysis_bundle" | "patch_analysis_bundle",
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const maxAttempts = MAX_BUNDLE_VALIDATION_ATTEMPTS;
+  const validationBudget = state.recordValidationAttempt(taskId, maxAttempts);
+  const attempt = validationBudget.attempt;
+  if (!validationBudget.allowed) {
+    const diagnostics = [{
+      code: "validation/retry-budget-exhausted",
+      message: `AnalysisBundle은 최대 ${maxAttempts}회까지만 제출할 수 있습니다.`,
+    }];
+    recordStage(taskId, "validation", "failed", "자동 보정 한도를 모두 사용했습니다.");
+    state.emit({ type: "validation.failed", taskId, tool, diagnostics });
+    return { status: 429, body: { ok: false, retryable: false, diagnostics } };
   }
 
+  recordStage(taskId, "assembly", "completed", "지도 초안 조립 완료");
+  recordStage(taskId, "validation", "running", `지도 계약 검증 중 (${attempt}/${maxAttempts})`);
   const store = new SemanticStore(projectPath);
-  const outcome = await commitAnalysisBundle(store, req.body);
+  const outcome = await commitAnalysisBundle(store, bundle);
 
   if (!outcome.ok) {
-    const attempt = state.recordValidationRetry(taskId);
+    const existingDraft = state.getBundleDraft(taskId);
+    const draftId = existingDraft?.draftId ?? randomUUID();
+    state.setBundleDraft(taskId, draftId, structuredClone(bundle));
+    state.recordValidationRetry(taskId);
+    const diagnosticGroups = compactDiagnosticGroups(outcome.diagnostics);
+    if (attempt >= maxAttempts) {
+      recordStage(taskId, "validation", "failed", "자동 보정 한도 안에 지도 계약을 만족하지 못했습니다.");
+      state.emit({
+        type: "validation.failed",
+        taskId,
+        tool,
+        diagnostics: outcome.diagnostics,
+      });
+      return {
+        status: 200,
+        body: { ok: false, retryable: false, draftId, diagnosticGroups, diagnostics: outcome.diagnostics.slice(0, 24) },
+      };
+    }
+    recordStage(taskId, "validation", "correcting", `검증 오류를 자동 보정하는 중 (${attempt}/${maxAttempts})`);
     state.emit({
       type: "validation.retrying",
       taskId,
-      tool: "submit_analysis_bundle",
+      tool,
       attempt,
-      maxAttempts: 3,
+      maxAttempts,
       diagnostics: outcome.diagnostics,
     });
-    res.json({ ok: false, diagnostics: outcome.diagnostics });
-    return;
+    return {
+      status: 200,
+      body: {
+        ok: false,
+        retryable: true,
+        draftId,
+        next_step: "patch_analysis_bundle로 실패 경로만 고쳐 다시 검증하세요. 전체 Bundle을 다시 보내지 마세요.",
+        diagnosticGroups,
+        totalDiagnostics: outcome.diagnostics.length,
+        diagnostics: outcome.diagnostics.slice(0, 24),
+      },
+    };
   }
 
+  recordStage(taskId, "validation", "completed", `지도 계약 검증 통과 (${attempt}/${maxAttempts})`);
+  recordStage(taskId, "commit", "running", "검증된 지도를 generation에 커밋하는 중");
   state.recordBundleCommit(taskId, outcome.value.generation);
-  const correctedAttempts = state.getTask(taskId)?.validationCorrections;
+  state.clearBundleDraft(taskId);
+  recordStage(taskId, "commit", "completed", `generation ${outcome.value.generation} 커밋 완료`);
+  const correctedAttempts = Math.max(0, attempt - 1);
   state.emit({
     type: "bundle.ready",
     taskId,
     generation: outcome.value.generation,
-    ...(correctedAttempts !== undefined ? { correctedAttempts } : {}),
+    ...(correctedAttempts > 0 ? { correctedAttempts } : {}),
   });
-  res.json({ ok: true, ...outcome.value, diagnostics: outcome.diagnostics });
+  return { status: 200, body: { ok: true, ...outcome.value, diagnostics: outcome.diagnostics } };
+}
+
+app.post("/internal/submit-analysis-bundle", requireToken, async (req: Request, res: Response) => {
+  recordArrival("submit_analysis_bundle");
+  const active = activeAssembly();
+  if (!active) {
+    res.json({ error: "no_active_transaction", next_step: "assembly turn 중에만 Bundle을 제출할 수 있습니다." });
+    return;
+  }
+  const result = await validateBundleCandidate(active.projectPath, active.taskId, req.body, "submit_analysis_bundle");
+  res.status(result.status).json(result.body);
+});
+
+app.post("/internal/patch-analysis-bundle", requireToken, async (req: Request, res: Response) => {
+  recordArrival("patch_analysis_bundle");
+  const active = activeAssembly();
+  if (!active) {
+    res.json({ error: "no_active_transaction", next_step: "assembly turn 중에만 Bundle draft를 보정할 수 있습니다." });
+    return;
+  }
+  const body = req.body as { draftId?: string; operations?: BundlePatchOperation[] };
+  const draft = state.getBundleDraft(active.taskId);
+  if (!draft || body.draftId !== draft.draftId) {
+    res.status(409).json({ error: "bundle_draft_not_found", next_step: "최근 submit_analysis_bundle 응답의 draftId를 쓰세요." });
+    return;
+  }
+  if (!body.operations?.length) {
+    res.status(400).json({ error: "invalid_bundle_patch", detail: "operations가 하나 이상 필요합니다." });
+    return;
+  }
+  try {
+    const candidate = applyBundlePatch(draft.bundle, body.operations);
+    const result = await validateBundleCandidate(active.projectPath, active.taskId, candidate, "patch_analysis_bundle");
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    res.status(400).json({ error: "invalid_bundle_patch", detail: asMessage(error) });
+  }
 });
 
 /** 시험과 진단용 — 이 task 에서 두 증거원이 모두 관측된 tool 들 (B4). */

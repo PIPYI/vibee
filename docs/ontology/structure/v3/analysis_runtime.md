@@ -1,9 +1,11 @@
 # 분석 런타임 V3 — 검증, 세션, 토큰, 증분 Assembly
 
-> 구현 메모(2026-08-24): §3의 `validation.retrying`, §4의 분석 Stage 세션 분리,
+> V3.1 구현 메모(2026-08-24): §3의 `validation.retrying`, §4의 분석 Stage 세션 분리,
 > §5의 Stage별 사용량 누적, `workflow.mainPath` prompt preflight를 1차 구현했다. §6 batch
 > retrieval과 §7 증분 Bundle patch는 아직 설계 상태다. 세부 파일과 검증 결과는
-> [README 구현 현황](./README.md#구현-현황--2026-08-24-1차-슬라이스)을 따른다.
+> [README V3.1 기준선](./README.md#v31-구현-기준선--2026-08-24)을 따른다. 다음 구현은
+> [V3.2 계획](./v3.2_plan.md)에서 runtime handshake, schema contract, bounded patch correction,
+> 진행 UX와 Python Evidence까지 구체화한다.
 
 ## 1. 문제 정의
 

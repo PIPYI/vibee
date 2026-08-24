@@ -15,13 +15,16 @@ import { useCallback, useEffect, useState } from "react";
 import type {
   AgentId,
   AnalysisBundle,
+  AnalysisPipelineStage,
+  AnalysisStageState,
   ArchitectureComponent,
   SequenceIR,
   StageUsage,
 } from "@onto/protocol";
+import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 import * as api from "./api.js";
-import { DiagnosticsDrawer, PhaseStepper, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
+import { DiagnosticsDrawer, PhaseStepper, StageLedger, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
 import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
 import { SequenceView } from "./components/SequenceView.js";
 import { UnifiedMapView } from "./components/UnifiedMapView.js";
@@ -37,6 +40,13 @@ function short(id: string): string {
 function compactTokens(value: number | undefined): string {
   if (value === undefined) return "집계 대기";
   return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value);
+}
+
+function phaseFromStages(states: AnalysisStageState[]): PipelinePhase {
+  if (states.some((state) => state.stage === "commit" && state.status === "completed")) return "done";
+  if (states.some((state) => ["retrieval", "assembly", "validation", "commit"].includes(state.stage) && state.status !== "pending")) return "assembly";
+  if (states.some((state) => state.stage === "semantic" && state.status !== "pending")) return "semantic-memory";
+  return "indexing";
 }
 
 const STAGE_USAGE_LABEL: Record<StageUsage["stage"], string> = {
@@ -63,6 +73,9 @@ export function App(): React.JSX.Element {
   const [pipelineFailed, setPipelineFailed] = useState(false);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [stageStates, setStageStates] = useState<AnalysisStageState[]>([]);
+  const [heartbeat, setHeartbeat] = useState<{ stage: AnalysisPipelineStage; elapsedSeconds: number; idleSeconds: number } | null>(null);
 
   const [bundle, setBundle] = useState<AnalysisBundle | null>(null);
   const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
@@ -70,11 +83,31 @@ export function App(): React.JSX.Element {
   const [stageUsages, setStageUsages] = useState<StageUsage[]>([]);
 
   useEffect(() => {
-    void api.health().then((h) => setAgents(h.agents));
+    void api.health().then((h) => {
+      setAgents(h.agents);
+      if (!h.runtime) {
+        setRuntimeError("분석 엔진이 V3.2 이전 버전으로 실행 중입니다. Bridge를 다시 시작해 주세요.");
+      } else if (h.runtime.protocolVersion !== ONTO_PROTOCOL_VERSION || h.runtime.buildId !== ONTO_BUILD_ID) {
+        setRuntimeError(
+          `Web과 분석 엔진의 실행 버전이 다릅니다. Web ${ONTO_BUILD_ID} · Bridge ${h.runtime.buildId}. Bridge를 다시 시작해 주세요.`,
+        );
+      } else {
+        setRuntimeError(null);
+      }
+    }).catch(() => setRuntimeError("분석 엔진에 연결할 수 없습니다. Bridge 실행 상태를 확인해 주세요."));
     void api.bridgeState().then((s) => {
       if (s.projectPath) {
         setProjectPath(s.projectPath);
         setProjectPathInput(s.projectPath);
+        const active = s.activeTaskId ? s.tasks.find((task) => task.taskId === s.activeTaskId) : undefined;
+        if (active && (active.status === "starting" || active.status === "running")) {
+          setTaskId(active.taskId);
+          setStageUsages(active.stageUsages ?? []);
+          setStageStates(active.stageStates ?? []);
+          setPipelinePhase(phaseFromStages(active.stageStates ?? []));
+          setScreen("analyzing");
+          return;
+        }
         setScreen("indexing");
         void api.fetchAnalysisBundle(s.projectPath).then((result) => {
           if ("error" in result) {
@@ -112,6 +145,19 @@ export function App(): React.JSX.Element {
       case "analysis.progress":
         if (event.phase === "assembly") setPipelinePhase("assembly");
         push(envelope.seq, event.message);
+        break;
+      case "analysis.stage.updated":
+        setStageStates((previous) => {
+          const index = previous.findIndex((state) => state.stage === event.state.stage);
+          const next = index < 0
+            ? [...previous, event.state]
+            : previous.map((state, stateIndex) => stateIndex === index ? event.state : state);
+          setPipelinePhase(phaseFromStages(next));
+          return next;
+        });
+        break;
+      case "analysis.heartbeat":
+        setHeartbeat({ stage: event.stage, elapsedSeconds: event.elapsedSeconds, idleSeconds: event.idleSeconds });
         break;
       case "agent.action.started":
         if (!event.name.startsWith("mcp__") && !event.name.startsWith("mcp:")) push(envelope.seq, `▶ ${event.name}`);
@@ -209,21 +255,26 @@ export function App(): React.JSX.Element {
   }, [projectPathInput, loadBundle]);
 
   const runAnalyze = useCallback(async () => {
-    if (!projectPath) return;
+    if (!projectPath || runtimeError) return;
     setAnalyzeError(null);
     setPipelineFailed(false);
     setPipelinePhase("indexing");
     setLines([]);
     setStageUsages([]);
+    setStageStates([]);
+    setHeartbeat(null);
     setDiagnosticsOpen(false);
+    setTaskId(null);
+    setScreen("analyzing");
     const result = await api.analyze(agent, projectPath);
     if ("error" in result) {
       setAnalyzeError(result.error);
+      setScreen(bundle ? "analyzed" : "ready");
       return;
     }
     setTaskId(result.taskId);
     setScreen("analyzing");
-  }, [agent, projectPath]);
+  }, [agent, bundle, projectPath, runtimeError]);
 
   const componentById = new Map<string, ArchitectureComponent>((bundle?.architecture.components ?? []).map((c) => [c.id, c]));
 
@@ -283,7 +334,7 @@ export function App(): React.JSX.Element {
           ))}
         </select>
         {(screen === "ready" || screen === "analyzed") && (
-          <button type="button" onClick={() => void runAnalyze()}>
+          <button type="button" onClick={() => void runAnalyze()} disabled={Boolean(runtimeError)}>
             {screen === "analyzed" ? "다시 분석" : "분석 시작"}
           </button>
         )}
@@ -295,6 +346,7 @@ export function App(): React.JSX.Element {
       </div>
 
       {projectError && <p className="error-banner">{projectError}</p>}
+      {runtimeError && <p className="error-banner">{runtimeError}</p>}
 
       <main className="app-main">
         {screen === "no-project" && (
@@ -313,12 +365,17 @@ export function App(): React.JSX.Element {
           <section className="view-pane ready-pane">
             {analyzeError && <p className="error-banner">{analyzeError}</p>}
             {indexStats && (
-              <p className="dim">
-                analysisVersion {indexStats.analysisVersion} · 새 근거 {indexStats.workSetSize.ungroundedAppearedEvidence}개 ·
-                재검토 대상 {indexStats.workSetSize.dirtyEvidence}개
-              </p>
+              <>
+                <p className="dim">
+                  analysisVersion {indexStats.analysisVersion} · 새 근거 {indexStats.workSetSize.ungroundedAppearedEvidence}개 ·
+                  재검토 대상 {indexStats.workSetSize.dirtyEvidence}개
+                </p>
+                {!indexStats.readmePresent && (
+                  <p className="analysis-note">README가 없어도 분석할 수 있습니다. Core가 코드의 파일·심볼·라우트·호출 관계를 먼저 근거로 만듭니다.</p>
+                )}
+              </>
             )}
-            <button type="button" className="primary-button analyze-cta" onClick={() => void runAnalyze()}>
+            <button type="button" className="primary-button analyze-cta" onClick={() => void runAnalyze()} disabled={Boolean(runtimeError)}>
               {analyzeError ? "다시 시도" : "분석 시작"} →
             </button>
           </section>
@@ -327,6 +384,7 @@ export function App(): React.JSX.Element {
         {screen === "analyzing" && (
           <section className="view-pane analyzing-pane">
             <PhaseStepper phase={pipelinePhase} failed={pipelineFailed} />
+            <StageLedger states={stageStates} heartbeat={heartbeat} />
             <div className="analysis-usage" aria-label="분석 토큰 사용량">
               <strong>분석 사용량</strong>
               {(["semantic", "assembly"] as const).map((stage) => {

@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 const PORT = 43924;
 process.env.ONTO_BRIDGE_PORT = String(PORT);
@@ -60,6 +61,17 @@ async function post(path, body) {
 }
 
 // ---------------------------------------------------------------------------
+
+test("V3.2 health handshake가 실행 identity를 공개하고 오래된 Web 요청을 차단한다", async () => {
+  const health = await get("/api/health");
+  assert.equal(health.body.runtime.protocolVersion, ONTO_PROTOCOL_VERSION);
+  assert.equal(health.body.runtime.buildId, ONTO_BUILD_ID);
+  assert.ok(health.body.runtime.serverStartedAt);
+
+  const incompatible = await post("/api/analyze", { agent: "claude", projectPath: "/tmp" });
+  assert.equal(incompatible.status, 409);
+  assert.equal(incompatible.body.code, "runtime/incompatible-client");
+});
 
 test("GET /api/memory — 아직 인덱싱하지 않은 프로젝트는 memory_unavailable을 돌려준다 (C5)", async () => {
   const dir = freshProject();

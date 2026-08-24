@@ -20,6 +20,12 @@ export const TYPESCRIPT: LanguageConfig = {
   testGlobs: [".test.", ".spec.", "__tests__"],
 };
 
+export const PYTHON: LanguageConfig = {
+  name: "python",
+  extensions: [".py"],
+  testGlobs: ["test_", "_test.py", "/tests/"],
+};
+
 /** 걸어 들어가지 않는 디렉터리. `.project-intel`은 우리 산출물이므로 인덱싱하지 않는다. */
 export const SKIP_DIRS = new Set([
   "node_modules",
@@ -37,12 +43,21 @@ export const SKIP_DIRS = new Set([
 
 export function isSourceFile(relPath: string): boolean {
   const lower = relPath.toLowerCase();
+  return [...TYPESCRIPT.extensions, ...PYTHON.extensions].some((extension) => lower.endsWith(extension));
+}
+
+export function isTypeScriptSourceFile(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
   return TYPESCRIPT.extensions.some((extension) => lower.endsWith(extension));
+}
+
+export function isPythonSourceFile(relPath: string): boolean {
+  return relPath.toLowerCase().endsWith(".py");
 }
 
 export function isTestFile(relPath: string): boolean {
   const lower = relPath.toLowerCase();
-  return TYPESCRIPT.testGlobs.some((marker) => lower.includes(marker));
+  return [...TYPESCRIPT.testGlobs, ...PYTHON.testGlobs].some((marker) => lower.includes(marker));
 }
 
 /** POSIX 구분자로 통일한다. evidence id가 플랫폼마다 달라지면 안 된다. */

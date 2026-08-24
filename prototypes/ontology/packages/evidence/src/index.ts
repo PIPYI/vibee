@@ -42,13 +42,17 @@ export {
 } from "./normalize.js";
 export {
   collectSourceFiles,
+  isPythonSourceFile,
   isSourceFile,
   isTestFile,
+  isTypeScriptSourceFile,
   toPosix,
+  PYTHON,
   TYPESCRIPT,
   type LanguageConfig,
 } from "./lang.js";
 export { collectSymbolSites, type SymbolSite } from "./sites.js";
+export { parsePythonSource, type PythonCall, type PythonRoute, type PythonSymbol } from "./python.js";
 export {
   DEGRADED_SIMILARITY_THRESHOLD,
   carryAgentEvidence,

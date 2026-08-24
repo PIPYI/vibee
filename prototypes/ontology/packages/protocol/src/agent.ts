@@ -15,6 +15,26 @@
 export const BRIDGE_HOST = "127.0.0.1";
 export const DEFAULT_BRIDGE_PORT = 43220;
 
+/**
+ * Web과 Bridge가 같은 wire contract를 말하는지 확인하는 V3.2 handshake.
+ *
+ * `buildId`는 제품 버전 표기가 아니라 **실행 호환성 표식**이다. Web dev server는 소스를
+ * hot reload하지만 Bridge 프로세스는 재시작 전까지 이전 모듈을 계속 들고 있을 수 있다.
+ * 프로토콜 모양이 바뀌는 릴리스에서 이 값을 함께 올리면 그 조합을 분석 시작 전에 막는다.
+ */
+export const ONTO_PROTOCOL_VERSION = "3.2";
+export const ONTO_BUILD_ID = "v3.2-runtime-1";
+
+export type RuntimeIdentity = {
+  protocolVersion: string;
+  buildId: string;
+};
+
+export type RuntimeCompatibility = RuntimeIdentity & {
+  serverStartedAt: string;
+  capabilities: string[];
+};
+
 /** 사용자의 Codex 설정에 이 MCP server가 등록될 이름. */
 export const MCP_SERVER_NAME = "onto";
 
@@ -42,10 +62,12 @@ export type McpToolName =
   | "get_evidence"
   | "get_scenario_context"
   | "get_impact_context"
+  | "get_impact_context_batch"
   | "propose_evidence"
   | "submit_semantic_patch"
   | "submit_view_ir"
-  | "submit_analysis_bundle";
+  | "submit_analysis_bundle"
+  | "patch_analysis_bundle";
 
 /** MCP 호출이 관측된 경로. **두 증거원이 모두 있어야** 통과다 (B4). */
 export type McpCallSource = "agent-stream" | "bridge-endpoint";
@@ -62,6 +84,28 @@ export type McpCallRecord = {
 };
 
 export type AnalysisStage = "semantic" | "assembly" | "view" | "chat";
+
+export type AnalysisPipelineStage = "indexing" | "semantic" | "retrieval" | "assembly" | "validation" | "commit";
+export type AnalysisStageStatus = "pending" | "running" | "completed" | "correcting" | "failed";
+
+export type AnalysisStageState = {
+  stage: AnalysisPipelineStage;
+  status: AnalysisStageStatus;
+  startedAt?: string;
+  endedAt?: string;
+  /** heartbeat가 아니라 실제 provider/tool/validator 활동 시각이다. */
+  lastActivityAt?: string;
+  completedUnits?: number;
+  totalUnits?: number;
+  message?: string;
+};
+
+export type StageSessionRecord = {
+  stage: AnalysisStage;
+  sessionId: string;
+  resumed: boolean;
+  startedAt: string;
+};
 
 /**
  * 한 provider turn의 사용량. provider가 보고하지 않은 필드는 생략한다. 0으로 채우면
@@ -97,6 +141,14 @@ export type AgentEvent =
   /** turn이 소비한 사용량. 같은 stage+turnId 이벤트는 최신 누적값으로 대체한다. */
   | ({ type: "agent.usage"; taskId: string } & StageUsage)
   | { type: "analysis.progress"; taskId: string; phase: string; message: string }
+  | { type: "analysis.stage.updated"; taskId: string; state: AnalysisStageState }
+  | {
+      type: "analysis.heartbeat";
+      taskId: string;
+      stage: AnalysisPipelineStage;
+      elapsedSeconds: number;
+      idleSeconds: number;
+    }
   | { type: "memory.patched"; taskId: string; semanticVersion: number; summary: string }
   | { type: "view.ready"; taskId: string; viewKind: string; requestId: string }
   /** schema3 §5.2 Stage 4 — AnalysisBundle이 검증을 통과해 generation에 커밋되었다. */
@@ -143,8 +195,14 @@ export type TaskState = {
   tokenUsage?: number;
   /** V3: Semantic/Assembly/View turn을 덮어쓰지 않고 별도로 보존한다. */
   stageUsages?: StageUsage[];
+  /** V3.2: 새로고침 뒤에도 분석 진행 화면을 복원하는 Stage ledger. */
+  stageStates?: AnalysisStageState[];
+  /** 실제 provider session을 Stage별로 남겨 세션 분리를 런타임에서 검증한다. */
+  stageSessions?: StageSessionRecord[];
   /** AnalysisBundle 제출이 Core 검증으로 자동 보정된 횟수. */
   validationCorrections?: number;
+  /** 최초 제출을 포함해 Core validator가 실제로 받은 Bundle 제출 횟수. */
+  validationAttempts?: number;
   /** 이 task에서 실제 커밋된 generation. 없으면 Assembly 성공으로 간주하지 않는다. */
   bundleGeneration?: number;
 };
@@ -187,6 +245,7 @@ export type HealthResponse = {
   ok: boolean;
   agents: AgentReadiness[];
   projectPath: string | null;
+  runtime: RuntimeCompatibility;
 };
 
 // ---------------------------------------------------------------------------
@@ -196,6 +255,8 @@ export type HealthResponse = {
 export type AnalyzeRequest = {
   agent: AgentId;
   projectPath: string;
+  /** Web과 Bridge가 같은 wire contract인지 server가 요청 시점에 다시 검증한다. */
+  clientRuntime?: RuntimeIdentity;
   /** `index-only`는 §7.3의 비교 arm이다. 저장소 탐색 없이 evidence 요약만 준다 */
   mode?: "full" | "incremental" | "index-only";
   gitBase?: string;

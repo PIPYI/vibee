@@ -8,6 +8,9 @@
  */
 import type { AnalyzeSession } from "@onto/core";
 import type {
+  AnalysisPipelineStage,
+  AnalysisStage,
+  AnalysisStageState,
   AgentEvent,
   AgentEventEnvelope,
   CachedView,
@@ -56,6 +59,10 @@ export class BridgeState {
   private readonly pendingViewRequests = new Map<string, PendingViewRequest>();
   /** 완료된 view turn 의 taskId → viewCache 키. `GET /api/views/:id`가 taskId로 결과를 찾는다 */
   private readonly viewResultsByTask = new Map<string, string>();
+  /** 검증 실패한 Bundle의 서버측 원본. 보정 turn은 전체 재출력 대신 이 draft에 patch한다. */
+  private readonly bundleDrafts = new Map<string, { draftId: string; bundle: unknown }>();
+  /** 같은 task 안의 동일 bounded retrieval을 다시 계산·전송하지 않기 위한 작은 cache. */
+  private readonly retrievalCache = new Map<string, Map<string, unknown>>();
 
   /**
    * 가장 최근 재인덱싱의 EvidenceDiff (evidenceId → diff). **재인덱싱마다 통째로 갈아 끼운다**
@@ -105,6 +112,48 @@ export class BridgeState {
     }
   }
 
+  /** Stage ledger의 같은 stage를 교체한다. HTTP state 복원과 WebSocket 실시간 표시가 같은 값을 본다. */
+  recordStageState(taskId: string, next: AnalysisStageState): AnalysisStageState | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    const states = task.stageStates ?? [];
+    const index = states.findIndex((item) => item.stage === next.stage);
+    const previous = index >= 0 ? states[index] : undefined;
+    const merged: AnalysisStageState = { ...previous, ...next };
+    if (index >= 0) states[index] = merged;
+    else states.push(merged);
+    task.stageStates = states;
+    return merged;
+  }
+
+  touchStage(taskId: string, stage?: AnalysisPipelineStage, at = new Date().toISOString()): AnalysisStageState | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    const target = stage
+      ? task.stageStates?.find((item) => item.stage === stage)
+      : [...(task.stageStates ?? [])].reverse().find((item) => item.status === "running" || item.status === "correcting");
+    if (!target) return undefined;
+    target.lastActivityAt = at;
+    return target;
+  }
+
+  recordStageSession(
+    taskId: string,
+    stage: AnalysisStage,
+    sessionId: string,
+    resumed: boolean,
+    startedAt = new Date().toISOString(),
+  ): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const sessions = task.stageSessions ?? [];
+    const index = sessions.findIndex((item) => item.stage === stage && item.sessionId === sessionId);
+    const record = { stage, sessionId, resumed, startedAt };
+    if (index >= 0) sessions[index] = record;
+    else sessions.push(record);
+    task.stageSessions = sessions;
+  }
+
   /**
    * MCP 호출을 기록한다. **두 증거원을 따로 남긴다** (B4).
    *
@@ -115,7 +164,9 @@ export class BridgeState {
   recordMcpCall(taskId: string | null, tool: string, source: McpCallSource): void {
     const target = taskId ?? this.activeTaskId;
     if (!target) return;
-    this.tasks.get(target)?.mcpCalls.push({ tool, at: new Date().toISOString(), source });
+    const at = new Date().toISOString();
+    this.tasks.get(target)?.mcpCalls.push({ tool, at, source });
+    this.touchStage(target, undefined, at);
   }
 
   /** 마지막 bridge-endpoint 호출의 결과를 기록한다. **task 에 묶인다** — 전역 목록으로
@@ -140,6 +191,7 @@ export class BridgeState {
     const task = this.tasks.get(target);
     if (!task) return;
     if (!task.exploredFiles.includes(path)) task.exploredFiles.push(path);
+    this.touchStage(target);
   }
 
   /** 같은 turn의 누적 알림은 대체하고, 서로 다른 Stage/turn은 합산해 보존한다. */
@@ -158,6 +210,7 @@ export class BridgeState {
     const totals = usages.map((item) => item.totalTokens).filter((value): value is number => typeof value === "number");
     if (totals.length > 0) task.tokenUsage = totals.reduce((sum, value) => sum + value, 0);
     else delete task.tokenUsage;
+    this.touchStage(target);
   }
 
   recordValidationRetry(taskId: string, generation?: number): number {
@@ -168,9 +221,39 @@ export class BridgeState {
     return task.validationCorrections;
   }
 
+  /** 최초 제출을 포함한 실제 validator 진입 횟수. UI 표시용 숫자와 실행 한도를 분리한다. */
+  recordValidationAttempt(taskId: string, maxAttempts: number): { attempt: number; allowed: boolean } {
+    const task = this.tasks.get(taskId);
+    if (!task) return { attempt: 0, allowed: false };
+    task.validationAttempts = (task.validationAttempts ?? 0) + 1;
+    return { attempt: task.validationAttempts, allowed: task.validationAttempts <= maxAttempts };
+  }
+
   recordBundleCommit(taskId: string, generation: number): void {
     const task = this.tasks.get(taskId);
     if (task) task.bundleGeneration = generation;
+  }
+
+  setBundleDraft(taskId: string, draftId: string, bundle: unknown): void {
+    this.bundleDrafts.set(taskId, { draftId, bundle });
+  }
+
+  getBundleDraft(taskId: string): { draftId: string; bundle: unknown } | undefined {
+    return this.bundleDrafts.get(taskId);
+  }
+
+  clearBundleDraft(taskId: string): void {
+    this.bundleDrafts.delete(taskId);
+  }
+
+  getRetrievalCache(taskId: string, key: string): unknown | undefined {
+    return this.retrievalCache.get(taskId)?.get(key);
+  }
+
+  setRetrievalCache(taskId: string, key: string, value: unknown): void {
+    const cache = this.retrievalCache.get(taskId) ?? new Map<string, unknown>();
+    cache.set(key, value);
+    this.retrievalCache.set(taskId, cache);
   }
 
   setAnalyzeSession(taskId: string, session: AnalyzeSession): void {
