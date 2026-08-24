@@ -55,7 +55,7 @@ Assembly는 첫 분석, IR 버전 변경, 무결성 복구 같은 명시적 조�
 
 `architecture.viewPlan.primaryPath`는 실행 흐름이나 사용자 여정이 아니라 비전공자를 위한
 설명 순서였다. 통합 지도에서는 별도 카드 줄로 노출하지 않고 시스템 지도의 선택적
-`처음 보기` 강조 순서로만 사용한다.
+`핵심 관계` 추천 탐색 순서로만 사용한다.
 
 ## 구현 순서 제안
 
@@ -72,7 +72,7 @@ Assembly는 첫 분석, IR 버전 변경, 무결성 복구 같은 명시적 조�
 
 ## 공통 비목표
 
-- AI가 픽셀 좌표를 생성하게 하지 않는다.
+- Vibee가 픽셀 좌표를 생성하게 하지 않는다.
 - Evidence 없이 새 연결이나 사용자 단계를 만들지 않는다.
 - 모든 edge를 Sequence로 펼치지 않는다.
 - V2.x 레거시 Bundle을 다시 커밋하거나 자동 변환하지 않는다.
@@ -104,10 +104,14 @@ V3는 다음 조건을 모두 만족할 때 완료로 본다.
 - Assembly prompt에 `workflow.mainPath`의 모든 인접 node 쌍이 실제 edge로 연결돼야 한다는
   preflight 규칙을 명시했다.
 - 프로젝트 지도/사용자 지도 상위 탭과 Architecture 하위 3개 탭을 기본 렌더 경로에서 제거했다.
-- compact coverage strip → 시스템 관계 지도 → 사용자 여정 순서의 한 화면을 구현했다.
-- `viewPlan.primaryPath`를 별도 `먼저 읽을 흐름`이 아니라 `처음 보기` 순번 강조로 바꿨다.
-- 사용자 여정 선택기를 compact하게 바꾸고 분기·재시도를 발생 step 아래 같은 캔버스에 붙였다.
+- 시스템 관계 지도 → 사용자 여정 순서의 한 화면을 구현하고, 메인 탐색을 방해하던 coverage
+  strip과 sticky anchor navigation은 제거했다. 분석 범위 데이터 자체는 Bundle에 보존한다.
+- `viewPlan.primaryPath`를 별도 `먼저 읽을 흐름`이 아니라 `핵심 관계`의 `추천 01` 순번
+  강조로 바꿨다. 실제 실행 순서가 아니라는 설명도 지도 안에 표시한다.
+- 사용자 여정 선택기를 compact하게 바꾸고 대표 경로·분기·재시도를 하나의 스크롤 좌표계에
+  배치했다. 카드 DOM을 실측해 SVG branch/loop 선과 화살표를 연결한다.
 - component/step/journey의 exact Evidence·Concept·Entity ref 교집합으로 양방향 강조를 연결했다.
+- 전역 헤더의 강조 해제 버튼을 시스템 관계 지도 툴바로 옮기고 `Esc` 해제를 지원한다.
 - 1280×720 및 390×844 브라우저 검증에서 body 가로 overflow가 없음을 확인했다.
 
 남은 작업:
@@ -115,5 +119,5 @@ V3는 다음 조건을 모두 만족할 때 완료로 본다.
 - MCP 두 증거원을 안정적인 `toolCallId`로 합쳐 호출 횟수별 한 줄 요약과 배선 이상 상태를 만든다.
 - cache write를 제공하지 않는 provider의 `unknown` 표시와 분석 완료 후 영구 사용량 UI를 다듬는다.
 - `PreviousBundleDigest`, batch retrieval, `BundleImpactSet`, `AnalysisBundlePatch` 계약을 구현한다.
-- 사용자 여정 branch connector를 DOM 실측 기반 SVG lane/loop arc로 고도화한다.
+- 분기가 많은 여정에서 SVG lane 충돌 회피와 loop arc 곡률을 고도화한다.
 - runtime/layer/role/search 필터와 URL 기반 focus 상태, modal focus trap을 구현한다.

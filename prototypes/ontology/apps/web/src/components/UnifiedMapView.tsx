@@ -1,36 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { AnalysisBundle, ArchitectureComponent, ScenarioIR, ScenarioStep, SequenceIR } from "@onto/protocol";
 
 import { componentReferenceSet, journeyReferenceSet, relatedComponentIds, stepReferenceSet } from "../layout/unifiedMap.js";
 import { ArchitectureRelationshipMap } from "./ArchitectureRelationshipMap.js";
 import { UserMapView } from "./UserMapView.js";
-
-function CoverageStrip({ bundle }: { bundle: AnalysisBundle }): React.JSX.Element {
-  const topology = bundle.repositoryTopology;
-  const coverage = topology?.coverage;
-  const complete = coverage
-    ? coverage.missingRuntimeIds.length === 0 &&
-      coverage.missingDataStoreIds.length === 0 &&
-      coverage.sharedBoundaryRuntimeIds.length === 0
-    : false;
-  return (
-    <section className={`unified-coverage${complete ? " unified-coverage-complete" : ""}`} aria-label="분석 범위">
-      <div>
-        <span className="overview-eyebrow">분석 범위</span>
-        <strong>{topology ? (complete ? "저장소 범위를 모두 표현했습니다" : "확인이 필요한 저장소 요소가 있습니다") : "레거시 분석 결과"}</strong>
-      </div>
-      <div className="unified-coverage-metrics">
-        {coverage && <span><b>{coverage.representedRuntimeCount}/{coverage.detectedRuntimeCount}</b> 실행 단위</span>}
-        {coverage && <span><b>{coverage.representedDataStoreCount}/{coverage.detectedDataStoreCount}</b> 로컬 데이터</span>}
-        <span><b>{bundle.architecture.components.length}</b> 구성요소</span>
-        <span className={bundle.freshness === "current" ? "is-current" : "is-review"}>
-          {bundle.freshness === "current" ? "● 최신" : "● 재검토 필요"}
-        </span>
-      </div>
-    </section>
-  );
-}
 
 export function UnifiedMapView({
   bundle,
@@ -61,20 +35,25 @@ export function UnifiedMapView({
     setFocusRefs(journeyReferenceSet(journey));
     setFocusSource("journey");
   };
+  const clearFocus = (): void => {
+    setFocusRefs(new Set());
+    setFocusSource(null);
+  };
+
+  useEffect(() => {
+    if (focusRefs.size === 0) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") clearFocus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusRefs.size]);
 
   return (
     <div className="unified-map">
       <header className="unified-map-title">
         <div><p className="detail-eyebrow">V3 통합 지도</p><h2>{bundle.architecture.title}</h2></div>
-        {focusRefs.size > 0 && (
-          <button type="button" onClick={() => { setFocusRefs(new Set()); setFocusSource(null); }}>강조 해제 ×</button>
-        )}
       </header>
-      <CoverageStrip bundle={bundle} />
-      <nav className="unified-anchor-nav" aria-label="지도 안에서 이동">
-        <a href="#system-map">시스템 구조</a><a href="#journey-map">사용자 여정</a>
-        {focusSource && <span>{focusSource === "system" ? "시스템 선택과 관련된 여정을 강조 중" : "여정과 관련된 시스템을 강조 중"}</span>}
-      </nav>
 
       <section id="system-map" className="unified-section" aria-labelledby="system-map-title">
         <div className="unified-section-heading">
@@ -87,6 +66,9 @@ export function UnifiedMapView({
           sequences={bundle.sequences}
           highlightedComponentIds={highlightedComponentIds}
           hasExternalFocus={focusSource === "journey" && focusRefs.size > 0}
+          hasFocus={focusRefs.size > 0}
+          focusMessage={focusSource === "system" ? "관련 사용자 여정 강조 중" : "선택한 여정과 관련된 구성요소 강조 중"}
+          onClearFocus={clearFocus}
           onSelectComponent={(id) => {
             const component = bundle.architecture.components.find((item) => item.id === id);
             if (component) focusComponent(component);

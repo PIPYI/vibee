@@ -852,7 +852,7 @@ export type ArchitectureViewGroup = {
   collapsedByDefault?: boolean;
 };
 
-/** AI는 픽셀이 아니라 이야기의 우선순위와 의미 그룹만 저작한다. */
+/** Vibee는 픽셀이 아니라 이야기의 우선순위와 의미 그룹만 구성한다. */
 export type ArchitectureViewPlan = {
   primaryPath: string[];
   groups: ArchitectureViewGroup[];

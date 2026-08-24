@@ -67,7 +67,11 @@ function RelationshipCard({
         {component.sublabel && <span>{component.sublabel}</span>}
       </span>
       <strong>{component.label}</strong>
-      {readingOrder !== undefined && <span className="relationship-reading-order" aria-label={`추천 탐색 순서 ${readingOrder}`}>{readingOrder}</span>}
+      {readingOrder !== undefined && (
+        <span className="relationship-reading-order" aria-label={`추천 탐색 순서 ${readingOrder}`}>
+          <small>추천</small>{String(readingOrder).padStart(2, "0")}
+        </span>
+      )}
       {replacementSeam && <span className="relationship-replacement-badge">⇄ API 교체 지점</span>}
     </button>
   );
@@ -174,6 +178,9 @@ export function ArchitectureRelationshipMap({
   sequences = [],
   highlightedComponentIds = new Set<string>(),
   hasExternalFocus = false,
+  hasFocus = false,
+  focusMessage,
+  onClearFocus,
   onSelectComponent,
 }: {
   ir: ArchitectureIR;
@@ -181,6 +188,9 @@ export function ArchitectureRelationshipMap({
   sequences?: SequenceIR[];
   highlightedComponentIds?: ReadonlySet<string>;
   hasExternalFocus?: boolean;
+  hasFocus?: boolean;
+  focusMessage?: string;
+  onClearFocus?: () => void;
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
   const { lanes, layers } = useMemo(() => computeRelationshipLanes(ir), [ir]);
@@ -316,20 +326,36 @@ export function ArchitectureRelationshipMap({
           <strong>런타임별 관계 지도</strong>
           <p>블록을 합치지 않고, 의미 레이어를 고정해 모든 구성요소의 위치를 유지합니다.</p>
         </div>
-        <div className="relationship-mode" role="group" aria-label="표시할 관계">
-          {hasPrimaryPath && (
-            <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>처음 보기</button>
+        <div className="relationship-toolbar-actions">
+          {hasFocus && (
+            <button type="button" className="relationship-clear-focus" onClick={onClearFocus} title="Esc 키로도 해제할 수 있습니다">
+              강조 해제 ×
+            </button>
           )}
-          <button type="button" aria-pressed={mode === "all"} onClick={() => setMode("all")}>모든 관계 {ir.connections.length}</button>
+          <div className="relationship-mode" role="group" aria-label="표시할 관계">
+            {hasPrimaryPath && (
+              <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>
+                핵심 관계 {primaryIds.size}
+              </button>
+            )}
+            <button type="button" aria-pressed={mode === "all"} onClick={() => setMode("all")}>전체 관계 {ir.connections.length}</button>
+          </div>
         </div>
       </div>
+
+      {(mode === "primary" || hasFocus) && (
+        <div className="relationship-context-note" aria-live="polite">
+          {mode === "primary" && <span><b>추천 01</b>은 Vibee가 고른 탐색 순서이며 실제 실행 순서가 아닙니다.</span>}
+          {hasFocus && <span className="relationship-focus-message">● {focusMessage ?? "관련 항목 강조 중"}</span>}
+        </div>
+      )}
 
       {replacementSeams.size > 0 && (
         <div className="relationship-replacement-summary">
           <span className="relationship-replacement-icon">⇄</span>
           <div>
             <strong>백엔드 교체 후보 {replacementSeams.size}곳</strong>
-            <p>Core가 확인한 로컬 데이터 경계입니다. 초록색 카드는 현재 서버가 아니라 향후 API/DB로 치환하기 좋은 접점이며, "모든 관계"에서 영향 연결선도 볼 수 있습니다.</p>
+            <p>Core가 확인한 로컬 데이터 경계입니다. 초록색 카드는 현재 서버가 아니라 향후 API/DB로 치환하기 좋은 접점이며, "전체 관계"에서 영향 연결선도 볼 수 있습니다.</p>
           </div>
         </div>
       )}

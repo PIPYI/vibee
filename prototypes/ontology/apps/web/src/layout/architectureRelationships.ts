@@ -96,7 +96,7 @@ export function computeRelationshipLanes(ir: ArchitectureIR): { lanes: Relations
   return { lanes, layers: layers.length > 0 ? layers : ["service"] };
 }
 
-/** AI가 저작한 primaryPath는 노드를 숨기는 근거가 아니라, 첫 읽기에서 보일 엣지를 고르는 근거다. */
+/** Vibee가 구성한 primaryPath는 노드를 숨기는 근거가 아니라, 첫 읽기에서 보일 엣지를 고르는 근거다. */
 export function primaryConnectionIds(ir: ArchitectureIR): Set<string> {
   const path = ir.viewPlan?.primaryPath ?? [];
   if (path.length < 2) return new Set();
