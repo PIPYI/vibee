@@ -10,7 +10,7 @@
  * **탭 전환·블록 클릭·엣지 클릭은 재요청을 만들지 않는다** — 전부 이미 받아온
  * `AnalysisBundle`(§5.4)에 대한 로컬 상태 변경이다. `POST /api/analyze` 한 번만 호출한다.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   AgentId,
@@ -18,6 +18,7 @@ import type {
   AnalysisPipelineStage,
   AnalysisStageState,
   ArchitectureComponent,
+  ModelOption,
   SequenceIR,
   StageUsage,
 } from "@onto/protocol";
@@ -56,9 +57,40 @@ const STAGE_USAGE_LABEL: Record<StageUsage["stage"], string> = {
   chat: "대화",
 };
 
+const AGENT_LABEL: Record<AgentId, string> = {
+  codex: "OpenAI Codex",
+  claude: "Anthropic Claude",
+};
+
+const EFFORT_LABEL: Record<string, string> = {
+  low: "낮음",
+  medium: "보통",
+  high: "높음",
+  xhigh: "매우 높음",
+  max: "최대",
+  ultra: "울트라",
+};
+
+function effortLabel(id: string): string {
+  return EFFORT_LABEL[id] ? `${EFFORT_LABEL[id]} · ${id}` : id;
+}
+
+function preferredEffort(model: ModelOption): string {
+  return model.defaultEffort && model.efforts.some((item) => item.id === model.defaultEffort)
+    ? model.defaultEffort
+    : "";
+}
+
 export function App(): React.JSX.Element {
   const [agents, setAgents] = useState<api.AgentReadiness[]>([]);
   const [agent, setAgent] = useState<AgentId>("codex");
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsRefresh, setModelsRefresh] = useState(0);
+  const restoredSelection = useRef<{ agent: AgentId; model?: string; effort?: string } | null>(null);
 
   const [projectPathInput, setProjectPathInput] = useState("");
   const [projectPath, setProjectPath] = useState<string | null>(null);
@@ -85,6 +117,9 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     void api.health().then((h) => {
       setAgents(h.agents);
+      setAgent((current) => h.agents.some((item) => item.agent === current && item.installed)
+        ? current
+        : h.agents.find((item) => item.installed)?.agent ?? current);
       if (!h.runtime) {
         setRuntimeError("분석 엔진이 V3.2 이전 버전으로 실행 중입니다. Bridge를 다시 시작해 주세요.");
       } else if (h.runtime.protocolVersion !== ONTO_PROTOCOL_VERSION || h.runtime.buildId !== ONTO_BUILD_ID) {
@@ -101,6 +136,14 @@ export function App(): React.JSX.Element {
         setProjectPathInput(s.projectPath);
         const active = s.activeTaskId ? s.tasks.find((task) => task.taskId === s.activeTaskId) : undefined;
         if (active && (active.status === "starting" || active.status === "running")) {
+          restoredSelection.current = {
+            agent: active.agent,
+            ...(active.model ? { model: active.model } : {}),
+            ...(active.effort ? { effort: active.effort } : {}),
+          };
+          setAgent(active.agent);
+          setModel(active.model ?? "");
+          setEffort(active.effort ?? "");
           setTaskId(active.taskId);
           setStageUsages(active.stageUsages ?? []);
           setStageStates(active.stageStates ?? []);
@@ -121,6 +164,54 @@ export function App(): React.JSX.Element {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const readiness = agents.find((item) => item.agent === agent);
+    if (!readiness?.installed) {
+      setModels([]);
+      setModel("");
+      setEffort("");
+      setModelsError(readiness?.message ?? null);
+      setModelsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setModelsLoading(true);
+    setModelsError(null);
+    void api.models(agent).then((result) => {
+      if (cancelled) return;
+      if ("error" in result) {
+        setModels([]);
+        setModel("");
+        setEffort("");
+        setModelsError(result.error);
+        return;
+      }
+      const reported = result.models.filter((item) => item.id.length > 0);
+      setModels(reported);
+      const restored = restoredSelection.current?.agent === agent ? restoredSelection.current : null;
+      const nextModel = reported.find((item) => item.id === restored?.model)
+        ?? reported.find((item) => item.isDefault)
+        ?? reported[0];
+      setModel(nextModel?.id ?? "");
+      setEffort(nextModel && restored?.effort && nextModel.efforts.some((item) => item.id === restored.effort)
+        ? restored.effort
+        : nextModel ? preferredEffort(nextModel) : "");
+      if (restored) restoredSelection.current = null;
+      if (!nextModel) setModelsError("제공자가 사용 가능한 모델을 반환하지 않았습니다.");
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        setModels([]);
+        setModel("");
+        setEffort("");
+        setModelsError(error instanceof Error ? error.message : String(error));
+      }
+    }).finally(() => {
+      if (!cancelled) setModelsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [agent, agents, modelsRefresh]);
 
   const push = useCallback((seq: number, text: string, tone: LogLine["tone"] = "info") => {
     setLines((prev) => (prev.some((line) => line.seq === seq) ? prev : [...prev, { seq, text, tone }]));
@@ -266,7 +357,10 @@ export function App(): React.JSX.Element {
     setDiagnosticsOpen(false);
     setTaskId(null);
     setScreen("analyzing");
-    const result = await api.analyze(agent, projectPath);
+    const result = await api.analyze(agent, projectPath, {
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    });
     if ("error" in result) {
       setAnalyzeError(result.error);
       setScreen(bundle ? "analyzed" : "ready");
@@ -274,7 +368,13 @@ export function App(): React.JSX.Element {
     }
     setTaskId(result.taskId);
     setScreen("analyzing");
-  }, [agent, bundle, projectPath, runtimeError]);
+  }, [agent, bundle, effort, model, projectPath, runtimeError]);
+
+  const selectedModel = models.find((item) => item.id === model);
+  const selectedEffort = selectedModel?.efforts.find((item) => item.id === effort);
+  const selectedAgentReady = agents.find((item) => item.agent === agent)?.installed === true;
+  const settingsDisabled = screen === "analyzing";
+  const analysisDisabled = Boolean(runtimeError) || modelsLoading || Boolean(modelsError) || !selectedAgentReady || !selectedModel;
 
   const componentById = new Map<string, ArchitectureComponent>((bundle?.architecture.components ?? []).map((c) => [c.id, c]));
 
@@ -325,16 +425,63 @@ export function App(): React.JSX.Element {
         <button type="button" onClick={() => void selectProject()} disabled={!projectPathInput.trim()}>
           프로젝트 열기
         </button>
-        <select value={agent} onChange={(e) => setAgent(e.target.value as AgentId)}>
-          {agents.map((item) => (
-            <option key={item.agent} value={item.agent} disabled={!item.installed}>
-              {item.agent}
-              {!item.installed ? " (설치 안 됨)" : ""}
-            </option>
-          ))}
-        </select>
+        <div className="model-config" aria-label="분석 모델 설정">
+          <div className="model-config-fields">
+            <label className="model-field">
+              <span>제공자</span>
+              <select value={agent} onChange={(e) => setAgent(e.target.value as AgentId)} disabled={settingsDisabled}>
+                {agents.map((item) => (
+                  <option key={item.agent} value={item.agent} disabled={!item.installed}>
+                    {AGENT_LABEL[item.agent]}
+                    {!item.installed ? " (사용 불가)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="model-field model-field-wide">
+              <span>모델</span>
+              <select
+                value={model}
+                onChange={(event) => {
+                  const nextModel = models.find((item) => item.id === event.target.value);
+                  setModel(event.target.value);
+                  setEffort(nextModel ? preferredEffort(nextModel) : "");
+                }}
+                disabled={settingsDisabled || modelsLoading || models.length === 0}
+              >
+                {modelsLoading && <option value="">불러오는 중…</option>}
+                {!modelsLoading && models.length === 0 && <option value="">선택할 모델 없음</option>}
+                {models.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}{item.isDefault ? " · 추천" : ""}</option>
+                ))}
+              </select>
+            </label>
+            <label className="model-field">
+              <span>사고 수준</span>
+              <select
+                value={effort}
+                onChange={(event) => setEffort(event.target.value)}
+                disabled={settingsDisabled || !selectedModel || selectedModel.efforts.length === 0}
+              >
+                <option value="">{selectedModel?.efforts.length === 0 ? "조절 미지원" : "제공자 기본값"}</option>
+                {selectedModel?.efforts.map((item) => (
+                  <option key={item.id} value={item.id}>{effortLabel(item.id)}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className={`model-config-meta${modelsError ? " model-config-error" : ""}`}>
+            {modelsLoading && "제공자에서 사용 가능한 모델을 불러오는 중입니다."}
+            {!modelsLoading && modelsError && (
+              <><span>{modelsError}</span><button type="button" onClick={() => setModelsRefresh((value) => value + 1)}>다시 불러오기</button></>
+            )}
+            {!modelsLoading && !modelsError && selectedModel && (
+              <span title={selectedEffort?.description}>{selectedModel.description ?? `${AGENT_LABEL[agent]} 제공 모델`}{selectedEffort?.description ? ` · ${selectedEffort.description}` : ""}</span>
+            )}
+          </div>
+        </div>
         {(screen === "ready" || screen === "analyzed") && (
-          <button type="button" onClick={() => void runAnalyze()} disabled={Boolean(runtimeError)}>
+          <button type="button" onClick={() => void runAnalyze()} disabled={analysisDisabled}>
             {screen === "analyzed" ? "다시 분석" : "분석 시작"}
           </button>
         )}
@@ -375,7 +522,7 @@ export function App(): React.JSX.Element {
                 )}
               </>
             )}
-            <button type="button" className="primary-button analyze-cta" onClick={() => void runAnalyze()} disabled={Boolean(runtimeError)}>
+            <button type="button" className="primary-button analyze-cta" onClick={() => void runAnalyze()} disabled={analysisDisabled}>
               {analyzeError ? "다시 시도" : "분석 시작"} →
             </button>
           </section>

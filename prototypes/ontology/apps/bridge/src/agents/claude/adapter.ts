@@ -42,6 +42,28 @@ type ClaudeSdk = {
 
 const SDK_MODULE = "@anthropic-ai/claude-agent-sdk";
 
+/** Claude SDK의 `ModelInfo[]`를 provider 중립 선택지로 바꾼다. */
+export function parseClaudeModels(reported: Array<Record<string, unknown>>): ModelOption[] {
+  return reported.flatMap((raw) => {
+    const id = String(raw["value"] ?? raw["model"] ?? raw["id"] ?? "");
+    if (!id) return [];
+    const rawEfforts = Array.isArray(raw["supportedEffortLevels"])
+      ? raw["supportedEffortLevels"]
+      : [];
+    const efforts = raw["supportsEffort"] === false
+      ? []
+      : rawEfforts.flatMap((effort) => typeof effort === "string" && effort ? [{ id: effort }] : []);
+    return [{
+      id,
+      label: String(raw["displayName"] ?? id),
+      ...(raw["description"] ? { description: String(raw["description"]) } : {}),
+      efforts,
+      // Claude가 `default` alias를 모델 목록에 명시적으로 제공한다.
+      isDefault: id === "default" || Boolean(raw["isDefault"]),
+    } satisfies ModelOption];
+  });
+}
+
 export type ClaudeAdapterOptions = {
   /** MCP server 진입점 절대 경로. bridge 가 계산해 넘긴다 */
   mcpServerPath: string;
@@ -115,17 +137,7 @@ export class ClaudeAdapter implements AgentAdapter {
         options: { strictMcpConfig: true, abortController },
       });
       const reported = (await probe.supportedModels()) as Array<Record<string, unknown>>;
-      const models = reported.map((raw) => {
-        const efforts = (raw["supportedEffortLevels"] as string[] | undefined) ?? [];
-        return {
-          id: String(raw["model"] ?? raw["id"] ?? ""),
-          label: String(raw["displayName"] ?? raw["model"] ?? raw["id"] ?? ""),
-          ...(raw["description"] ? { description: String(raw["description"]) } : {}),
-          // effort 를 지원하지 않는 모델이 있다 (haiku). 빈 배열이 그 사실을 나른다.
-          efforts: raw["supportsEffort"] === false ? [] : efforts.map((effort) => ({ id: effort })),
-          isDefault: Boolean(raw["isDefault"]),
-        } satisfies ModelOption;
-      });
+      const models = parseClaudeModels(reported);
       this.modelsCache = { at: Date.now(), models };
       return models;
     } finally {
@@ -163,6 +175,7 @@ export class ClaudeAdapter implements AgentAdapter {
         permissionMode: "default",
         ...(resumeFrom ? { resume: resumeFrom } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
         abortController,
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
           if (toolName.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {

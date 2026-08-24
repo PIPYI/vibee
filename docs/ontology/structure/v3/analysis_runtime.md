@@ -293,7 +293,26 @@ Core만 merge와 최종 전체 검증을 수행한다. agent는 `baseGeneration`
 연결된 `mainPath`를 선택하는 것은 Core가 할 수 있다. 반면 빠진 의미 edge를 자동 생성하는
 것은 근거를 발명할 수 있으므로 agent에게 진단으로 돌려보낸다.
 
-## 9. 수용 기준
+## 9. 모델과 사고 수준 선택
+
+분석 제공자 이름만 고르는 UI를 모델·사고 수준까지 확장한다. 선택지는 Vibee가 고정 목록으로
+관리하지 않고 실행 중인 provider가 제공하는 control API에서 조회한다.
+
+| 제공자 | 조회 경로 | 모델 실행 여부 |
+|---|---|---|
+| Codex | app-server `model/list` | 없음 |
+| Claude | Agent SDK `Query.supportedModels()` | 없음 |
+
+- Bridge가 provider 응답의 모델 ID, 표시 이름, 설명, 지원 effort, 기본값을 중립 `ModelOption`으로
+  정규화한다.
+- Web은 제공자 변경 시 목록을 다시 받고 모델별 지원 effort만 표시한다.
+- provider가 effort를 지원하지 않는 모델은 `조절 미지원`으로 표시하고 값을 보내지 않는다.
+- 분석 시작 시 Bridge가 현재 provider 목록으로 모델·effort를 다시 검증한다. 목록이 갱신돼
+  선택값이 오래됐으면 임의 fallback 없이 사용자가 다시 선택하게 한다.
+- 선택한 모델·effort는 Semantic과 Assembly Stage에 동일하게 전달하고 `TaskState`에도 남긴다.
+- 목록 조회는 모델 추론 turn을 시작하지 않으며 5분 동안 Bridge 메모리에서 캐시한다.
+
+## 10. 수용 기준
 
 1. 한 MCP 호출이 기본 콘솔에서 한 줄만 차지한다.
 2. 두 증거원 중 하나가 빠지면 배선 오류로 정확히 표시한다.

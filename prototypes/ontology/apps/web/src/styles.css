@@ -93,6 +93,103 @@ body {
   flex: 1;
 }
 
+.model-config {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 520px;
+  padding: 1px 8px;
+  border-left: 1px solid var(--border);
+}
+
+.model-config-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 132px;
+}
+
+.model-field > span {
+  padding-left: 2px;
+  color: var(--dim);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.model-field-wide {
+  min-width: 190px;
+  flex: 1;
+}
+
+.model-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+.model-config-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 560px;
+  min-height: 13px;
+  padding-left: 2px;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.model-config-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-config-meta button {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: inherit;
+}
+
+.model-config-error {
+  color: var(--bad);
+}
+
+@media (max-width: 980px) {
+  .model-config {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 0 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .model-config-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .model-field {
+    min-width: 0;
+  }
+
+  .model-field-wide {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+}
+
 input,
 select,
 button {

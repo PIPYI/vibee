@@ -89,6 +89,57 @@ function extractThreadId(result: unknown): string {
 
 type TurnHandle = { threadId: string; turnId?: string; mode: StartTaskInput["mode"]; model?: string };
 
+/**
+ * `model/list` 응답은 Codex app-server 버전에 따라 `data` 또는 과거의 `models` 키를 쓴다.
+ * reasoning effort도 현재 버전은 `{ reasoningEffort, description }` 객체다. provider가 준
+ * 원문 ID와 설명을 보존하되, 숨김 모델과 식별자 없는 행은 사용자 선택지에서 제외한다.
+ */
+export function parseCodexModelPage(page: Record<string, unknown>): {
+  models: ModelOption[];
+  nextCursor?: string;
+} {
+  const rows = (Array.isArray(page["data"])
+    ? page["data"]
+    : Array.isArray(page["models"])
+      ? page["models"]
+      : []) as Array<Record<string, unknown>>;
+
+  const models = rows.flatMap((raw) => {
+    const id = String(raw["id"] ?? raw["model"] ?? raw["slug"] ?? "");
+    if (!id || raw["hidden"] === true) return [];
+    const rawEfforts = Array.isArray(raw["supportedReasoningEfforts"])
+      ? raw["supportedReasoningEfforts"]
+      : [];
+    const efforts = rawEfforts.flatMap((item) => {
+      if (typeof item === "string") return [{ id: item }];
+      if (typeof item !== "object" || item === null) return [];
+      const record = item as Record<string, unknown>;
+      const effortId = String(record["reasoningEffort"] ?? record["id"] ?? "");
+      if (!effortId) return [];
+      return [{
+        id: effortId,
+        ...(record["description"] ? { description: String(record["description"]) } : {}),
+      }];
+    });
+    return [{
+      id,
+      label: String(raw["displayName"] ?? raw["model"] ?? id),
+      ...(raw["description"] ? { description: String(raw["description"]) } : {}),
+      efforts,
+      ...(raw["defaultReasoningEffort"]
+        ? { defaultEffort: String(raw["defaultReasoningEffort"]) }
+        : {}),
+      isDefault: Boolean(raw["isDefault"]),
+    } satisfies ModelOption];
+  });
+
+  const nextCursor = page["nextCursor"];
+  return {
+    models,
+    ...(typeof nextCursor === "string" && nextCursor.length > 0 ? { nextCursor } : {}),
+  };
+}
+
 export class CodexAdapter implements AgentAdapter {
   readonly id = "codex" as const;
 
@@ -148,23 +199,9 @@ export class CodexAdapter implements AgentAdapter {
     const models: ModelOption[] = [];
     let cursor: string | undefined;
     do {
-      const page = (await this.ensureClient().call("model/list", cursor ? { cursor } : {})) as {
-        models?: Array<Record<string, unknown>>;
-        nextCursor?: string;
-      };
-      for (const raw of page.models ?? []) {
-        const efforts = (raw["supportedReasoningEfforts"] as string[] | undefined) ?? [];
-        models.push({
-          id: String(raw["id"] ?? raw["slug"] ?? ""),
-          label: String(raw["displayName"] ?? raw["id"] ?? ""),
-          ...(raw["description"] ? { description: String(raw["description"]) } : {}),
-          efforts: efforts.map((effort) => ({ id: effort })),
-          ...(raw["defaultReasoningEffort"]
-            ? { defaultEffort: String(raw["defaultReasoningEffort"]) }
-            : {}),
-          isDefault: Boolean(raw["isDefault"]),
-        });
-      }
+      const rawPage = (await this.ensureClient().call("model/list", cursor ? { cursor } : {})) as Record<string, unknown>;
+      const page = parseCodexModelPage(rawPage);
+      models.push(...page.models);
       cursor = page.nextCursor;
     } while (cursor);
 

@@ -10,6 +10,7 @@ import type {
   AnalysisBundle,
   CachedView,
   HealthResponse,
+  ModelOption,
   OverviewIR,
   ReachabilityIR,
   ScenarioIR,
@@ -42,6 +43,11 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export function health(): Promise<HealthResponse> {
   return getJson("/api/health");
+}
+
+export type ModelsResponse = { agent: AgentId; models: ModelOption[] };
+export function models(agent: AgentId): Promise<ModelsResponse | { error: string }> {
+  return getJson(`/api/models?agent=${encodeURIComponent(agent)}`);
 }
 
 export type StateResponse = { projectPath: string | null; activeTaskId: string | null; tasks: TaskState[] };

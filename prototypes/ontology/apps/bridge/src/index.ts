@@ -83,6 +83,7 @@ import {
   searchClaims,
 } from "./memory-api.js";
 import { onShutdown } from "./platform.js";
+import { modelSelectionError } from "./model-selection.js";
 import {
   buildAssemblyPrompt,
   buildEvidenceBundle,
@@ -108,6 +109,7 @@ const RUNTIME_CAPABILITIES = [
   "bundle-draft-patch",
   "impact-context-batch",
   "python-evidence-v1",
+  "provider-model-discovery",
 ] as const;
 
 const state = new BridgeState();
@@ -178,7 +180,17 @@ app.get("/api/models", async (req: Request, res: Response) => {
     return;
   }
   try {
-    res.json({ agent: adapter.id, models: await adapter.listModels() });
+    const ready = await adapter.checkReady();
+    if (!ready.installed) {
+      res.status(412).json({ error: ready.message ?? "agent 를 쓸 수 없습니다." });
+      return;
+    }
+    const models = await adapter.listModels();
+    if (models.length === 0) {
+      res.status(502).json({ error: `${adapter.id}가 사용 가능한 모델 목록을 반환하지 않았습니다.` });
+      return;
+    }
+    res.json({ agent: adapter.id, models });
   } catch (error) {
     res.status(502).json({ error: asMessage(error) });
   }
@@ -349,6 +361,17 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
     return;
   }
 
+  if (body.model !== undefined && typeof body.model !== "string") {
+    res.status(400).json({ error: "model은 문자열이어야 합니다." });
+    return;
+  }
+  if (body.effort !== undefined && typeof body.effort !== "string") {
+    res.status(400).json({ error: "effort는 문자열이어야 합니다." });
+    return;
+  }
+  if (body.model === "") delete body.model;
+  if (body.effort === "") delete body.effort;
+
   let projectPath: string;
   try {
     projectPath = canonicalizeProjectPath(body.projectPath);
@@ -361,6 +384,19 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
   if (!ready.installed) {
     res.status(412).json({ error: ready.message ?? "agent 를 쓸 수 없습니다." });
     return;
+  }
+
+  if (body.model || body.effort) {
+    try {
+      const selectionError = modelSelectionError(await adapter.listModels(), body.model, body.effort);
+      if (selectionError) {
+        res.status(400).json({ error: selectionError });
+        return;
+      }
+    } catch (error) {
+      res.status(502).json({ error: `모델 목록을 확인하지 못했습니다: ${asMessage(error)}` });
+      return;
+    }
   }
 
   state.setProjectPath(projectPath);
