@@ -140,26 +140,48 @@ export function Passport({
   onOpenSequence: (sequenceRef: string) => void;
 }): React.JSX.Element {
   return (
-    <aside className="step-detail passport">
-      <div className="step-detail-header">
-        <h3>
-          <span className={`pt-dot pt-${subject.presentationType}`} /> {subject.label}
-        </h3>
-        <button type="button" className="close-button" onClick={onClose} aria-label="닫기">
-          ×
-        </button>
-      </div>
-      {subject.sublabel && <p className="dim">{subject.sublabel}</p>}
+    <div className="detail-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <aside className="detail-modal passport-modal" role="dialog" aria-modal="true" aria-label={`${subject.label} 상세`}>
+        <div className="detail-context-pane passport-context-pane">
+          <p className="detail-eyebrow">연결된 부분만 보기</p>
+          <div className="passport-context-map">
+            <div className={`passport-context-subject passport-context-${subject.presentationType}`}>
+              <span className={`pt-dot pt-${subject.presentationType}`} />
+              <strong>{subject.label}</strong>
+              {subject.sublabel && <small>{subject.sublabel}</small>}
+            </div>
+            <div className="passport-context-relations">
+              {relationships.slice(0, 6).map((rel) => (
+                <button type="button" key={rel.id} onClick={() => onSelectRelated(rel.counterpartId)}>
+                  <span>{rel.direction === "in" ? "←" : "→"}</span>
+                  <span><strong>{rel.counterpartLabel}</strong>{rel.label && <small>{rel.label}</small>}</span>
+                </button>
+              ))}
+              {relationships.length === 0 && <p className="dim">직접 연결된 관계가 없습니다.</p>}
+              {relationships.length > 6 && <p className="dim">그 외 {relationships.length - 6}개 관계</p>}
+            </div>
+          </div>
+        </div>
 
-      {subject.description && (
-        <section>
-          <h4>설명</h4>
-          <p>{subject.description}</p>
-        </section>
-      )}
+        <div className="detail-info-pane passport-info-pane">
+          <div className="step-detail-header">
+            <div>
+              <p className="detail-eyebrow">{subject.presentationType}</p>
+              <h3><span className={`pt-dot pt-${subject.presentationType}`} /> {subject.label}</h3>
+            </div>
+            <button type="button" className="close-button" onClick={onClose} aria-label="닫기">×</button>
+          </div>
+          {subject.sublabel && <p className="dim passport-subtitle">{subject.sublabel}</p>}
 
-      {((subject.inputs?.length ?? 0) > 0 || (subject.outputs?.length ?? 0) > 0) && (
-        <section>
+          {subject.description && (
+            <section>
+              <h4>설명</h4>
+              <p>{subject.description}</p>
+            </section>
+          )}
+
+          {((subject.inputs?.length ?? 0) > 0 || (subject.outputs?.length ?? 0) > 0) && (
+            <section>
           <h4>in / out</h4>
           {(subject.inputs?.length ?? 0) > 0 && (
             <>
@@ -181,11 +203,11 @@ export function Passport({
               </ul>
             </>
           )}
-        </section>
-      )}
+            </section>
+          )}
 
-      {relationships.length > 0 && (
-        <section>
+          {relationships.length > 0 && (
+            <section>
           <h4>관계</h4>
           <ul className="passport-relationship-list">
             {relationships.map((rel) => (
@@ -202,13 +224,15 @@ export function Passport({
               </li>
             ))}
           </ul>
-        </section>
-      )}
+            </section>
+          )}
 
-      <section>
-        <h4>연관된 코드 파일</h4>
-        <EvidenceList ids={subject.evidenceRefs} />
-      </section>
-    </aside>
+          <section>
+            <h4>연관된 코드 파일</h4>
+            <EvidenceList ids={subject.evidenceRefs} />
+          </section>
+        </div>
+      </aside>
+    </div>
   );
 }

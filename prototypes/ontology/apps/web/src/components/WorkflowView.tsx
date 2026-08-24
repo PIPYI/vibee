@@ -140,7 +140,7 @@ export function WorkflowView({
                 y={label.baseY + (labelOffsets.get(label.id) ?? 0)}
                 className={`edge-label workflow-edge-label${label.clickable ? " workflow-edge-label-clickable" : ""}`}
                 textAnchor={isBack ? "start" : "middle"}
-                data-detail="context"
+                data-detail={label.clickable ? undefined : "context"}
                 onClick={label.clickable ? () => onSelectEdge?.(label.edge) : undefined}
                 role={label.clickable ? "button" : undefined}
                 tabIndex={label.clickable ? 0 : undefined}

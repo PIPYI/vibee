@@ -50,11 +50,11 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 
 - **프로젝트 한눈에**(기본 진입) — Core coverage 영수증, AI가 고른 주 경로, 런타임별 역할·진입점·로컬 데이터를 일반 DOM으로 보여준다.
 - **구성요소** — `ArchitectureComposition.tsx` 카드 그리드.
-- **관계 상세** — rank/lane SVG 그래프. `ViewerShell` 안에서 pan/zoom/finder/radar를 쓴다. 최초 진입과 0 키는 좌상단 100%가 아니라 전체 내용 맞춤이다.
+- **관계 상세** — 컴포넌트를 합치지 않는 런타임 행 × 의미 layer 열의 DOM 지도. HTML 카드가 레이아웃을 소유하고 SVG는 카드 뒤의 연결선만 그린다. 핵심 관계/모든 관계 전환은 노드가 아니라 edge의 읽기 밀도만 바꾼다.
 
 서브탭 전환은 로컬 state만 바꾼다 — 이미 받아온 `AnalysisBundle`을 다시 그릴 뿐 `GET /api/analysis-bundle` 재요청이 없다("탭 전환은 API를 안 부른다"는 v1의 불변을 그대로 지킨다).
 
-## 3. 렌더러 자체 개선 — crossing 최소화 + cycle 방어
+## 3. 레거시·Workflow 렌더러 개선 — crossing 최소화 + cycle 방어
 
 `architectureLayout.ts`/`workflowLayout.ts`의 rank 배정은 Sugiyama 레이어드 그래프 알고리즘의 정식 1단계(longest-path layering)를 따르고 있었지만, 같은 rank 안에서 노드를 배치하는 순서는 `list.sort()`(id 알파벳 순)뿐이었다 — crossing reduction(2단계)이 통째로 빠져 있었다. v2에서 추가한 것:
 
@@ -76,27 +76,27 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 - **Layout**: `.viewer-canvas`에 은은한 dot-grid 배경(`radial-gradient` 반복 패턴)을 추가해 그래프 캔버스에 좌표 감각을 줬다. boundary는 기존 파란빛 점선 대신 amber 점선 + 라벨로 바꿨다.
 - **Focus 색**: `[data-focus-state="match"]`/`"dim"`인 엣지에 색(mint/gray)을 더했다 — 여전히 종류가 아니라 focus 상태가 근거이므로 기존 I16("색은 종류가 아니라 focus 상태에서만 온다")을 위반하지 않는다.
 
-## 4-1. 전체 구조 탭 — 구조적 노드 클러스터링
+## 4-1. 관계 상세 v3 — 노드 클러스터링 폐기
 
-브라우저로 실제 chungnam 데이터를 열어보니 §3의 crossing 최소화·장애물 회피를 다 적용해도 19개 컴포넌트·41개 connection을 전부 그리면 라벨이 겹쳐 한눈에 안 들어왔다. 원인은 렌더러 품질이 아니라 **큐레이션 없이 원본 그래프를 통째로 그린다**는 것이었다 — 구성 개요 탭은 rank 재해석으로 이미 큐레이션돼 있는데 전체 구조 탭만 빠져 있었다.
+초기 v2는 비슷한 이웃을 가진 컴포넌트를 Jaccard 유사도로 합쳐 `×5` 같은 클러스터를 만들었다. 노드 수는 줄었지만 사용자가 알고 싶은 실제 구성요소 이름을 감췄고, 펼칠 때 boundary와 좌표가 다시 계산되면서 런타임 박스가 겹쳤다. 따라서 관계 상세 경로에서는 `architectureClustering.ts`와 `ViewerShell`을 더 이상 사용하지 않는다(유틸리티와 회귀 테스트는 레거시 연구 기록으로 남아 있다).
 
-**처음 시도(반려)**: "같은 tier 안에서 이웃 집합이 완전히 동일한 노드만 합친다"는 exact-match 방식을 생각했지만, 실제 데이터에서 화면들은 공통 서비스 몇 개는 같이 부르면서도 나머지 연결은 조금씩 갈려서 완전히 똑같은 경우가 드물어 대응 범위가 너무 좁다는 지적을 받았다. §2(구성 개요 티어링)는 rank를 재사용할 뿐 새 알고리즘이 필요 없었지만, **클러스터링은 실제로 새로운 그래프 알고리즘이 필요하다** — 다만 AI/스키마가 아니라 순수 그래프 유사도 알고리즘이라는 점은 같다.
+새 `ArchitectureRelationshipMap.tsx`/`architectureRelationships.ts`의 규칙:
 
-**최종 알고리즘 — `layout/architectureClustering.ts`**: `viewPlan.groups`가 있으면 그 의미 그룹을 우선 사용한다. 없는 항목에만 같은 boundary·같은 layer/tier 안에서 Jaccard 유사도(`|A∩B|/|A∪B|`) 0.6 이상인 노드를 자동 클러스터링한다. 서로 다른 앱의 화면이 연결 모양만 비슷하다는 이유로 합쳐지지 않는다. 합친 component와 connection은 원본 `entityRefs/evidenceRefs/traceLinkRefs/role`을 합집합으로 보존한다.
+- component는 `component.boundaryId`를 우선해 정확히 한 런타임 행에만 속한다. 레거시 `boundary.wraps`가 중첩돼도 첫 소유권만 택해 경계가 겹치지 않는다.
+- 열은 `actor → interface → service → state → data → external` 고정 순서다. 명시적 `component.layer`가 우선이고, 없을 때만 presentation type으로 추정한다.
+- 노드는 절대 합치거나 숨기지 않는다. `viewPlan.primaryPath`는 기본 화면에서 표시할 connection만 고르며, “모든 관계”로 즉시 전환할 수 있다.
+- 카드 위치는 CSS Grid/일반 HTML이 정한다. `ResizeObserver`가 실제 DOM 박스를 측정한 뒤 SVG edge를 카드 뒤에 그린다. 카드와 라벨은 서로 다른 z-layer이고, 라벨은 열 사이 전용 거터에 놓인다.
+- relation label을 누르면 전체 지도를 어둡게 유지한 채 해당 두 컴포넌트와 근거만 큰 모달에 표시한다. component 클릭도 우측 고정 패널 대신 선택 노드와 1-hop 관계만 왼쪽에 남기는 38/62 모달을 쓴다.
+- 좁은 화면에서는 페이지 전체가 아니라 관계 지도 내부만 가로 스크롤한다. 모바일 상세 모달은 위(관계 맥락)/아래(정보)로 바뀐다.
 
-**실측 검증(chungnam 실제 번들)**: 19개 컴포넌트·41개 connection → **9개 노드·10개 connection**으로 줄었다.
-- `cluster:screen:1`(화면 9개): `bus-stop-detail, complete-screen, history-screen, home-screen, mission-detail-screen, missions-tab, progress-screen, recommend-screen, verify-screen` — 나머지 화면 3개(`badges-screen`, `ranking-screen`, `agent-showcase`)는 이웃 집합이 충분히 달라 threshold 미달로 남았다.
-- `cluster:core:0`(핵심 서비스 3개): `location-map-service, mission-catalog-service, mission-progress-service` — 거의 같은 화면 집합에서 호출받아 유사도가 높았다. `reward-services`는 호출 경로가 달라 남았다.
-- exact-match였다면 이 정도 축소는 나오지 않았을 것 — threshold 기반 유사도가 실제로 필요했다는 게 이 실측으로 확인됐다.
+Workflow의 sequence label은 축소 맞춤 상태에서도 숨기지 않는다. 클릭하면 별도 고정 패널이 아니라 큰 모달에서 participant card, lifeline, phase band, activation, call/return/event 범례를 가진 시퀀스 다이어그램을 보여준다.
 
-**펼치기(확정: 전체 구조 안에서 바로 펼치기)**: `ArchitectureGraph`가 `expandedMemberIds: Set<string>`(원본 컴포넌트 id, 클러스터 id 아님) 로컬 state를 갖는다. 렌더링마다 `computeClusteredArchitectureIR(ir, { excludeFromClustering: expandedMemberIds })`를 다시 호출 — 이미 펼친 컴포넌트는 유사도 계산에서 빠져 원본 그대로 나온다. 클러스터 노드 클릭 시 그 클러스터의 원본 멤버 id를 `expandedMemberIds`에 더한다(클러스터 id 자체가 재호출마다 바뀔 수 있어 안정적인 원본 id로 추적한다). 접기는 그룹별이 아니라 "펼친 항목 접기" 버튼 하나로 전체를 되돌린다(단순화). 클러스터 노드는 클릭해도 `onSelectComponent`(Passport 패널)를 열지 않는다 — 클러스터는 특정 컴포넌트가 아니므로 펼쳐서 개별 노드가 나온 뒤에만 동작한다. 전부 로컬 state라 API 재요청이 없다("탭 전환은 API를 안 부른다"가 "펼치기/접기도 API를 안 부른다"로 확장).
-
-**알려진 한계**: `ViewerShell`의 찾기는 원본 컴포넌트 목록 전체를 검색한다. 접힌 클러스터 안의 항목을 선택하면 아직 자동으로 그룹을 펼치지 못한다. 또한 현재 Core 런타임 탐지는 JS/TS package manifest 중심이며, Python/Java/Go의 실행 단위 탐지는 후속 adapter가 필요하다.
+**알려진 한계**: 현재 Core 런타임 탐지는 JS/TS package manifest 중심이며, Python/Java/Go의 실행 단위 탐지는 후속 adapter가 필요하다. `ScenarioParticipant`에는 presentation type이 없어서 Sequence 렌더러는 label을 표시용 type으로만 추정하며 의미 판정에는 사용하지 않는다.
 
 ## 유지 / 폐기
 
-**유지**: `computeArchitectureLayout`/`computeWorkflowLayout`의 rank 계산 골격, `edgeRouting.ts`의 port-spread·elbow 라우팅·라벨 겹침 해소, `ViewerShell`의 pan/zoom/finder/radar, Passport 패널 연결(변경 없음).
+**유지**: Workflow의 `computeWorkflowLayout`, `edgeRouting.ts`, `ViewerShell` pan/zoom/finder/radar. Architecture의 과거 rank/clustering 코드는 레거시 테스트와 연구 비교를 위해 남기되 관계 상세 렌더 경로에서는 호출하지 않는다.
 
-**신규(이번 v2)**: Core `RepositoryTopology`·completeness gate, data asset Evidence와 `data_import`, `ArchitectureIR.viewPlan/layer`, `ProjectOverview.tsx`, 3단계 서브탭, 내용 맞춤 캔버스, 근거를 보존하는 boundary-safe 클러스터링, 실제 우회 경로 기준 edge label 배치.
+**신규**: Core `RepositoryTopology`·completeness gate, data asset Evidence와 `data_import`, `ArchitectureIR.viewPlan/layer`, `ProjectOverview.tsx`, 3단계 서브탭, 런타임×layer 관계 지도, edge/Passport 맥락 모달, Sequence 대형 모달.
 
-**후속(다음 v2 단계, 아직 안 함)**: Workflow/Sequence 뷰어의 시각적 리디자인 — 이번 패스는 아키텍처 뷰어에 한정했다. `ViewerShell` 찾기(finder)가 접힌 클러스터 안의 노드를 자동으로 펼쳐서 포커스하도록 하는 것(§4-1의 "알려진 한계" 참고).
+**후속**: Sequence participant에 표시용 type/sublabel을 명시적으로 저작하도록 IR을 확장할지 검토한다. 연결이 수백 개인 저장소에서는 primaryPath 외에 도메인/role 필터가 추가로 필요하다.

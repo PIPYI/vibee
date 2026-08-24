@@ -1,0 +1,329 @@
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+
+import type { ArchitectureComponent, ArchitectureConnection, ArchitectureIR } from "@onto/protocol";
+
+import { computeRelationshipLanes, primaryConnectionIds, RELATIONSHIP_LAYER_LABEL } from "../layout/architectureRelationships.js";
+import { EvidenceList } from "./Grounding.js";
+
+const PT_SHORT: Record<string, string> = {
+  external: "EXT", frontend: "UI", backend: "SRV", database: "DB", queue: "Q",
+  security: "SEC", job: "JOB", cloud: "CLD", unknown: "?",
+};
+
+const ROLE_LABEL: Record<string, string> = { sync: "동기 호출", async: "비동기", data: "데이터 전달", control: "제어" };
+
+type EdgeGeometry = {
+  id: string;
+  path: string;
+  labelX: number;
+  labelY: number;
+};
+
+function portOffset(index: number, count: number): number {
+  if (count <= 1) return 0;
+  return (index - (count - 1) / 2) * Math.min(22, 44 / (count - 1));
+}
+
+function RelationshipCard({ component, onSelect }: { component: ArchitectureComponent; onSelect?: (id: string) => void }): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className={`relationship-card relationship-card-${component.presentationType}`}
+      data-relationship-node={component.id}
+      onClick={() => onSelect?.(component.id)}
+      title={component.description ?? component.sublabel ?? component.label}
+    >
+      <span className="relationship-card-meta">
+        <span className={`pt-chip-mini pt-${component.presentationType}`}>{PT_SHORT[component.presentationType] ?? "?"}</span>
+        {component.sublabel && <span>{component.sublabel}</span>}
+      </span>
+      <strong>{component.label}</strong>
+    </button>
+  );
+}
+
+function ConnectionDetail({
+  connection,
+  componentById,
+  onClose,
+  onSelectComponent,
+}: {
+  connection: ArchitectureConnection;
+  componentById: Map<string, ArchitectureComponent>;
+  onClose: () => void;
+  onSelectComponent?: (id: string) => void;
+}): React.JSX.Element {
+  const from = componentById.get(connection.from);
+  const to = componentById.get(connection.to);
+  return (
+    <div className="detail-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="detail-modal relationship-detail-modal" role="dialog" aria-modal="true" aria-label="관계 상세">
+        <div className="detail-context-pane">
+          <p className="detail-eyebrow">선택한 관계만 보기</p>
+          <div className="relationship-focus-flow">
+            <button type="button" onClick={() => from && onSelectComponent?.(from.id)}>
+              {from && <span className={`pt-dot pt-${from.presentationType}`} />}
+              <strong>{from?.label ?? connection.from}</strong>
+              {from?.sublabel && <small>{from.sublabel}</small>}
+            </button>
+            <div className={`relationship-focus-arrow relationship-focus-${connection.role ?? "sync"}`}>
+              <span>{connection.label ?? ROLE_LABEL[connection.role ?? "sync"]}</span>
+              <i>→</i>
+            </div>
+            <button type="button" onClick={() => to && onSelectComponent?.(to.id)}>
+              {to && <span className={`pt-dot pt-${to.presentationType}`} />}
+              <strong>{to?.label ?? connection.to}</strong>
+              {to?.sublabel && <small>{to.sublabel}</small>}
+            </button>
+          </div>
+        </div>
+        <div className="detail-info-pane">
+          <div className="step-detail-header">
+            <div>
+              <p className="detail-eyebrow">{ROLE_LABEL[connection.role ?? "sync"]}</p>
+              <h3>{connection.label ?? `${from?.label ?? connection.from} → ${to?.label ?? connection.to}`}</h3>
+            </div>
+            <button type="button" className="close-button" onClick={onClose} aria-label="닫기">×</button>
+          </div>
+          <p className="detail-relation-summary">
+            <strong>{from?.label ?? connection.from}</strong>에서 <strong>{to?.label ?? connection.to}</strong>로 이어지는 관계입니다.
+          </p>
+          {connection.traceLinkRefs.length > 0 && (
+            <section>
+              <h4>코드에서 확인된 연결</h4>
+              <ul className="chip-list">
+                {connection.traceLinkRefs.map((ref) => <li key={ref} className="chip">{ref}</li>)}
+              </ul>
+            </section>
+          )}
+          <section>
+            <h4>관계 근거</h4>
+            <EvidenceList ids={connection.evidenceRefs} />
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function ArchitectureRelationshipMap({
+  ir,
+  onSelectComponent,
+}: {
+  ir: ArchitectureIR;
+  onSelectComponent?: (componentId: string) => void;
+}): React.JSX.Element {
+  const { lanes, layers } = useMemo(() => computeRelationshipLanes(ir), [ir]);
+  const primaryIds = useMemo(() => primaryConnectionIds(ir), [ir]);
+  const hasPrimaryPath = primaryIds.size > 0;
+  const [mode, setMode] = useState<"primary" | "all">(hasPrimaryPath ? "primary" : "all");
+  const [geometries, setGeometries] = useState<EdgeGeometry[]>([]);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [selectedConnection, setSelectedConnection] = useState<ArchitectureConnection | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const componentById = useMemo(() => new Map(ir.components.map((component) => [component.id, component])), [ir.components]);
+  const visibleConnections = useMemo(
+    () => mode === "primary" && hasPrimaryPath
+      ? ir.connections.filter((connection) => primaryIds.has(connection.id))
+      : ir.connections,
+    [hasPrimaryPath, ir.connections, mode, primaryIds],
+  );
+
+  const measure = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    const outgoing = new Map<string, ArchitectureConnection[]>();
+    const incoming = new Map<string, ArchitectureConnection[]>();
+    for (const connection of visibleConnections) {
+      if (!outgoing.has(connection.from)) outgoing.set(connection.from, []);
+      if (!incoming.has(connection.to)) incoming.set(connection.to, []);
+      outgoing.get(connection.from)!.push(connection);
+      incoming.get(connection.to)!.push(connection);
+    }
+    const next: EdgeGeometry[] = [];
+    for (const connection of visibleConnections) {
+      const fromElement = stage.querySelector<HTMLElement>(`[data-relationship-node="${CSS.escape(connection.from)}"]`);
+      const toElement = stage.querySelector<HTMLElement>(`[data-relationship-node="${CSS.escape(connection.to)}"]`);
+      if (!fromElement || !toElement) continue;
+      const from = fromElement.getBoundingClientRect();
+      const to = toElement.getBoundingClientRect();
+      const outList = outgoing.get(connection.from) ?? [connection];
+      const inList = incoming.get(connection.to) ?? [connection];
+      const startY = from.top - stageRect.top + from.height / 2 + portOffset(outList.indexOf(connection), outList.length);
+      const endY = to.top - stageRect.top + to.height / 2 + portOffset(inList.indexOf(connection), inList.length);
+      const startX = from.right - stageRect.left;
+      const endX = to.left - stageRect.left;
+      let path: string;
+      let labelX: number;
+      if (connection.from === connection.to) {
+        const loopX = startX + 28;
+        path = `M ${startX} ${startY} H ${loopX} V ${startY + 34} H ${startX - 10}`;
+        labelX = loopX;
+      } else if (endX > startX + 36) {
+        const middleX = startX + (endX - startX) / 2;
+        path = `M ${startX} ${startY} H ${middleX} V ${endY} H ${endX}`;
+        // 여러 열을 건너뛰어도 라벨은 중간 컴포넌트 위가 아니라 출발 직후 거터에 둔다.
+        labelX = startX + Math.min(54, (endX - startX) / 2);
+      } else {
+        // 같은 열/역방향 연결은 카드 바로 옆이 아니라 열 사이 전용 거터 중앙으로 보낸다.
+        const gutterX = Math.max(startX, to.right - stageRect.left) + 54;
+        path = `M ${startX} ${startY} H ${gutterX} V ${endY} H ${endX}`;
+        labelX = gutterX;
+      }
+      next.push({ id: connection.id, path, labelX, labelY: startY - 16 });
+    }
+
+    // 전체 관계 모드에서도 라벨끼리 덮이지 않게 거터 안에서만 위아래 후보를 탐색한다.
+    const nodeBoxes = [...stage.querySelectorAll<HTMLElement>("[data-relationship-node]")].map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { left: rect.left - stageRect.left, right: rect.right - stageRect.left, top: rect.top - stageRect.top, bottom: rect.bottom - stageRect.top };
+    });
+    const placed: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+    const overlaps = (a: { left: number; right: number; top: number; bottom: number }, b: { left: number; right: number; top: number; bottom: number }): boolean =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    for (const geometry of next) {
+      const connection = visibleConnections.find((item) => item.id === geometry.id);
+      const textLength = (connection?.label ?? ROLE_LABEL[connection?.role ?? "sync"] ?? "관계").length + 2;
+      const width = Math.min(92, Math.max(42, textLength * 5.4));
+      const candidates = [0, -24, 24, -48, 48, -72, 72];
+      for (const offset of candidates) {
+        const cy = geometry.labelY + offset;
+        const box = { left: geometry.labelX - width / 2, right: geometry.labelX + width / 2, top: cy - 10, bottom: cy + 10 };
+        if (nodeBoxes.some((node) => overlaps(box, node)) || placed.some((label) => overlaps(box, label))) continue;
+        geometry.labelY = cy;
+        placed.push(box);
+        break;
+      }
+    }
+    setGeometries(next);
+  }, [visibleConnections]);
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const frame = requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    stage.querySelectorAll("[data-relationship-node]").forEach((node) => observer.observe(node));
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure, layers.length, lanes.length]);
+
+  const geometryById = new Map(geometries.map((geometry) => [geometry.id, geometry]));
+  const primaryNodeIds = new Set(ir.viewPlan?.primaryPath ?? []);
+  const stageMinWidth = 180 + Math.max(1, layers.length) * 280;
+
+  return (
+    <div className="relationship-map">
+      <div className="relationship-toolbar">
+        <div>
+          <strong>런타임별 관계 지도</strong>
+          <p>블록을 합치지 않고, 의미 레이어를 고정해 모든 구성요소의 위치를 유지합니다.</p>
+        </div>
+        <div className="relationship-mode" role="group" aria-label="표시할 관계">
+          {hasPrimaryPath && (
+            <button type="button" aria-pressed={mode === "primary"} onClick={() => setMode("primary")}>핵심 관계 {primaryIds.size}</button>
+          )}
+          <button type="button" aria-pressed={mode === "all"} onClick={() => setMode("all")}>모든 관계 {ir.connections.length}</button>
+        </div>
+      </div>
+
+      <div className="relationship-scroll">
+        <div
+          className="relationship-stage"
+          ref={stageRef}
+          style={{ minWidth: stageMinWidth, gridTemplateColumns: `160px repeat(${layers.length}, minmax(250px, 1fr))` }}
+        >
+          <div className="relationship-corner">실행 영역</div>
+          {layers.map((layer, index) => (
+            <div key={layer} className="relationship-layer-head">
+              <span>{String(index + 1).padStart(2, "0")}</span>{RELATIONSHIP_LAYER_LABEL[layer]}
+            </div>
+          ))}
+
+          {lanes.map((lane) => (
+            <div key={lane.id} className="relationship-lane" style={{ gridColumn: `1 / span ${layers.length + 1}` }}>
+              <div className="relationship-lane-grid" style={{ gridTemplateColumns: `160px repeat(${layers.length}, minmax(250px, 1fr))` }}>
+                <div className="relationship-lane-title">
+                  <strong>{lane.label}</strong>
+                  {lane.kind && <span>{lane.kind}</span>}
+                </div>
+                {layers.map((layer) => (
+                  <div key={layer} className="relationship-cell">
+                    {(lane.componentsByLayer.get(layer) ?? []).map((component) => (
+                      <div key={component.id} className={mode === "primary" && hasPrimaryPath && !primaryNodeIds.has(component.id) ? "relationship-node-secondary" : undefined}>
+                        <RelationshipCard component={component} onSelect={onSelectComponent} />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <svg className="relationship-edge-layer" aria-hidden="true">
+            <defs>
+              <marker id="relationship-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+            </defs>
+            {visibleConnections.map((connection) => {
+              const geometry = geometryById.get(connection.id);
+              if (!geometry) return null;
+              const muted = hoveredEdgeId !== null && hoveredEdgeId !== connection.id;
+              return (
+                <path
+                  key={connection.id}
+                  d={geometry.path}
+                  className={`relationship-edge relationship-edge-${connection.role ?? "sync"}${muted ? " relationship-edge-muted" : ""}`}
+                  markerEnd="url(#relationship-arrow)"
+                />
+              );
+            })}
+          </svg>
+
+          <div className="relationship-label-layer">
+            {visibleConnections.map((connection) => {
+              const geometry = geometryById.get(connection.id);
+              if (!geometry) return null;
+              return (
+                <button
+                  type="button"
+                  key={connection.id}
+                  className={`relationship-edge-label relationship-edge-label-${connection.role ?? "sync"}`}
+                  style={{ left: geometry.labelX, top: geometry.labelY }}
+                  onMouseEnter={() => setHoveredEdgeId(connection.id)}
+                  onMouseLeave={() => setHoveredEdgeId(null)}
+                  onFocus={() => setHoveredEdgeId(connection.id)}
+                  onBlur={() => setHoveredEdgeId(null)}
+                  onClick={() => setSelectedConnection(connection)}
+                  title="관계 근거 보기"
+                >
+                  {connection.label ?? ROLE_LABEL[connection.role ?? "sync"]} <span>↗</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <p className="relationship-legend"><span>실선 동기</span><span>╌ 비동기</span><span className="relationship-legend-data">데이터</span><span className="relationship-legend-control">제어</span> · 라벨을 누르면 이 관계만 분리해 볼 수 있습니다.</p>
+
+      {selectedConnection && (
+        <ConnectionDetail
+          connection={selectedConnection}
+          componentById={componentById}
+          onClose={() => setSelectedConnection(null)}
+          onSelectComponent={(id) => {
+            setSelectedConnection(null);
+            onSelectComponent?.(id);
+          }}
+        />
+      )}
+    </div>
+  );
+}

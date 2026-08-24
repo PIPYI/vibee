@@ -380,15 +380,19 @@ export function App(): React.JSX.Element {
             </section>
 
             {sequenceView && (
-              <aside className="step-detail sequence-panel">
-                <div className="step-detail-header">
-                  <h3>시퀀스</h3>
-                  <button type="button" className="close-button" onClick={() => setSequenceView(null)} aria-label="닫기">
-                    ×
-                  </button>
-                </div>
-                <SequenceView ir={sequenceView} />
-              </aside>
+              <div
+                className="detail-modal-backdrop"
+                role="presentation"
+                onMouseDown={(event) => { if (event.target === event.currentTarget) setSequenceView(null); }}
+              >
+                <section className="detail-modal sequence-modal" role="dialog" aria-modal="true" aria-label={sequenceView.title}>
+                  <div className="sequence-modal-head">
+                    <div><p className="detail-eyebrow">사용자 흐름 상세</p><h3>{sequenceView.title}</h3></div>
+                    <button type="button" className="close-button" onClick={() => setSequenceView(null)} aria-label="닫기">×</button>
+                  </div>
+                  <SequenceView ir={sequenceView} />
+                </section>
+              </div>
             )}
 
             {!sequenceView && passportData && projectPath && (
