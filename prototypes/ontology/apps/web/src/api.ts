@@ -13,11 +13,14 @@ import type {
   ModelOption,
   OverviewIR,
   ReachabilityIR,
+  IncrementalAnalysisPlan,
   ScenarioIR,
+  SystemFactStore,
   TaskState,
   TraceIR,
   ViewAnchor,
   ViewKind,
+  V4RolloutReport,
 } from "@onto/protocol";
 import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
@@ -70,7 +73,8 @@ export function indexOnly(projectPath: string): Promise<IndexResponse | { error:
   return postJson("/api/index", { projectPath });
 }
 
-export type AnalyzeResponse = { taskId: string } & IndexResponse;
+export type AnalyzeResponse = { taskId: string; incrementalPlan: IncrementalAnalysisPlan } & IndexResponse;
+export type IncrementalPlanResponse = { taskId: string } & IncrementalAnalysisPlan;
 export function analyze(
   agent: AgentId,
   projectPath: string,
@@ -82,6 +86,29 @@ export function analyze(
     clientRuntime: { protocolVersion: ONTO_PROTOCOL_VERSION, buildId: ONTO_BUILD_ID },
     ...extra,
   });
+}
+
+export function incrementalPlan(taskId: string): Promise<IncrementalPlanResponse | { error: string }> {
+  return getJson(`/api/tasks/${encodeURIComponent(taskId)}/incremental-plan`);
+}
+
+export type SystemFactsResponse = SystemFactStore & {
+  counts: { entities: number; links: number };
+};
+export function systemFacts(): Promise<SystemFactsResponse | Unavailable> {
+  return getJson("/api/system-facts");
+}
+
+export function rolloutReport(projectPath: string): Promise<{
+  featureMode: "off" | "shadow" | "on";
+  latest: V4RolloutReport | null;
+  reports: V4RolloutReport[];
+} | { error: string }> {
+  return getJson(`/api/rollout-report?projectPath=${encodeURIComponent(projectPath)}`);
+}
+
+export function taskRolloutReport(taskId: string): Promise<{ report: V4RolloutReport | null } | { error: string }> {
+  return getJson(`/api/tasks/${encodeURIComponent(taskId)}/rollout-report`);
 }
 
 export function stopTask(taskId: string): Promise<{ ok: true } | { error: string }> {

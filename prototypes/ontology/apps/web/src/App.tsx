@@ -18,17 +18,22 @@ import type {
   AnalysisPipelineStage,
   AnalysisStageState,
   ArchitectureComponent,
+  IncrementalAnalysisPlan,
   ModelOption,
   SequenceIR,
   StageUsage,
+  SystemFactStore,
+  V4RolloutReport,
 } from "@onto/protocol";
-import { ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
+import { entityKey, ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 import * as api from "./api.js";
 import { DiagnosticsDrawer, PhaseStepper, StageLedger, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
 import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
 import { SequenceView } from "./components/SequenceView.js";
 import { UnifiedMapView } from "./components/UnifiedMapView.js";
+import { V4AnalysisSummary } from "./components/V4AnalysisSummary.js";
+import { summarizeFactTrust } from "./factTrust.js";
 import { useAgentEvents } from "./ws.js";
 
 type Screen = "no-project" | "indexing" | "ready" | "analyzing" | "analyzed";
@@ -113,6 +118,9 @@ export function App(): React.JSX.Element {
   const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
   const [sequenceView, setSequenceView] = useState<SequenceIR | null>(null);
   const [stageUsages, setStageUsages] = useState<StageUsage[]>([]);
+  const [systemFacts, setSystemFacts] = useState<SystemFactStore | null>(null);
+  const [incrementalPlan, setIncrementalPlan] = useState<IncrementalAnalysisPlan | null>(null);
+  const [rolloutReport, setRolloutReport] = useState<V4RolloutReport | null>(null);
 
   useEffect(() => {
     void api.health().then((h) => {
@@ -121,7 +129,7 @@ export function App(): React.JSX.Element {
         ? current
         : h.agents.find((item) => item.installed)?.agent ?? current);
       if (!h.runtime) {
-        setRuntimeError("분석 엔진이 V3.2 이전 버전으로 실행 중입니다. Bridge를 다시 시작해 주세요.");
+        setRuntimeError("분석 엔진이 V4 이전 버전으로 실행 중입니다. Bridge를 다시 시작해 주세요.");
       } else if (h.runtime.protocolVersion !== ONTO_PROTOCOL_VERSION || h.runtime.buildId !== ONTO_BUILD_ID) {
         setRuntimeError(
           `Web과 분석 엔진의 실행 버전이 다릅니다. Web ${ONTO_BUILD_ID} · Bridge ${h.runtime.buildId}. Bridge를 다시 시작해 주세요.`,
@@ -149,6 +157,7 @@ export function App(): React.JSX.Element {
           setStageStates(active.stageStates ?? []);
           setPipelinePhase(phaseFromStages(active.stageStates ?? []));
           setScreen("analyzing");
+          void api.incrementalPlan(active.taskId).then((result) => { if (!("error" in result)) setIncrementalPlan(result); });
           return;
         }
         setScreen("indexing");
@@ -160,6 +169,8 @@ export function App(): React.JSX.Element {
           }
           setBundle(result.bundle);
           setScreen("analyzed");
+          void api.systemFacts().then((facts) => { if (!api.isUnavailable(facts)) setSystemFacts(facts); });
+          void api.rolloutReport(s.projectPath!).then((report) => { if (!("error" in report)) setRolloutReport(report.latest); });
         });
       }
     });
@@ -224,6 +235,8 @@ export function App(): React.JSX.Element {
       return false;
     }
     setBundle(result.bundle);
+    void api.systemFacts().then((facts) => { if (!api.isUnavailable(facts)) setSystemFacts(facts); }).catch(() => undefined);
+    void api.rolloutReport(path).then((report) => { if (!("error" in report)) setRolloutReport(report.latest); }).catch(() => undefined);
     return true;
   }, []);
 
@@ -329,6 +342,9 @@ export function App(): React.JSX.Element {
     }
     setProjectPath(selected.projectPath);
     setBundle(null);
+    setSystemFacts(null);
+    setIncrementalPlan(null);
+    setRolloutReport(null);
     setPassportTarget(null);
     setSequenceView(null);
     setScreen("indexing");
@@ -356,6 +372,8 @@ export function App(): React.JSX.Element {
     setHeartbeat(null);
     setDiagnosticsOpen(false);
     setTaskId(null);
+    setIncrementalPlan(null);
+    setRolloutReport(null);
     setScreen("analyzing");
     const result = await api.analyze(agent, projectPath, {
       ...(model ? { model } : {}),
@@ -367,6 +385,7 @@ export function App(): React.JSX.Element {
       return;
     }
     setTaskId(result.taskId);
+    setIncrementalPlan(result.incrementalPlan);
     setScreen("analyzing");
   }, [agent, bundle, effort, model, projectPath, runtimeError]);
 
@@ -395,7 +414,8 @@ export function App(): React.JSX.Element {
           counterpartLabel: componentById.get(counterpartId)?.label ?? counterpartId,
         };
       });
-    return { subject: component, relationships };
+    const entityFacts = component.entityRefs.flatMap((ref) => systemFacts?.entities.filter((fact) => fact.id === ref || entityKey(fact.ref) === ref) ?? []);
+    return { subject: { ...component, trust: summarizeFactTrust(entityFacts) }, relationships };
   })();
 
   const openSequence = useCallback(
@@ -531,6 +551,7 @@ export function App(): React.JSX.Element {
         {screen === "analyzing" && (
           <section className="view-pane analyzing-pane">
             <PhaseStepper phase={pipelinePhase} failed={pipelineFailed} />
+            <V4AnalysisSummary plan={incrementalPlan} report={rolloutReport} analyzing />
             <StageLedger states={stageStates} heartbeat={heartbeat} />
             <div className="analysis-usage" aria-label="분석 토큰 사용량">
               <strong>분석 사용량</strong>
@@ -553,8 +574,10 @@ export function App(): React.JSX.Element {
                   코드가 바뀌었지만 이 화면은 아직 최신이 아닙니다 — 여전히 읽을 수 있습니다. "다시 분석"으로 갱신하세요.
                 </p>
               )}
+              <V4AnalysisSummary plan={incrementalPlan} facts={systemFacts} report={rolloutReport} />
               <UnifiedMapView
                 bundle={bundle}
+                systemFacts={systemFacts}
                 onSelectComponent={(id) => { setSequenceView(null); setPassportTarget({ id }); }}
                 onOpenSequence={(sequence) => { setPassportTarget(null); setSequenceView(sequence); }}
               />

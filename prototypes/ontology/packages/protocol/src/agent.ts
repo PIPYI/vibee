@@ -12,6 +12,8 @@
  * **이 파일은 OS를 알지 않는다.** 실행 파일 해석은 bridge의 platform 계층에만 있다.
  */
 
+import type { SystemIntelligenceV4Mode, V4RolloutReport } from "./index.js";
+
 export const BRIDGE_HOST = "127.0.0.1";
 export const DEFAULT_BRIDGE_PORT = 43220;
 
@@ -23,7 +25,7 @@ export const DEFAULT_BRIDGE_PORT = 43220;
  * 프로토콜 모양이 바뀌는 릴리스에서 이 값을 함께 올리면 그 조합을 분석 시작 전에 막는다.
  */
 export const ONTO_PROTOCOL_VERSION = "4.0";
-export const ONTO_BUILD_ID = "v4-incremental-discovery-phase6-1";
+export const ONTO_BUILD_ID = "v4-system-intelligence-final-1";
 
 export type RuntimeIdentity = {
   protocolVersion: string;
@@ -208,6 +210,8 @@ export type TaskState = {
   validationAttempts?: number;
   /** 이 task에서 실제 커밋된 generation. 없으면 Assembly 성공으로 간주하지 않는다. */
   bundleGeneration?: number;
+  /** V4 Phase 8 — 완료된 분석의 비용·coverage·shadow 비교. */
+  rolloutReport?: V4RolloutReport;
 };
 
 /**
@@ -249,6 +253,7 @@ export type HealthResponse = {
   agents: AgentReadiness[];
   projectPath: string | null;
   runtime: RuntimeCompatibility;
+  features?: { systemIntelligenceV4: SystemIntelligenceV4Mode };
 };
 
 // ---------------------------------------------------------------------------

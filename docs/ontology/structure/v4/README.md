@@ -2,7 +2,7 @@
 
 ## 0. 문서 상태와 버전 경계
 
-- 상태: 구현 중 — Phase 0 기준 fixture와 Phase 1~6 완료
+- 상태: 구현 완료 — Phase 0~8 완료
 - 기준 구현: V3.2
 - 문서 역할: V4의 분석 권한 모델, IR, 증분 상태, I20 대체 규칙과 구현 순서를 정의하는
   source of truth
@@ -72,12 +72,17 @@ Semantic Memory, RepositoryTopology, AnalysisBundle, 사용자 여정과 검증�
   조회하고, 영향받은 Bundle 조각의 현재 JSON path/value를 `bundleTargets`로 제공한다.
 - README 이름만 있는 서비스와 manifest가 없는 Node/Python built-in import는 discovery 후보에서
   제외한다.
+- Component/Connection Passport에서 `확인됨 | 코드 근거로 복원 | 확인 필요`와 발견 주체,
+  현재 검증 상태를 확인할 수 있다.
+- 분석 계획과 완료 리포트에 재사용/재분석 fact, provider turn, token, full 실행 이유를 표시한다.
+- `system-intelligence-v4=off|shadow|on` rollout flag와 동일 snapshot V3 계약 투영 비교를 구현했다.
+- rollout report를 프로젝트의 append-only event log에 영속화하고 Web/API에서 다시 읽는다.
+- 과거 generation은 HEAD를 되감지 않고 새 generation으로 copy-forward 복원한다.
 
-아직 구현하지 않음:
+운영에서 계속 축적할 항목:
 
-- Phase 0의 실제 프로젝트별 시간·토큰·provider 호출 수 계측
-- Phase 7 V4 UI와 설명 가능성
-- Phase 8 shadow rollout, 실제 provider 비교 계측과 V4 전환
+- 실제 프로젝트별 shadow report 표본과 provider/model별 비용 분포
+- 전환 조건을 만족하지 못한 프로젝트의 blocker 분류
 
 현재 `system-facts.json`에는 결정론적 engine fact와 Core가 source contract를 검증한 Vibee fact가
 같은 증분 수명 규칙으로 들어간다. 기존 agent Evidence를 `engine-confirmed`로 자동 승격하지 않는다.
@@ -114,6 +119,20 @@ Semantic Memory, RepositoryTopology, AnalysisBundle, 사용자 여정과 검증�
   실제 source import/call/config를 묶어 후보를 만들며 README는 입력에서 제외한다.
 - `mode: full` 또는 `index-only`는 사용자의 명시적 전체 실행으로 기록한다. 그 외 같은 snapshot,
   cosmetic, 구조와 무관한 CSS 변경은 provider turn 0회다.
+
+### 0.4 Phase 7~8 구현 결정 — 2026-08-24
+
+- 기본 지도는 engine/vibee origin으로 색을 양분하지 않는다. 검증 상태가 나쁜 fact만 카드에
+  경고하고 provenance는 Passport에서 설명한다.
+- shadow mode는 같은 저장소를 V3/V4 provider로 두 번 읽어 비용과 비결정성을 키우지 않는다.
+  커밋된 동일 snapshot을 V3의 Trace-link 진입 계약으로 결정론적으로 투영하고 V4 coverage와
+  비교한다. 사용자 여정 coverage는 같은 Bundle 기준으로 하락 여부를 검사한다.
+- `off`는 V3 호환 arm이다. V4 Store 읽기/migration은 유지하지만 open-world discovery gap과
+  신규 `propose_system_facts`를 차단한다. `shadow`와 `on`은 같은 V4 결과를 제공한다.
+- rollback은 HEAD를 과거 번호로 옮기지 않는다. 선택 generation의 상태를 현재 HEAD 다음
+  generation에 복제해 이후 history와 rollback 행위 자체를 보존한다.
+- provider turn/token/duration과 fact·connection·external integration·journey coverage는
+  `.project-intel/events.ndjson`에 `v4.rollout-report`로 남긴다.
 
 ## 1. 문제 정의
 
@@ -866,6 +885,8 @@ OpenAI Entity의 직접 근거:
 
 ### Phase 7 — UI와 설명 가능성
 
+구현 상태: **완료** (2026-08-24)
+
 산출물:
 
 - Component/Connection Passport에 발견 주체와 검증 상태 표시
@@ -879,12 +900,22 @@ OpenAI Entity의 직접 근거:
 
 ### Phase 8 — Shadow rollout과 V4 전환
 
+구현 상태: **완료** (2026-08-24)
+
 산출물:
 
 - feature flag `system-intelligence-v4`
 - 동일 snapshot에 V3/V4 결과를 만드는 shadow mode
 - fact/connection coverage와 비용 비교 리포트
 - V4 schema migration과 rollback
+
+구현 메모:
+
+- feature flag 환경 변수는 `ONTO_SYSTEM_INTELLIGENCE_V4=off|shadow|on`이며 기본값은 `on`이다.
+- `GET /api/rollout-report`에서 누적/최신 비교 리포트를, `GET /api/generations`에서 migration과
+  history 상태를 읽는다.
+- `POST /api/generations/rollback`은 분석 task가 없을 때만 copy-forward 복원을 수행한다.
+- `shadow`의 V3 결과는 별도 AI 재실행이 아니라 같은 snapshot의 V3 계약 투영이다.
 
 전환 조건:
 

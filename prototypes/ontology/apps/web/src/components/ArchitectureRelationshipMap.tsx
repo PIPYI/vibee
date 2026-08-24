@@ -6,7 +6,9 @@ import type {
   ArchitectureIR,
   RepositoryTopology,
   SequenceIR,
+  SystemFactStore,
 } from "@onto/protocol";
+import { entityKey } from "@onto/protocol";
 
 import {
   backendReplacementSeams,
@@ -19,6 +21,7 @@ import {
 } from "../layout/architectureRelationships.js";
 import { EvidenceList } from "./Grounding.js";
 import { SequenceView } from "./SequenceView.js";
+import { FACT_ORIGIN_LABEL, FACT_STATUS_LABEL, summarizeFactTrust, type FactTrustSummary } from "../factTrust.js";
 
 const PT_SHORT: Record<string, string> = {
   external: "EXT", frontend: "UI", backend: "SRV", database: "DB", queue: "Q",
@@ -46,6 +49,7 @@ function RelationshipCard({
   dimmed,
   readingOrder,
   onSelect,
+  trust,
 }: {
   component: ArchitectureComponent;
   replacementSeam?: BackendReplacementSeam;
@@ -53,6 +57,7 @@ function RelationshipCard({
   dimmed?: boolean;
   readingOrder?: number;
   onSelect?: (id: string) => void;
+  trust?: FactTrustSummary;
 }): React.JSX.Element {
   return (
     <button
@@ -73,6 +78,7 @@ function RelationshipCard({
         </span>
       )}
       {replacementSeam && <span className="relationship-replacement-badge">⇄ API 교체 지점</span>}
+      {trust?.level === "review" && <span className="relationship-review-badge">! 확인 필요</span>}
     </button>
   );
 }
@@ -84,6 +90,7 @@ function ConnectionDetail({
   replacementSeam,
   onClose,
   onSelectComponent,
+  factStore,
 }: {
   connection: ArchitectureConnection;
   componentById: Map<string, ArchitectureComponent>;
@@ -91,9 +98,12 @@ function ConnectionDetail({
   replacementSeam?: BackendReplacementSeam;
   onClose: () => void;
   onSelectComponent?: (id: string) => void;
+  factStore?: SystemFactStore | null;
 }): React.JSX.Element {
   const from = componentById.get(connection.from);
   const to = componentById.get(connection.to);
+  const relatedFacts = (connection.systemLinkRefs ?? []).map((id) => factStore?.links.find((item) => item.id === id)).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const trust = summarizeFactTrust(relatedFacts);
   if (sequenceMatch) {
     return (
       <div className="detail-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -109,6 +119,7 @@ function ConnectionDetail({
             <span><strong>{from?.label ?? connection.from}</strong> → <strong>{to?.label ?? connection.to}</strong></span>
             <span>정확히 일치한 호출 근거 {sequenceMatch.sharedEvidenceRefs.length}개</span>
             <span>참여 구성요소 {sequenceMatch.sequence.participants.length}개 · 메시지 {sequenceMatch.sequence.messages.length}개</span>
+            {trust && <span className={`fact-trust-inline fact-trust-inline-${trust.level}`}>● {trust.label}</span>}
           </div>
           <SequenceView ir={sequenceMatch.sequence} />
         </section>
@@ -148,6 +159,16 @@ function ConnectionDetail({
           <p className="detail-relation-summary">
             <strong>{from?.label ?? connection.from}</strong>에서 <strong>{to?.label ?? connection.to}</strong>로 이어지는 관계입니다.
           </p>
+          {trust && (
+            <section className={`fact-trust fact-trust-${trust.level}`}>
+              <div><span className="fact-trust-dot" /><strong>{trust.label}</strong><small>{trust.factCount}개 연결 사실</small></div>
+              <p>{trust.description}</p>
+              <ul className="fact-trust-meta">
+                {trust.origin.map((origin) => <li key={origin}>{FACT_ORIGIN_LABEL[origin]}</li>)}
+                {trust.statuses.map((status) => <li key={status}>{FACT_STATUS_LABEL[status]}</li>)}
+              </ul>
+            </section>
+          )}
           {replacementSeam && (
             <section className="relationship-replacement-note">
               <h4>백엔드 교체 지점</h4>
@@ -190,6 +211,7 @@ export function ArchitectureRelationshipMap({
   focusMessage,
   onClearFocus,
   onSelectComponent,
+  systemFacts,
 }: {
   ir: ArchitectureIR;
   topology?: RepositoryTopology;
@@ -200,6 +222,7 @@ export function ArchitectureRelationshipMap({
   focusMessage?: string;
   onClearFocus?: () => void;
   onSelectComponent?: (componentId: string) => void;
+  systemFacts?: SystemFactStore | null;
 }): React.JSX.Element {
   const { lanes, layers } = useMemo(() => computeRelationshipLanes(ir), [ir]);
   const primaryIds = useMemo(() => primaryConnectionIds(ir), [ir]);
@@ -210,6 +233,17 @@ export function ArchitectureRelationshipMap({
   const [selectedConnection, setSelectedConnection] = useState<ArchitectureConnection | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const componentById = useMemo(() => new Map(ir.components.map((component) => [component.id, component])), [ir.components]);
+  const entityFactsByKey = useMemo(() => {
+    const result = new Map<string, SystemFactStore["entities"]>();
+    for (const fact of systemFacts?.entities ?? []) {
+      for (const key of [fact.id, entityKey(fact.ref)]) {
+        const values = result.get(key) ?? [];
+        values.push(fact);
+        result.set(key, values);
+      }
+    }
+    return result;
+  }, [systemFacts]);
   const replacementSeams = useMemo(() => backendReplacementSeams(ir, topology), [ir, topology]);
   const sequenceMatches = useMemo(() => matchArchitectureSequences(ir, sequences), [ir, sequences]);
   const replacementConnectionIds = useMemo(
@@ -399,6 +433,7 @@ export function ArchitectureRelationshipMap({
                           dimmed={hasExternalFocus && !highlightedComponentIds.has(component.id)}
                           readingOrder={mode === "primary" ? (ir.viewPlan?.primaryPath.indexOf(component.id) ?? -1) + 1 || undefined : undefined}
                           onSelect={onSelectComponent}
+                          trust={summarizeFactTrust(component.entityRefs.flatMap((ref) => entityFactsByKey.get(ref) ?? []))}
                         />
                       </div>
                     ))}
@@ -492,6 +527,7 @@ export function ArchitectureRelationshipMap({
             setSelectedConnection(null);
             onSelectComponent?.(id);
           }}
+          factStore={systemFacts}
         />
       )}
     </div>

@@ -90,7 +90,7 @@ export type SemanticVersion = {
   semanticReconciledAnalysisVersion: number;
   at: string;
   /** 무엇 때문에 만들어진 generation인가. `bundle`은 schema3 §5.2 Stage 4(AnalysisBundle 커밋) */
-  source: "index" | "patch" | "init" | "bundle";
+  source: "index" | "patch" | "init" | "bundle" | "rollback";
   message: string;
   /** patch generation일 때만 */
   diffSummary?: SemanticDiffSummary;
@@ -265,6 +265,46 @@ export type IncrementalAnalysisPlan = {
   previousSystemDigest: PreviousSystemDigest;
   discoveryGaps: DiscoveryGap[];
   integrationCatalog: ExternalIntegrationCandidate[];
+};
+
+/** V4 rollout 상태. shadow는 V4를 제공하면서 같은 snapshot의 V3 호환 투영도 계측한다. */
+export type SystemIntelligenceV4Mode = "off" | "shadow" | "on";
+
+export type RolloutCoverage = {
+  systemFacts: number;
+  architectureConnections: number;
+  externalIntegrations: number;
+  journeySteps: number;
+  journeyBranches: number;
+  journeyLoops: number;
+};
+
+/**
+ * Phase 8 비교 단위. `v3Projection`은 별도 provider 재실행이 아니라 동일 snapshot을
+ * V3의 Trace-link 계약으로 읽은 결정론적 기준선이다.
+ */
+export type V4RolloutReport = {
+  schemaVersion: 1;
+  taskId: string;
+  projectPath: string;
+  at: string;
+  featureMode: SystemIntelligenceV4Mode;
+  analysisMode: IncrementalAnalysisMode;
+  analysisReason: string;
+  analysisVersion: number;
+  semanticVersion: number;
+  generation: number;
+  providerTurns: number;
+  tokenUsage?: number;
+  durationMs: number;
+  reusableFacts: number;
+  reanalyzedFacts: number;
+  reviewFacts: number;
+  v4: RolloutCoverage & { ungroundedConnections: number };
+  v3Projection?: RolloutCoverage;
+  deltas?: RolloutCoverage;
+  transitionReady: boolean;
+  transitionBlockers: string[];
 };
 
 /**

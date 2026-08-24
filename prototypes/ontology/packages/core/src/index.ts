@@ -119,6 +119,7 @@ export {
   buildExternalIntegrationCatalog,
   planDiscoveryGaps,
 } from "./discovery.js";
+export { buildV4RolloutReport } from "./rollout.js";
 export {
   applyAnalysisBundlePatch,
   validateAnalysisBundlePatchScope,

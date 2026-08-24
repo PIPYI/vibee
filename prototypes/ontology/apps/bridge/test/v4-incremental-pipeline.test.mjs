@@ -65,3 +65,13 @@ test("V4 Phase 4 — 구조와 무관한 CSS 변경도 provider turn을 만들�
   assert.equal(second.plan.mode, "fast-path");
   assert.equal(second.plan.semanticTurnRequired, false);
 });
+
+test("V4 Phase 8 — off arm은 integration catalog는 관측하되 open-world discovery gap은 provider에 주지 않는다", async () => {
+  const root = project({
+    "package.json": JSON.stringify({ dependencies: { "novel-ai-sdk": "1.0.0" } }),
+    "src/app.ts": "import { Client } from 'novel-ai-sdk';\nnew Client().responses.create({ input: 'hello' });\n",
+  });
+  const result = await performReindex(new SemanticStore(root), root, undefined, undefined, "off");
+  assert.equal(result.plan.integrationCatalog.some((item) => item.packageName === "novel-ai-sdk"), true);
+  assert.deepEqual(result.plan.discoveryGaps, []);
+});

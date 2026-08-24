@@ -284,6 +284,29 @@ button:disabled {
 .analysis-usage span { padding: 4px 7px; border-radius: 999px; background: var(--panel-2); }
 .analysis-usage b { color: var(--text); }
 
+.v4-analysis-summary {
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 16px 18px;
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.07), rgba(104, 96, 255, 0.04));
+}
+.v4-analysis-summary-live { margin: 0; }
+.v4-analysis-summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.v4-analysis-summary h3 { margin: 0; font-size: 15px; }
+.v4-analysis-reason { margin: 8px 0 0; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.v4-analysis-metrics { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.v4-analysis-metrics > span { min-width: 92px; display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: rgba(10, 12, 16, 0.58); }
+.v4-analysis-metrics b { color: #a7f3d0; font-family: var(--font-mono); font-size: 15px; }
+.v4-analysis-metrics small { color: var(--dim); font-size: 9px; }
+.v4-analysis-metrics .v4-metric-warn b { color: var(--warn); }
+.v4-full-reason, .v4-shadow-result { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; background: rgba(245, 158, 11, 0.07); color: #d9c8a4; font-size: 10px; line-height: 1.5; }
+.v4-shadow-result { background: rgba(34, 211, 238, 0.06); color: #a5d9e4; }
+.v4-rollout-mode { padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; }
+.v4-rollout-shadow { color: #a5f3fc; border-color: rgba(34, 211, 238, 0.35); }
+.v4-rollout-on { color: #a7f3d0; border-color: rgba(52, 211, 153, 0.35); }
+
 /* Phase Stepper (schema3 §2.2, 기본 노출) */
 .phase-stepper {
   list-style: none;
@@ -1775,6 +1798,23 @@ button:disabled {
 .passport-context-relations button { display: grid; grid-template-columns: 20px 1fr; align-items: center; gap: 6px; padding: 8px 10px; text-align: left; background: #13151a; }
 .passport-context-relations button > span:first-child { color: var(--accent); }
 .passport-subtitle { margin-top: 8px; }
+.fact-trust {
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(20, 23, 29, 0.72);
+}
+.fact-trust > div { display: flex; align-items: center; gap: 7px; }
+.fact-trust > div small { margin-left: auto; color: var(--dim); font-family: var(--font-mono); font-size: 9px; }
+.fact-trust > p { margin: 8px 0 0; color: var(--dim); font-size: 11px; }
+.fact-trust-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--good); }
+.fact-trust-restored { border-color: rgba(34, 211, 238, 0.28); }
+.fact-trust-restored .fact-trust-dot { background: #22d3ee; }
+.fact-trust-review { border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.06); }
+.fact-trust-review .fact-trust-dot { background: var(--warn); }
+.fact-trust-meta { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
+.fact-trust-meta li { padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); font-size: 9px; }
+.relationship-review-badge { align-self: flex-start; margin-top: 4px; padding: 2px 6px; border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 999px; color: var(--warn); font-size: 8px; }
 .sequence-modal {
   width: min(1500px, 96vw);
   height: min(860px, 92vh);
@@ -1800,6 +1840,9 @@ button:disabled {
   font-size: 9px;
 }
 .relationship-sequence-proof span:first-child { color: #a5f3fc; }
+.relationship-sequence-proof .fact-trust-inline-confirmed { color: #a7f3d0; }
+.relationship-sequence-proof .fact-trust-inline-restored { color: #a5f3fc; }
+.relationship-sequence-proof .fact-trust-inline-review { color: var(--warn); }
 
 /* Evidence (Grounding.tsx, §6.10) */
 .evidence-list {

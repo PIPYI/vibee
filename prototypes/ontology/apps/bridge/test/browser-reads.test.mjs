@@ -67,10 +67,35 @@ test("V3.2 health handshake가 실행 identity를 공개하고 오래된 Web 요
   assert.equal(health.body.runtime.protocolVersion, ONTO_PROTOCOL_VERSION);
   assert.equal(health.body.runtime.buildId, ONTO_BUILD_ID);
   assert.ok(health.body.runtime.serverStartedAt);
+  assert.equal(health.body.features.systemIntelligenceV4, "on");
 
   const incompatible = await post("/api/analyze", { agent: "claude", projectPath: "/tmp" });
   assert.equal(incompatible.status, 409);
   assert.equal(incompatible.body.code, "runtime/incompatible-client");
+});
+
+test("V4 rollout/generation API는 빈 report를 정직하게 돌려주고 과거 상태를 copy-forward 복원한다", async () => {
+  const dir = freshProject();
+  await post("/api/index", { projectPath: dir });
+  await post("/api/index", { projectPath: dir });
+
+  const emptyReport = await get(`/api/rollout-report?projectPath=${encodeURIComponent(dir)}`);
+  assert.equal(emptyReport.status, 200);
+  assert.equal(emptyReport.body.latest, null);
+  assert.deepEqual(emptyReport.body.reports, []);
+
+  const before = await get(`/api/generations?projectPath=${encodeURIComponent(dir)}`);
+  assert.equal(before.body.head, 3);
+  assert.equal(before.body.migrationRequired, false);
+
+  const rollback = await post("/api/generations/rollback", { projectPath: dir, generation: 2 });
+  assert.equal(rollback.status, 200);
+  assert.equal(rollback.body.restoredFrom, 2);
+  assert.equal(rollback.body.generation, 4);
+
+  const after = await get(`/api/generations?projectPath=${encodeURIComponent(dir)}`);
+  assert.equal(after.body.head, 4);
+  assert.equal(after.body.generations.at(-1).source, "rollback");
 });
 
 test("GET /api/memory — 아직 인덱싱하지 않은 프로젝트는 memory_unavailable을 돌려준다 (C5)", async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { AnalysisBundle, ArchitectureComponent, ScenarioIR, ScenarioStep, SequenceIR } from "@onto/protocol";
+import type { AnalysisBundle, ArchitectureComponent, ScenarioIR, ScenarioStep, SequenceIR, SystemFactStore } from "@onto/protocol";
 
 import { componentReferenceSet, journeyReferenceSet, relatedComponentIds, stepReferenceSet } from "../layout/unifiedMap.js";
 import { ArchitectureRelationshipMap } from "./ArchitectureRelationshipMap.js";
@@ -10,10 +10,12 @@ export function UnifiedMapView({
   bundle,
   onSelectComponent,
   onOpenSequence,
+  systemFacts,
 }: {
   bundle: AnalysisBundle;
   onSelectComponent: (componentId: string) => void;
   onOpenSequence: (sequence: SequenceIR) => void;
+  systemFacts?: SystemFactStore | null;
 }): React.JSX.Element {
   const [focusRefs, setFocusRefs] = useState<Set<string>>(new Set());
   const [focusSource, setFocusSource] = useState<"system" | "journey" | null>(null);
@@ -52,7 +54,7 @@ export function UnifiedMapView({
   return (
     <div className="unified-map">
       <header className="unified-map-title">
-        <div><p className="detail-eyebrow">V3 통합 지도</p><h2>{bundle.architecture.title}</h2></div>
+        <div><p className="detail-eyebrow">V4 통합 지도</p><h2>{bundle.architecture.title}</h2></div>
       </header>
 
       <section id="system-map" className="unified-section" aria-labelledby="system-map-title">
@@ -73,6 +75,7 @@ export function UnifiedMapView({
             const component = bundle.architecture.components.find((item) => item.id === id);
             if (component) focusComponent(component);
           }}
+          systemFacts={systemFacts}
         />
       </section>
 

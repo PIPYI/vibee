@@ -310,6 +310,19 @@ export class SemanticStore {
     });
   }
 
+  /**
+   * 과거 generation을 HEAD로 되감지 않고 현재 HEAD 다음 generation으로 복제한다.
+   * 이후 history와 rollback 자체가 모두 남고, 원자적 HEAD 규칙도 그대로 유지된다.
+   */
+  restoreGeneration(generation: number, options: CommitOptions = {}): Promise<LoadedState> {
+    const target = this.readGeneration(generation);
+    return this.commit(`rollback to generation ${generation}`, "rollback", (current) => ({
+      ...structuredClone(target),
+      // 상태는 과거로 복원하되 history ledger는 끊지 않는다.
+      versions: current.versions,
+    }), options);
+  }
+
   /** 빈 프로젝트에 generation 1을 만든다. 이미 있으면 아무것도 하지 않는다. */
   init(project: ProjectState, options: CommitOptions = {}): Promise<LoadedState> {
     return this.serialized(() => {

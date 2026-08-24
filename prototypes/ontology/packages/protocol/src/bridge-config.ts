@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BRIDGE_HOST, DEFAULT_BRIDGE_PORT } from "./agent.js";
+import type { SystemIntelligenceV4Mode } from "./index.js";
 
 const ROOT_PACKAGE_NAME = "ontology-proto";
 
@@ -42,7 +43,12 @@ export type BridgeConfig = {
   token: string;
   baseUrl: string;
   configPath: string;
+  systemIntelligenceV4: SystemIntelligenceV4Mode;
 };
+
+export function parseSystemIntelligenceV4Mode(value: string | undefined): SystemIntelligenceV4Mode {
+  return value === "off" || value === "shadow" || value === "on" ? value : "on";
+}
 
 /** `.onto/bridge.json`을 읽고, 처음 쓸 때는 새 토큰과 함께 만든다. */
 export function loadBridgeConfig(protoRoot: string): BridgeConfig {
@@ -82,5 +88,11 @@ export function loadBridgeConfig(protoRoot: string): BridgeConfig {
     writeFileSync(configPath, `${JSON.stringify({ port, token }, null, 2)}\n`, { mode: 0o600 });
   }
 
-  return { port, token, baseUrl: `http://${BRIDGE_HOST}:${port}`, configPath };
+  return {
+    port,
+    token,
+    baseUrl: `http://${BRIDGE_HOST}:${port}`,
+    configPath,
+    systemIntelligenceV4: parseSystemIntelligenceV4Mode(process.env.ONTO_SYSTEM_INTELLIGENCE_V4),
+  };
 }

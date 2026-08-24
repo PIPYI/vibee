@@ -11,7 +11,7 @@
  * **이 파일은 OS 를 알지 않는다** — 실행 파일 해석과 프로세스 정리는 `./platform.js` 에만 있다.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,6 +21,7 @@ import {
   SemanticStore,
   applyAnalysisBundlePatch,
   buildIncrementalAnalysisPlan,
+  buildV4RolloutReport,
   buildSystemImpactSet,
   buildEvidenceGraph,
   commitAnalysisBundle,
@@ -63,8 +64,10 @@ import type {
   SemanticPatch,
   SemanticWorkSet,
   IncrementalAnalysisPlan,
+  SystemIntelligenceV4Mode,
   SystemFactProposal,
   TaskMode,
+  V4RolloutReport,
   ViewKind,
   ViewRequest,
 } from "@onto/protocol";
@@ -74,6 +77,7 @@ import {
   ONTO_PROTOCOL_VERSION,
 } from "@onto/protocol";
 import { loadBridgeConfig, protoRootFromModule } from "@onto/protocol/bridge-config";
+import { eventsPath } from "@onto/protocol/node";
 import express, { type Request, type Response } from "express";
 import { WebSocketServer } from "ws";
 
@@ -128,6 +132,9 @@ const RUNTIME_CAPABILITIES = [
   "scoped-bundle-patch-v4",
   "open-world-discovery-v4",
   "provider-zero-fast-path-v4",
+  "system-intelligence-v4",
+  "v4-shadow-rollout-report",
+  "generation-copy-forward-rollback",
 ] as const;
 
 const state = new BridgeState();
@@ -187,6 +194,7 @@ app.get("/api/health", async (_req: Request, res: Response) => {
       serverStartedAt,
       capabilities: [...RUNTIME_CAPABILITIES],
     },
+    features: { systemIntelligenceV4: config.systemIntelligenceV4 },
   };
   res.json(payload);
 });
@@ -423,6 +431,78 @@ app.get("/api/tasks/:taskId/incremental-plan", (req: Request, res: Response) => 
   res.json({ taskId, ...plan });
 });
 
+function readRolloutReports(projectPath: string): V4RolloutReport[] {
+  const path = eventsPath(projectPath);
+  if (!existsSync(path)) return [];
+  const reports: V4RolloutReport[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as { type?: string; report?: V4RolloutReport };
+      if (event.type === "v4.rollout-report" && event.report?.schemaVersion === 1) reports.push(event.report);
+    } catch {
+      // events.ndjson의 다른 진단 한 줄이 손상돼도 읽을 수 있는 rollout report는 유지한다.
+    }
+  }
+  return reports;
+}
+
+app.get("/api/rollout-report", (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(req.query["projectPath"] ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+  const reports = readRolloutReports(projectPath);
+  res.json({ featureMode: config.systemIntelligenceV4, latest: reports.at(-1) ?? null, reports });
+});
+
+app.get("/api/tasks/:taskId/rollout-report", (req: Request, res: Response) => {
+  const task = state.getTask(String(req.params["taskId"]));
+  if (!task) {
+    res.status(404).json({ error: "task를 찾을 수 없습니다." });
+    return;
+  }
+  res.json({ report: task.rolloutReport ?? null });
+});
+
+app.get("/api/generations", (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(req.query["projectPath"] ?? state.getProjectPath() ?? ""));
+    const store = new SemanticStore(projectPath);
+    const head = store.load();
+    res.json({
+      head: head.generation,
+      featureMode: config.systemIntelligenceV4,
+      migrationRequired: head.systemFacts.diagnostics.some((item) => item.code === "system-facts/migration-required"),
+      generations: head.versions.map((item) => ({ ...item, current: item.generation === head.generation })),
+    });
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+  }
+});
+
+app.post("/api/generations/rollback", async (req: Request, res: Response) => {
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "분석 중에는 generation을 복원할 수 없습니다." });
+    return;
+  }
+  try {
+    const body = req.body as { projectPath?: string; generation?: number };
+    const projectPath = canonicalizeProjectPath(String(body.projectPath ?? state.getProjectPath() ?? ""));
+    const generation = Number(body.generation);
+    if (!Number.isInteger(generation) || generation < 1) throw new Error("복원할 generation은 1 이상의 정수여야 합니다.");
+    const restored = await new SemanticStore(projectPath).restoreGeneration(generation);
+    state.setProjectPath(projectPath);
+    res.json({ ok: true, restoredFrom: generation, generation: restored.generation });
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+  }
+});
+
 /**
  * 결정론적 재인덱싱만 (agent turn 없음).
  *
@@ -621,6 +701,7 @@ async function performReindex(
   projectPath: string,
   gitBase: string | undefined,
   mode?: AnalyzeRequest["mode"],
+  featureMode: SystemIntelligenceV4Mode = config.systemIntelligenceV4,
 ): Promise<ReindexOutcome> {
   store.cleanOrphans();
   if (!store.isInitialized()) {
@@ -642,7 +723,10 @@ async function performReindex(
   const withMissing = carryMissingEvidence(before.evidence, withAgent);
   const work = buildWorkSet(diffs, before.memory, before.grounding);
   const facts = reconcileSystemFactStore({ previous: before.systemFacts, evidence: withMissing, diffs });
-  const discovery = planDiscoveryGaps({ projectPath, evidence: withMissing, facts });
+  const discovered = planDiscoveryGaps({ projectPath, evidence: withMissing, facts });
+  // off는 안전한 V3 호환 arm이다. Store/I20 migration은 유지하되 새 open-world gap을
+  // provider에게 주지 않는다. on/shadow는 완전히 같은 V4 실행 경로를 쓴다.
+  const discovery = featureMode === "off" ? { catalog: discovered.catalog, gaps: [] } : discovered;
   const firstAnalysis = before.project.semanticVersion === 0 && before.memory.concepts.length === 0;
   const impact = buildSystemImpactSet({
     diffs,
@@ -702,7 +786,13 @@ async function reindex(
 ): Promise<{ prompt: string; summary: Record<string, unknown> }> {
   const store = new SemanticStore(projectPath);
   const before = store.isInitialized() ? store.load() : undefined;
-  const { after, nextVersion, work, agentCarry, plan } = await performReindex(store, projectPath, gitBase, mode);
+  const { after, nextVersion, work, agentCarry, plan } = await performReindex(
+    store,
+    projectPath,
+    gitBase,
+    mode,
+    config.systemIntelligenceV4,
+  );
 
   state.setIncrementalPlan(taskId, plan);
   if (plan.semanticTurnRequired) {
@@ -825,6 +915,35 @@ function makeEmit(taskId: string): (event: AgentEvent) => void {
   };
 }
 
+async function finalizeRolloutReport(taskId: string, projectPath: string, endedAt: string): Promise<V4RolloutReport | undefined> {
+  const task = state.getTask(taskId);
+  const plan = state.getIncrementalPlan(taskId);
+  if (!task || !plan || task.rolloutReport) return task?.rolloutReport;
+  const head = new SemanticStore(projectPath).load();
+  if (!head.analysisBundle) return undefined;
+  const report = buildV4RolloutReport({
+    task,
+    plan,
+    featureMode: config.systemIntelligenceV4,
+    generation: head.generation,
+    analysisVersion: head.project.analysisVersion,
+    semanticVersion: head.project.semanticVersion,
+    facts: head.systemFacts,
+    bundle: head.analysisBundle,
+    endedAt,
+  });
+  state.updateTask(taskId, { rolloutReport: report });
+  appendFileSync(eventsPath(projectPath), `${JSON.stringify({ type: "v4.rollout-report", report })}\n`, "utf8");
+  return report;
+}
+
+async function completeAnalysisTask(taskId: string, projectPath: string): Promise<void> {
+  const endedAt = new Date().toISOString();
+  state.updateTask(taskId, { status: "completed", endedAt });
+  await finalizeRolloutReport(taskId, projectPath, endedAt);
+  state.emit({ type: "task.completed", taskId });
+}
+
 async function runTask(
   adapter: AgentAdapter,
   taskId: string,
@@ -922,8 +1041,7 @@ async function runAnalyzePipeline(
       phase: "assembly",
       message: "코드 구조에 영향을 주는 변경이 없어 Vibee 호출 없이 기존 지도를 재사용했습니다.",
     });
-    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
-    state.emit({ type: "task.completed", taskId });
+    await completeAnalysisTask(taskId, projectPath);
     return;
   }
   recordStage(taskId, "semantic", "running", "코드 근거를 프로젝트 의미로 정리하는 중");
@@ -963,8 +1081,7 @@ async function runAnalyzePipeline(
 
   // index-only arm(§7.3)은 평가용이다 — Stage 3(제품 파이프라인)으로 이어지지 않는다.
   if (body.mode === "index-only") {
-    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
-    state.emit({ type: "task.completed", taskId });
+    await completeAnalysisTask(taskId, projectPath);
     return;
   }
 
@@ -986,8 +1103,7 @@ async function runAnalyzePipeline(
     recordStage(taskId, "assembly", "completed", "기존 AnalysisBundle을 현재 generation으로 승계");
     recordStage(taskId, "validation", "completed", "증분 범위에 지도 변경 없음");
     recordStage(taskId, "commit", "completed", "AnalysisBundle fast-forward 완료");
-    state.updateTask(taskId, { status: "completed", endedAt: new Date().toISOString() });
-    state.emit({ type: "task.completed", taskId });
+    await completeAnalysisTask(taskId, projectPath);
     return;
   }
 
@@ -1054,8 +1170,12 @@ async function runAnalyzePipeline(
     state.emit({ type: "task.error", taskId, message });
     return;
   }
-  state.updateTask(taskId, { status: stage3Outcome, endedAt: new Date().toISOString() });
-  state.emit(stage3Outcome === "interrupted" ? { type: "task.interrupted", taskId } : { type: "task.completed", taskId });
+  if (stage3Outcome === "completed") {
+    await completeAnalysisTask(taskId, projectPath);
+  } else {
+    state.updateTask(taskId, { status: "interrupted", endedAt: new Date().toISOString() });
+    state.emit({ type: "task.interrupted", taskId });
+  }
 }
 
 /**
@@ -1548,6 +1668,13 @@ app.post("/internal/propose-evidence", requireToken, (req: Request, res: Respons
 /** V4 Phase 2 — source anchors와 신규 System Entity/Link를 원자적으로 제안한다. */
 app.post("/internal/propose-system-facts", requireToken, (req: Request, res: Response) => {
   recordArrival("propose_system_facts");
+  if (config.systemIntelligenceV4 === "off") {
+    res.status(409).json({
+      error: "system_intelligence_v4_disabled",
+      next_step: "V3 호환 arm에서는 새 open-world System Fact를 제안하지 말고 기존 Evidence/Semantic 계약만 사용하세요.",
+    });
+    return;
+  }
   const taskId = state.getActiveTaskId();
   const session = taskId ? state.getAnalyzeSession(taskId) : undefined;
   if (!taskId || !session) {

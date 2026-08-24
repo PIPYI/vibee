@@ -12,6 +12,7 @@ import { useState } from "react";
 import type { ComponentIO, EntityRef, ViewAnchor } from "@onto/protocol";
 
 import { requestView } from "../api.js";
+import { FACT_ORIGIN_LABEL, FACT_STATUS_LABEL, type FactTrustSummary } from "../factTrust.js";
 import { EvidenceList } from "./Grounding.js";
 
 /**
@@ -36,6 +37,7 @@ export type PassportSubject = {
   entityRefs: string[];
   evidenceRefs: string[];
   conceptRefs?: string[];
+  trust?: FactTrustSummary;
 };
 
 export type PassportRelationship = {
@@ -172,6 +174,17 @@ export function Passport({
             <button type="button" className="close-button" onClick={onClose} aria-label="닫기">×</button>
           </div>
           {subject.sublabel && <p className="dim passport-subtitle">{subject.sublabel}</p>}
+
+          {subject.trust && (
+            <section className={`fact-trust fact-trust-${subject.trust.level}`}>
+              <div><span className="fact-trust-dot" /><strong>{subject.trust.label}</strong><small>{subject.trust.factCount}개 System Fact</small></div>
+              <p>{subject.trust.description}</p>
+              <ul className="fact-trust-meta">
+                {subject.trust.origin.map((origin) => <li key={origin}>{FACT_ORIGIN_LABEL[origin]}</li>)}
+                {subject.trust.statuses.map((status) => <li key={status}>{FACT_STATUS_LABEL[status]}</li>)}
+              </ul>
+            </section>
+          )}
 
           {subject.description && (
             <section>
