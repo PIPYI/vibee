@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 
-import type { ArchitectureIR, RepositoryTopology } from "@onto/protocol";
+import type { ArchitectureIR, RepositoryTopology, SequenceIR } from "@onto/protocol";
 
 import { ArchitectureComposition } from "./ArchitectureComposition.js";
 import { ArchitectureRelationshipMap } from "./ArchitectureRelationshipMap.js";
@@ -16,10 +16,12 @@ type ArchitectureSubtab = "overview" | "composition" | "structure";
 export function ArchitectureView({
   ir,
   topology,
+  sequences,
   onSelectComponent,
 }: {
   ir: ArchitectureIR;
   topology?: RepositoryTopology;
+  sequences?: SequenceIR[];
   viewKey: string;
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
@@ -47,7 +49,7 @@ export function ArchitectureView({
       ) : subtab === "composition" ? (
         <ArchitectureComposition ir={ir} onSelectComponent={onSelectComponent} />
       ) : (
-        <ArchitectureRelationshipMap ir={ir} onSelectComponent={onSelectComponent} />
+        <ArchitectureRelationshipMap ir={ir} topology={topology} sequences={sequences} onSelectComponent={onSelectComponent} />
       )}
     </div>
   );

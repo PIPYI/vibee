@@ -356,6 +356,7 @@ export function App(): React.JSX.Element {
                 <ArchitectureView
                   ir={bundle.architecture}
                   topology={bundle.repositoryTopology}
+                  sequences={bundle.sequences}
                   viewKey={`arch-${bundle.analysisVersion}-${bundle.semanticVersion}`}
                   onSelectComponent={(id) => {
                     setSequenceView(null);

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeRelationshipLanes, primaryConnectionIds } from "../src/layout/architectureRelationships.ts";
+import {
+  backendReplacementSeams,
+  computeRelationshipLanes,
+  matchArchitectureSequences,
+  primaryConnectionIds,
+} from "../src/layout/architectureRelationships.ts";
 
 function component(id, layer, boundaryId) {
   return {
@@ -58,4 +63,69 @@ test("핵심 관계 모드는 primaryPath의 실제 연속 엣지만 선택한�
     viewPlan: { primaryPath: ["a", "b", "c"], groups: [] },
   };
   assert.deepEqual([...primaryConnectionIds(ir)].sort(), ["ab", "bc"]);
+});
+
+test("Core가 확인한 로컬 data store와 겹치는 컴포넌트만 백엔드 교체 후보가 된다", () => {
+  const local = { ...component("local-store", "data"), label: "여행자 데이터", entityRefs: ["file:src/data/missions.json"] };
+  const remote = { ...component("postgres", "data"), label: "PostgreSQL", entityRefs: ["file:db/schema.sql"] };
+  const ir = {
+    title: "map",
+    components: [component("screen", "interface"), local, remote],
+    boundaries: [],
+    connections: [
+      { id: "local-data", from: "screen", to: "local-store", role: "data", traceLinkRefs: ["ev:data:1"], evidenceRefs: ["ev:data:1"] },
+      { id: "remote-data", from: "screen", to: "postgres", role: "data", traceLinkRefs: ["ev:data:2"], evidenceRefs: ["ev:data:2"] },
+    ],
+  };
+  const topology = {
+    runtimes: [],
+    dataStores: [{
+      id: "store:local",
+      label: "앱 로컬 JSON",
+      rootPath: "src/data",
+      format: "json",
+      entityRefs: ["file:src/data/missions.json"],
+      evidenceRefs: ["ev:file:1"],
+    }],
+    coverage: {
+      detectedRuntimeCount: 0,
+      representedRuntimeCount: 0,
+      detectedDataStoreCount: 1,
+      representedDataStoreCount: 1,
+      missingRuntimeIds: [],
+      missingDataStoreIds: [],
+      sharedBoundaryRuntimeIds: [],
+    },
+  };
+  const seams = backendReplacementSeams(ir, topology);
+  assert.deepEqual([...seams.keys()], ["local-store"]);
+  assert.deepEqual(seams.get("local-store").connectionIds, ["local-data"]);
+  assert.match(seams.get("local-store").reason, /로컬 JSON/);
+});
+
+test("시퀀스는 동기 edge의 정확한 trace evidence가 메시지와 겹칠 때만 연결한다", () => {
+  const ir = {
+    title: "map",
+    components: [component("verify", "service"), component("reward", "service"), component("store", "data")],
+    boundaries: [],
+    connections: [
+      { id: "verified", from: "verify", to: "reward", role: "sync", label: "인증 후 보상", traceLinkRefs: ["ev:call:award"], evidenceRefs: ["ev:call:award"] },
+      { id: "same-label-only", from: "reward", to: "verify", role: "sync", label: "인증 후 보상", traceLinkRefs: ["ev:call:other"], evidenceRefs: ["ev:call:other"] },
+      { id: "data-edge", from: "reward", to: "store", role: "data", traceLinkRefs: ["ev:call:award"], evidenceRefs: ["ev:call:award"] },
+    ],
+  };
+  const sequence = {
+    id: "seq:award",
+    title: "인증 판정 후 보상",
+    triggeredByEdgeId: "wf:award",
+    participants: [{ id: "p1", label: "verificationService" }, { id: "p2", label: "pointService" }],
+    messages: [
+      { id: "m1", fromParticipantId: "p1", toParticipantId: "p2", order: 1, label: "포인트 지급", kind: "call", evidenceRefs: ["ev:call:award"] },
+      { id: "m2", fromParticipantId: "p2", toParticipantId: "p1", order: 2, label: "지급 결과", kind: "return", evidenceRefs: ["ev:return:award"] },
+    ],
+    evidenceRefs: ["ev:call:award"],
+  };
+  const matches = matchArchitectureSequences(ir, [sequence]);
+  assert.deepEqual([...matches.keys()], ["verified"]);
+  assert.deepEqual(matches.get("verified").sharedEvidenceRefs, ["ev:call:award"]);
 });

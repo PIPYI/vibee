@@ -1,9 +1,24 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { ArchitectureComponent, ArchitectureConnection, ArchitectureIR } from "@onto/protocol";
+import type {
+  ArchitectureComponent,
+  ArchitectureConnection,
+  ArchitectureIR,
+  RepositoryTopology,
+  SequenceIR,
+} from "@onto/protocol";
 
-import { computeRelationshipLanes, primaryConnectionIds, RELATIONSHIP_LAYER_LABEL } from "../layout/architectureRelationships.js";
+import {
+  backendReplacementSeams,
+  computeRelationshipLanes,
+  matchArchitectureSequences,
+  primaryConnectionIds,
+  RELATIONSHIP_LAYER_LABEL,
+  type ArchitectureSequenceMatch,
+  type BackendReplacementSeam,
+} from "../layout/architectureRelationships.js";
 import { EvidenceList } from "./Grounding.js";
+import { SequenceView } from "./SequenceView.js";
 
 const PT_SHORT: Record<string, string> = {
   external: "EXT", frontend: "UI", backend: "SRV", database: "DB", queue: "Q",
@@ -24,11 +39,19 @@ function portOffset(index: number, count: number): number {
   return (index - (count - 1) / 2) * Math.min(22, 44 / (count - 1));
 }
 
-function RelationshipCard({ component, onSelect }: { component: ArchitectureComponent; onSelect?: (id: string) => void }): React.JSX.Element {
+function RelationshipCard({
+  component,
+  replacementSeam,
+  onSelect,
+}: {
+  component: ArchitectureComponent;
+  replacementSeam?: BackendReplacementSeam;
+  onSelect?: (id: string) => void;
+}): React.JSX.Element {
   return (
     <button
       type="button"
-      className={`relationship-card relationship-card-${component.presentationType}`}
+      className={`relationship-card relationship-card-${component.presentationType}${replacementSeam ? " relationship-card-replacement" : ""}`}
       data-relationship-node={component.id}
       onClick={() => onSelect?.(component.id)}
       title={component.description ?? component.sublabel ?? component.label}
@@ -38,6 +61,7 @@ function RelationshipCard({ component, onSelect }: { component: ArchitectureComp
         {component.sublabel && <span>{component.sublabel}</span>}
       </span>
       <strong>{component.label}</strong>
+      {replacementSeam && <span className="relationship-replacement-badge">⇄ API 교체 지점</span>}
     </button>
   );
 }
@@ -45,16 +69,41 @@ function RelationshipCard({ component, onSelect }: { component: ArchitectureComp
 function ConnectionDetail({
   connection,
   componentById,
+  sequenceMatch,
+  replacementSeam,
   onClose,
   onSelectComponent,
 }: {
   connection: ArchitectureConnection;
   componentById: Map<string, ArchitectureComponent>;
+  sequenceMatch?: ArchitectureSequenceMatch;
+  replacementSeam?: BackendReplacementSeam;
   onClose: () => void;
   onSelectComponent?: (id: string) => void;
 }): React.JSX.Element {
   const from = componentById.get(connection.from);
   const to = componentById.get(connection.to);
+  if (sequenceMatch) {
+    return (
+      <div className="detail-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+        <section className="detail-modal sequence-modal relationship-sequence-modal" role="dialog" aria-modal="true" aria-label={sequenceMatch.sequence.title}>
+          <div className="sequence-modal-head">
+            <div>
+              <p className="detail-eyebrow">코드 근거로 복원한 호출 흐름</p>
+              <h3>{sequenceMatch.sequence.title}</h3>
+            </div>
+            <button type="button" className="close-button" onClick={onClose} aria-label="닫기">×</button>
+          </div>
+          <div className="relationship-sequence-proof">
+            <span><strong>{from?.label ?? connection.from}</strong> → <strong>{to?.label ?? connection.to}</strong></span>
+            <span>정확히 일치한 호출 근거 {sequenceMatch.sharedEvidenceRefs.length}개</span>
+            <span>참여 구성요소 {sequenceMatch.sequence.participants.length}개 · 메시지 {sequenceMatch.sequence.messages.length}개</span>
+          </div>
+          <SequenceView ir={sequenceMatch.sequence} />
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="detail-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="detail-modal relationship-detail-modal" role="dialog" aria-modal="true" aria-label="관계 상세">
@@ -88,6 +137,12 @@ function ConnectionDetail({
           <p className="detail-relation-summary">
             <strong>{from?.label ?? connection.from}</strong>에서 <strong>{to?.label ?? connection.to}</strong>로 이어지는 관계입니다.
           </p>
+          {replacementSeam && (
+            <section className="relationship-replacement-note">
+              <h4>백엔드 교체 지점</h4>
+              <p>{replacementSeam.reason}입니다. 현재는 로컬 데이터에 직접 연결되어 있지만, 이 경계를 API/DB 호출로 바꾸면 화면과 서비스의 나머지 구조를 유지할 수 있습니다.</p>
+            </section>
+          )}
           {connection.traceLinkRefs.length > 0 && (
             <section>
               <h4>코드에서 확인된 연결</h4>
@@ -108,9 +163,13 @@ function ConnectionDetail({
 
 export function ArchitectureRelationshipMap({
   ir,
+  topology,
+  sequences = [],
   onSelectComponent,
 }: {
   ir: ArchitectureIR;
+  topology?: RepositoryTopology;
+  sequences?: SequenceIR[];
   onSelectComponent?: (componentId: string) => void;
 }): React.JSX.Element {
   const { lanes, layers } = useMemo(() => computeRelationshipLanes(ir), [ir]);
@@ -122,6 +181,19 @@ export function ArchitectureRelationshipMap({
   const [selectedConnection, setSelectedConnection] = useState<ArchitectureConnection | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const componentById = useMemo(() => new Map(ir.components.map((component) => [component.id, component])), [ir.components]);
+  const replacementSeams = useMemo(() => backendReplacementSeams(ir, topology), [ir, topology]);
+  const sequenceMatches = useMemo(() => matchArchitectureSequences(ir, sequences), [ir, sequences]);
+  const replacementConnectionIds = useMemo(
+    () => new Set([...replacementSeams.values()].flatMap((seam) => seam.connectionIds)),
+    [replacementSeams],
+  );
+  const replacementSeamByConnection = useMemo(() => {
+    const result = new Map<string, BackendReplacementSeam>();
+    for (const seam of replacementSeams.values()) {
+      for (const connectionId of seam.connectionIds) result.set(connectionId, seam);
+    }
+    return result;
+  }, [replacementSeams]);
   const visibleConnections = useMemo(
     () => mode === "primary" && hasPrimaryPath
       ? ir.connections.filter((connection) => primaryIds.has(connection.id))
@@ -152,22 +224,30 @@ export function ArchitectureRelationshipMap({
       const inList = incoming.get(connection.to) ?? [connection];
       const startY = from.top - stageRect.top + from.height / 2 + portOffset(outList.indexOf(connection), outList.length);
       const endY = to.top - stageRect.top + to.height / 2 + portOffset(inList.indexOf(connection), inList.length);
-      const startX = from.right - stageRect.left;
-      const endX = to.left - stageRect.left;
+      const goesRight = to.left >= from.right;
+      const goesLeft = to.right <= from.left;
+      const startX = goesLeft ? from.left - stageRect.left : from.right - stageRect.left;
+      // 화살촉이 카드 뒤로 들어가지 않도록 목표 카드에서 10px 앞에 멈춘다.
+      const endX = goesRight
+        ? to.left - stageRect.left - 10
+        : to.right - stageRect.left + 10;
       let path: string;
       let labelX: number;
       if (connection.from === connection.to) {
-        const loopX = startX + 28;
-        path = `M ${startX} ${startY} H ${loopX} V ${startY + 34} H ${startX - 10}`;
+        const loopX = startX + 36;
+        // 자기 호출도 화살촉이 카드 안으로 파묻히지 않게 오른쪽 10px 밖에서 끝낸다.
+        path = `M ${startX} ${startY} H ${loopX} V ${startY + 34} H ${startX + 10}`;
         labelX = loopX;
-      } else if (endX > startX + 36) {
+      } else if (goesRight && endX > startX + 36) {
         const middleX = startX + (endX - startX) / 2;
         path = `M ${startX} ${startY} H ${middleX} V ${endY} H ${endX}`;
         // 여러 열을 건너뛰어도 라벨은 중간 컴포넌트 위가 아니라 출발 직후 거터에 둔다.
         labelX = startX + Math.min(54, (endX - startX) / 2);
       } else {
         // 같은 열/역방향 연결은 카드 바로 옆이 아니라 열 사이 전용 거터 중앙으로 보낸다.
-        const gutterX = Math.max(startX, to.right - stageRect.left) + 54;
+        const gutterX = goesLeft
+          ? Math.min(startX, to.left - stageRect.left) - 54
+          : Math.max(startX, to.right - stageRect.left) + 54;
         path = `M ${startX} ${startY} H ${gutterX} V ${endY} H ${endX}`;
         labelX = gutterX;
       }
@@ -233,6 +313,16 @@ export function ArchitectureRelationshipMap({
         </div>
       </div>
 
+      {replacementSeams.size > 0 && (
+        <div className="relationship-replacement-summary">
+          <span className="relationship-replacement-icon">⇄</span>
+          <div>
+            <strong>백엔드 교체 후보 {replacementSeams.size}곳</strong>
+            <p>Core가 확인한 로컬 데이터 경계입니다. 초록색 카드는 현재 서버가 아니라 향후 API/DB로 치환하기 좋은 접점이며, "모든 관계"에서 영향 연결선도 볼 수 있습니다.</p>
+          </div>
+        </div>
+      )}
+
       <div className="relationship-scroll">
         <div
           className="relationship-stage"
@@ -257,7 +347,7 @@ export function ArchitectureRelationshipMap({
                   <div key={layer} className="relationship-cell">
                     {(lane.componentsByLayer.get(layer) ?? []).map((component) => (
                       <div key={component.id} className={mode === "primary" && hasPrimaryPath && !primaryNodeIds.has(component.id) ? "relationship-node-secondary" : undefined}>
-                        <RelationshipCard component={component} onSelect={onSelectComponent} />
+                        <RelationshipCard component={component} replacementSeam={replacementSeams.get(component.id)} onSelect={onSelectComponent} />
                       </div>
                     ))}
                   </div>
@@ -271,17 +361,34 @@ export function ArchitectureRelationshipMap({
               <marker id="relationship-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M0,0 L10,5 L0,10 z" />
               </marker>
+              <marker id="relationship-arrow-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+              <marker id="relationship-arrow-control" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+              <marker id="relationship-arrow-replacement" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
             </defs>
             {visibleConnections.map((connection) => {
               const geometry = geometryById.get(connection.id);
               if (!geometry) return null;
               const muted = hoveredEdgeId !== null && hoveredEdgeId !== connection.id;
+              const isReplacement = replacementConnectionIds.has(connection.id);
+              const marker = isReplacement
+                ? "url(#relationship-arrow-replacement)"
+                : connection.role === "data"
+                  ? "url(#relationship-arrow-data)"
+                  : connection.role === "control"
+                    ? "url(#relationship-arrow-control)"
+                    : "url(#relationship-arrow)";
               return (
                 <path
                   key={connection.id}
                   d={geometry.path}
-                  className={`relationship-edge relationship-edge-${connection.role ?? "sync"}${muted ? " relationship-edge-muted" : ""}`}
-                  markerEnd="url(#relationship-arrow)"
+                  className={`relationship-edge relationship-edge-${connection.role ?? "sync"}${isReplacement ? " relationship-edge-replacement" : ""}${muted ? " relationship-edge-muted" : ""}`}
+                  markerEnd={marker}
                 />
               );
             })}
@@ -291,32 +398,43 @@ export function ArchitectureRelationshipMap({
             {visibleConnections.map((connection) => {
               const geometry = geometryById.get(connection.id);
               if (!geometry) return null;
+              const sequenceMatch = sequenceMatches.get(connection.id);
+              const isReplacement = replacementConnectionIds.has(connection.id);
               return (
                 <button
                   type="button"
                   key={connection.id}
-                  className={`relationship-edge-label relationship-edge-label-${connection.role ?? "sync"}`}
+                  className={`relationship-edge-label relationship-edge-label-${connection.role ?? "sync"}${isReplacement ? " relationship-edge-label-replacement" : ""}${sequenceMatch ? " relationship-edge-label-sequence" : ""}`}
                   style={{ left: geometry.labelX, top: geometry.labelY }}
                   onMouseEnter={() => setHoveredEdgeId(connection.id)}
                   onMouseLeave={() => setHoveredEdgeId(null)}
                   onFocus={() => setHoveredEdgeId(connection.id)}
                   onBlur={() => setHoveredEdgeId(null)}
                   onClick={() => setSelectedConnection(connection)}
-                  title="관계 근거 보기"
+                  title={sequenceMatch ? "코드 근거로 복원한 시퀀스 보기" : "관계 근거 보기"}
                 >
-                  {connection.label ?? ROLE_LABEL[connection.role ?? "sync"]} <span>↗</span>
+                  {connection.label ?? ROLE_LABEL[connection.role ?? "sync"]}
+                  {sequenceMatch ? <span className="relationship-sequence-hint">▶ SEQ</span> : <span className="relationship-detail-hint">↗</span>}
                 </button>
               );
             })}
           </div>
         </div>
       </div>
-      <p className="relationship-legend"><span>실선 동기</span><span>╌ 비동기</span><span className="relationship-legend-data">데이터</span><span className="relationship-legend-control">제어</span> · 라벨을 누르면 이 관계만 분리해 볼 수 있습니다.</p>
+      <div className="relationship-legend" aria-label="관계선 범례">
+        <span><i className="relationship-legend-line relationship-legend-sync" />동기 호출 — 즉시 응답을 기다림</span>
+        <span><i className="relationship-legend-line relationship-legend-async" />비동기 전달 — 나중에 처리</span>
+        <span className="relationship-legend-data"><i className="relationship-legend-line" />데이터 읽기·쓰기</span>
+        <span className="relationship-legend-control"><i className="relationship-legend-line" />조건·제어 흐름</span>
+        <em>모든 선의 화살촉은 출발 → 도착 방향입니다.</em>
+      </div>
 
       {selectedConnection && (
         <ConnectionDetail
           connection={selectedConnection}
           componentById={componentById}
+          sequenceMatch={sequenceMatches.get(selectedConnection.id)}
+          replacementSeam={replacementSeamByConnection.get(selectedConnection.id)}
           onClose={() => setSelectedConnection(null)}
           onSelectComponent={(id) => {
             setSelectedConnection(null);

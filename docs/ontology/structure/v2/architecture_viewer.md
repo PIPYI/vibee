@@ -91,6 +91,12 @@ rank 재해석만으로 정확히 화면 12 / 중간 로직 3 / 핵심 서비스
 
 Workflow의 sequence label은 축소 맞춤 상태에서도 숨기지 않는다. 클릭하면 별도 고정 패널이 아니라 큰 모달에서 participant card, lifeline, phase band, activation, call/return/event 범례를 가진 시퀀스 다이어그램을 보여준다.
 
+### 관계 상세 v3.1 — 교체 경계·Architecture 시퀀스
+
+- `RepositoryTopology.dataStores[].entityRefs`와 architecture data component의 `entityRefs`가 정확히 겹치면 로컬 데이터 경계로 판정한다. 여기에 닿는 `role=data` 연결은 초록색으로 강조하고 해당 카드는 `API 교체 지점` 배지를 표시한다. 이 표시는 “현재 백엔드가 있다”는 뜻이 아니라, 로컬 JSON/메모리를 API·DB로 치환할 때 나머지 화면·서비스 구조를 유지할 수 있는 접점이라는 뜻이다. Topology가 없는 레거시 번들에서만 `local/json/mock/fixture/memory`처럼 명시적인 경로·이름 단서를 보수적으로 사용한다.
+- 모든 Architecture connection은 방향 데이터(`from → to`)를 가지므로 렌더러도 모든 선에 노드 밖에서 보이는 화살촉을 그린다. 실선/점선과 회색/초록/주황은 동기·비동기·데이터·제어 역할을 뜻할 뿐, 화살촉 유무로 별도 의미를 만들지 않는다. 화면 하단 범례에 자연어 설명을 함께 둔다.
+- Architecture edge에서 Sequence를 열 때 라벨 유사도나 추가 AI 요청은 사용하지 않는다. `connection.traceLinkRefs`와 `SequenceIR.messages[].evidenceRefs`가 정확히 하나 이상 겹치고, 동기/제어 관계이며 participant/message가 각각 2개 이상인 경우만 `SEQ` 배지를 표시한다. 따라서 현재 분석 결과에서 코드 호출이 실제로 겹치는 일부 관계만 시퀀스 모달로 열리고, data import나 이름만 비슷한 관계는 일반 근거 모달을 유지한다.
+
 **알려진 한계**: 현재 Core 런타임 탐지는 JS/TS package manifest 중심이며, Python/Java/Go의 실행 단위 탐지는 후속 adapter가 필요하다. `ScenarioParticipant`에는 presentation type이 없어서 Sequence 렌더러는 label을 표시용 type으로만 추정하며 의미 판정에는 사용하지 않는다.
 
 ## 유지 / 폐기
