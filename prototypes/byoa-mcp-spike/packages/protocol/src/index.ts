@@ -236,6 +236,16 @@ export type DriftFinding = {
   /** 무엇이 어긋났는지 한 문장. */
   detail: string;
   confidence: "high" | "low";
+  /**
+   * 이 finding을 고칠 프롬프트. **agent는 이 필드를 채우지 않는다** — bridge가
+   * `criterionId`로 찾은 criterion과 함께 `/internal/drift`에서 렌더해 붙인다
+   * (§3.3 표의 "해소 프롬프트" 행, LLM 없음).
+   *
+   * 판단과 실행 둘 다 이 프롬프트를 받는 **사용자의 옆 agent**가 한다 — 코드가 잘못됐으면
+   * 코드를, 결정이 낡았으면 `.project-intel/design.json`의 그 항목만 고친다. 우리 앱은
+   * 어느 쪽이 맞는지 정하지 않는다.
+   */
+  resolutionPrompt?: string;
 };
 
 /**

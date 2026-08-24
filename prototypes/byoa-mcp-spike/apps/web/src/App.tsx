@@ -7,6 +7,7 @@ import type {
   AgentReadiness,
   AgentSessionsResponse,
   BridgeStateResponse,
+  DriftFinding,
   ExportDesignResponse,
   HealthResponse,
   ModelOption,
@@ -52,6 +53,9 @@ export function App() {
   // git은 agent와 같은 급의 전제 조건이다 — 없으면 되돌릴 지점을 남길 수 없다.
   const [tools, setTools] = useState<ToolReadiness[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  // 드리프트 리뷰 (§3.3). 고치는 일은 사용자의 옆 agent가 한다 — 여기서는 finding마다
+  // 해소 프롬프트를 보여주고 복사만 시킨다.
+  const [driftFindings, setDriftFindings] = useState<DriftFinding[]>([]);
   // 위키 (§3.5). 키워드는 agent가 고르고, 사용자가 그중 하나를 눌러 페이지를 만든다.
   const [keywords, setKeywords] = useState<WikiKeyword[] | null>(null);
   const [wikiPage, setWikiPage] = useState<WikiPage | null>(null);
@@ -230,6 +234,7 @@ export function App() {
         case "app.drift":
           // 결론이 도착했는데 화면이 조용하면 "리뷰가 돌지 않았다"와 구분되지 않는다.
           // 판정을 여기서 다시 하지 않는다 — 리포트에 담긴 것을 그대로 보여준다.
+          setDriftFindings(event.report.findings);
           if (event.report.findings.length === 0) {
             push("드리프트 없음 — 기준을 모두 확인했고 어긋난 것이 없습니다", "good");
           } else {
@@ -426,6 +431,7 @@ export function App() {
   const review = useCallback(async () => {
     setError(null);
     setLines([]);
+    setDriftFindings([]);
     const response = await fetch("/api/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -815,6 +821,34 @@ export function App() {
               </button>
             </div>
           )}
+        </section>
+      )}
+
+      {driftFindings.length > 0 && (
+        <section className="panel">
+          <h2>드리프트</h2>
+          <p className="muted">
+            무엇이 맞는지는 이 앱이 정하지 않습니다. 옆에 띄워 둔 {agent === "claude" ? "Claude Code" : "Codex"}에
+            프롬프트를 붙여넣으면, 코드가 틀렸는지 결정이 낡았는지 판단해서 직접 고칩니다.
+          </p>
+          {driftFindings.map((finding, i) => (
+            <div key={`${finding.commit}-${finding.criterionId}-${i}`} className="result">
+              <h3>
+                {finding.criterionId} 깨짐 — {short(finding.commit)}
+                {finding.confidence === "low" ? " (추정)" : ""}
+              </h3>
+              <p>{finding.detail}</p>
+              {finding.files.length > 0 && <p className="muted">{finding.files.join(", ")}</p>}
+              {finding.resolutionPrompt && (
+                <button
+                  className="link"
+                  onClick={() => void navigator.clipboard.writeText(finding.resolutionPrompt ?? "")}
+                >
+                  해소 프롬프트 복사
+                </button>
+              )}
+            </div>
+          ))}
         </section>
       )}
 

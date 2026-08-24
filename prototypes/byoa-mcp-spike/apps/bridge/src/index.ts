@@ -64,6 +64,7 @@ import {
   buildSpikePrompt,
   buildWikiKeywordsPrompt,
   buildWikiPrompt,
+  renderResolutionPrompt,
 } from "./prompt.js";
 import { condenseTranscript, countOccurrences, findAdvice, findMentions, renderWikiMarkdown } from "./wiki.js";
 import { BridgeState } from "./state.js";
@@ -842,20 +843,24 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
   }
 
   const context = state.getReviewContext();
-  const knownCriteria = new Set((context?.criteria ?? []).map((c) => c.id));
   const knownCommits = new Set((context?.commits ?? []).map((c) => c.sha));
   const warnings: string[] = [];
-  for (const finding of report.findings) {
-    if (!knownCriteria.has(finding.criterionId)) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
+  // 해소 프롬프트는 여기서 채운다 — agent는 criterionId만 짚고, 그것을 고칠 문장은 우리가
+  // criterion 원문으로 렌더한다 (LLM 없음, docs/vibe_coding_assistant_design.md §3.3).
+  const findings = report.findings.map((finding) => {
+    const criterion = context?.criteria.find((c) => c.id === finding.criterionId);
+    if (!criterion) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
     if (!knownCommits.has(finding.commit)) warnings.push(`Unknown commit: ${finding.commit}`);
-  }
+    return criterion ? { ...finding, resolutionPrompt: renderResolutionPrompt(finding, criterion) } : finding;
+  });
+  const enrichedReport: ReportDriftInput = { ...report, findings };
 
-  state.recordDrift(report);
+  state.recordDrift(enrichedReport);
   const taskId = noteMcpEndpointHit("report_drift");
-  if (taskId) emit({ type: "app.drift", taskId, report });
+  if (taskId) emit({ type: "app.drift", taskId, report: enrichedReport });
   else log("report_drift arrived with no active task; stored but not routed to the UI");
 
-  log(`report_drift: ${report.findings.length}건 (${report.findings.map((f) => f.criterionId).join(", ") || "없음"})`);
+  log(`report_drift: ${findings.length}건 (${findings.map((f) => f.criterionId).join(", ") || "없음"})`);
   for (const warning of warnings) log(`  ! ${warning}`);
 
   /**
@@ -876,7 +881,7 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
           at: new Date().toISOString(),
           agent: task?.agent ?? "codex",
           commits: context.commits.map((c) => c.sha),
-          findings: report.findings,
+          findings,
           summary: report.summary,
         });
         await writeReviewLog(projectPath, existing);

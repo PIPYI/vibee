@@ -139,6 +139,48 @@ export function buildReviewPrompt(): string {
 }
 
 /**
+ * 해소 프롬프트 (docs/vibe_coding_assistant_design.md §3.3 표의 "해소 프롬프트" 행).
+ *
+ * 검출은 절반이다. 나머지 절반 — 무엇을 고칠지 정하고 실제로 고치는 일 — 은 우리가 하지
+ * 않는다. **판단도 실행도 이 프롬프트를 받는 사용자의 옆 agent가 한다.** 우리 앱은 코드를
+ * 쓰는 곳이 아니라 보는 곳이기 때문이다 (`docs/BYOA_MCP_INTEGRATION_SPIKE.md` §1.2).
+ *
+ * 그래서 두 선택지를 모두 열어 둔다 — 코드가 틀렸으면 코드를 고치고, 결정이 낡았으면
+ * `.project-intel/design.json`의 그 항목만 고친다. 이 파일을 고쳐도 된다는 허가를 명시하는
+ * 이유는, 평범한 코딩 agent라면 소스 코드만 프로젝트로 보고 이 파일은 건드리면 안 되는
+ * 산출물로 취급할 수 있기 때문이다.
+ *
+ * **프롬프트 문구만으로는 신뢰할 수 없다**는 것이 이미 확인된 바 있다(§16, `findAdvice`) —
+ * 그래서 최대한 구체적으로 쓴다: 정확한 파일 경로, 대상 id, 두 선택지, "이 항목만" 이라는
+ * 범위 제한까지. 이 프롬프트가 실제로 그렇게 동작하는지는 `scripts/drift.mjs`가 실제 turn을
+ * 돌려 확인한다 — LLM 판정이 아니라 design.json/코드의 diff를 기계적으로 검사한다.
+ *
+ * 순수 템플릿 렌더이며 LLM을 쓰지 않는다. bridge가 `report_drift` 검증 시점에 finding마다
+ * 채워 `DriftFinding.resolutionPrompt`로 내보낸다.
+ */
+export function renderResolutionPrompt(
+  finding: { commit: string; files: string[]; detail: string },
+  criterion: { id: string; text: string; why?: string },
+): string {
+  const files = finding.files.length > 0 ? finding.files.join(", ") : "the relevant code";
+  const lines = [`Commit ${finding.commit} conflicts with a decision this project already made.`, "", `${criterion.id}: ${criterion.text}`];
+  if (criterion.why) lines.push(`Why this was decided: ${criterion.why}`);
+  lines.push("", `What was found: ${finding.detail}`);
+  if (finding.files.length > 0) lines.push(`Files: ${files}`);
+  lines.push(
+    "",
+    "Judge which of these is true, then act on it yourself — do not just report back:",
+    `1. The code is wrong. Fix ${files} so it follows ${criterion.id}.`,
+    `2. The decision is outdated. Edit ONLY the "${criterion.id}" entry in`,
+    "   .project-intel/design.json to match what the code now does. You are allowed to edit",
+    "   this file — it is this project's own recorded decisions, not generated output. Change",
+    "   just that one entry's text (and why, if it changed). Do not touch any other DEC, RULE,",
+    "   or the file's structure.",
+  );
+  return lines.join("\n");
+}
+
+/**
  * 위키 후보 키워드 프롬프트 (§3.5).
  *
  * **판단을 시키는 turn이다.** 빈도로 뽑으려다 실패해서 여기로 왔다 — 가장 자주 나오는 말이
