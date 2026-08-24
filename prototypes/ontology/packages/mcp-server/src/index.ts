@@ -124,7 +124,9 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 기능은 어떻게 동작하는가 (흐름)            -> get_scenario_context
   · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
   · 여러 anchor의 관계를 한 번에 조회하려면          -> get_impact_context_batch
+  · 검증된 시스템 entity/link ID를 조회하려면          -> get_system_facts
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
+  · 엔진이 모르는 시스템 대상과 관계를 등록하려면   -> propose_system_facts
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
   · 아키텍처/워크플로우/시퀀스 한 벌을 제출하려면    -> submit_analysis_bundle (assembly turn 전용)
   · Bundle 검증 오류의 일부 경로만 고치려면         -> patch_analysis_bundle (draftId 필요)
@@ -132,7 +134,8 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
 중요한 규칙:
 
 1. 경로·심볼·줄번호를 지어내지 마라. 모든 참조는 실재하는 id여야 한다.
-2. 엔진이 인덱싱하지 못한 근거를 발견했다면 버리지 말고 propose_evidence로 등록을 요청하라.
+2. 엔진이 인덱싱하지 못한 단일 근거는 propose_evidence로, 신규 시스템 대상과 그 관계는
+   propose_system_facts로 등록하라.
    Core가 검증한 뒤 id를 발급하며, 발급받은 id에만 grounding할 수 있다.
 3. 사용자에게 보이는 label은 파일명·함수명이 아니라 프로젝트의 도메인 용어로 쓴다.
    기술 세부는 Trace View에서만 노출한다.
@@ -267,6 +270,26 @@ server.registerTool(
     reply(await callBridge(`/internal/scenario-context${query({ anchor, question, hops })}`)),
 );
 
+server.registerTool(
+  "get_system_facts",
+  {
+    title: "검증된 System Fact 조회",
+    description:
+      "현재 generation의 System Entity와 System Link를 조회한다. Architecture component.entityRefs와 " +
+      "connection.systemLinkRefs는 이 응답의 ID를 사용해야 한다. 기본 지도에는 certainty가 " +
+      "confirmed|grounded이고 status가 valid|relocated인 Link만 사용하라.",
+    inputSchema: {
+      origin: z.enum(["engine", "vibee"]).optional(),
+      certainty: z.enum(["confirmed", "grounded", "inferred"]).optional(),
+      status: z.enum(["valid", "relocated", "stale", "missing", "needs_review"]).optional(),
+      entityId: z.string().optional(),
+      limit: z.number().int().min(1).max(2000).optional(),
+    },
+  },
+  async ({ origin, certainty, status, entityId, limit }) =>
+    reply(await callBridge(`/internal/system-facts${query({ origin, certainty, status, entityId, limit })}`)),
+);
+
 // ---------------------------------------------------------------------------
 // 쓰기 tool (§6.5) — 검증은 전부 Core 가 한다. 여기는 loopback 위임만
 // ---------------------------------------------------------------------------
@@ -276,6 +299,7 @@ const entityRefSchema = z.union([
   z.object({ kind: z.literal("symbol"), symbolId: z.string() }),
   z.object({ kind: z.literal("route"), routeKey: z.string() }),
   z.object({ kind: z.literal("model"), modelKey: z.string() }),
+  z.object({ kind: z.literal("resource"), namespace: z.string(), key: z.string() }),
 ]);
 
 const graphRoleSchema = z.union([
@@ -316,6 +340,55 @@ server.registerTool(
   },
   async (proposal) =>
     reply(await callBridge("/internal/propose-evidence", { method: "POST", body: JSON.stringify(proposal) })),
+);
+
+const proposedEntityEndpointSchema = z.union([
+  z.object({ entityId: z.string().min(1) }).strict(),
+  z.object({ localId: z.string().min(1) }).strict(),
+]);
+
+server.registerTool(
+  "propose_system_facts",
+  {
+    title: "System Fact 원자적 등록 요청",
+    description:
+      "Core adapter가 모르는 runtime·route·외부 SDK·저장소와 호출 관계를 발견했을 때 쓴다. " +
+      "source anchors, 신규 entities, 그 entities를 endpoint로 쓰는 links를 한 batch로 제출한다. " +
+      "Core가 모든 경로와 범위를 직접 검증하고 하나라도 잘못되면 batch 전체를 거절한다. " +
+      "grounded source contract가 부족한 fact는 inferred로 낮춰 보존하며 Architecture의 확정 edge에는 쓸 수 없다. " +
+      "성공한 제안은 다음 submit_semantic_patch와 같은 generation에 원자적으로 커밋된다.",
+    inputSchema: {
+      baseAnalysisVersion: z.number().int().min(0),
+      anchors: z.array(z.object({
+        localId: z.string().min(1),
+        kind: z.string().min(1).describe("call, import, dependency, config, route, handler, branch 등의 source 역할"),
+        filePath: z.string().min(1),
+        location: z.object({ startLine: z.number().int().min(1), endLine: z.number().int().min(1).optional() }),
+        symbolHint: z.string().optional(),
+        summary: z.string().min(1),
+        normalizationProfile: z.enum(["code", "prose"]).optional(),
+      }).strict()),
+      entities: z.array(z.object({
+        localId: z.string().min(1),
+        ref: entityRefSchema,
+        kind: z.string().min(1),
+        anchorLocalIds: z.array(z.string().min(1)),
+        certainty: z.enum(["grounded", "inferred"]),
+      }).strict()),
+      links: z.array(z.object({
+        localId: z.string().min(1),
+        from: proposedEntityEndpointSchema,
+        to: proposedEntityEndpointSchema,
+        kind: z.string().min(1),
+        mechanism: z.string().optional(),
+        anchorLocalIds: z.array(z.string().min(1)),
+        dependencyAnchorLocalIds: z.array(z.string().min(1)).optional(),
+        certainty: z.enum(["grounded", "inferred"]),
+      }).strict()),
+    },
+  },
+  async (proposal) =>
+    reply(await callBridge("/internal/propose-system-facts", { method: "POST", body: JSON.stringify(proposal) })),
 );
 
 const conceptSchema = z.object({
@@ -445,7 +518,7 @@ server.registerTool(
       "architecture: { title, components: [{ id, label, presentationType, entityRefs, " +
       "evidenceRefs, description?, inputs?, outputs?, boundaryId?, conceptRefs?, sublabel?, " +
       "confidence? }], boundaries: [{ id, label, kind, wraps }], connections: [{ id, from, to, " +
-      "traceLinkRefs, evidenceRefs, label?, role? }] }.\n\n" +
+      "systemLinkRefs, evidenceRefs, label?, role? }] }. V3 traceLinkRefs는 읽기 migration 전용이다.\n\n" +
       "workflow: { title, lanes: [{ id, label, kind }], mainPath: [nodeId...], " +
       "nodes: [{ id, laneId, label, presentationType, entityRefs, evidenceRefs, ... }], " +
       "edges: [{ id, from, to, role, evidenceRefs, label?, labelTerms?, sequenceRef? }] }.\n\n" +
@@ -456,9 +529,9 @@ server.registerTool(
       "sequences: [{ id, title, triggeredByEdgeId, participants, messages: [{ id, " +
       "fromParticipantId, toParticipantId, order, label, kind, evidenceRefs }], activations?, " +
       "phases?, evidenceRefs }].\n\n" +
-      "**규칙**: entityRefs는 실재하는 골격 entity(entityKey)만, evidenceRefs는 실재하고 " +
-      "present인 evidence id만 가리켜야 한다(빈 배열 금지, I9). connections.traceLinkRefs는 " +
-      "그 연결을 뒷받침하는 골격 link의 evidence id여야 한다 — 지어낸 연결은 거절된다(I20). " +
+      "**규칙**: entityRefs는 실재하는 System Entity ID만, evidenceRefs는 실재하고 " +
+      "present인 evidence id만 가리켜야 한다(빈 배열 금지, I9). connections.systemLinkRefs는 " +
+      "confirmed|grounded + valid|relocated System Link의 연속된 방향 경로여야 한다(I20-v4). " +
       "edge.sequenceRef와 그 SequenceIR.triggeredByEdgeId는 서로 일치해야 한다(1엣지-1시퀀스). " +
       "presentationType은 표시용 분류일 뿐이다 — 확신이 없으면 \"unknown\"을 쓴다.\n\n" +
       "자주 틀리는 정확한 계약:\n" + analysisContractDigest() + "\n\n" +

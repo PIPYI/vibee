@@ -174,13 +174,16 @@ export function computeClusteredArchitectureIR(
             ? labels.join(" · ")
             : `${labels.slice(0, MAX_MERGED_LABELS).join(" · ")} 외 ${labels.length - MAX_MERGED_LABELS}`;
       const roles = [...new Set(connections.map((connection) => connection.role).filter((role): role is NonNullable<ArchitectureConnection["role"]> => Boolean(role)))];
+      const traceLinkRefs = [...new Set(connections.flatMap((connection) => connection.traceLinkRefs ?? []))].sort();
+      const systemLinkRefs = [...new Set(connections.flatMap((connection) => connection.systemLinkRefs ?? []))].sort();
       return {
         id: `merged:${key}`,
         from,
         to,
         ...(label ? { label } : {}),
         ...(roles.length === 1 ? { role: roles[0]! } : {}),
-        traceLinkRefs: [...new Set(connections.flatMap((connection) => connection.traceLinkRefs))].sort(),
+        ...(systemLinkRefs.length > 0 ? { systemLinkRefs } : {}),
+        ...(traceLinkRefs.length > 0 ? { traceLinkRefs } : {}),
         evidenceRefs: [...new Set(connections.flatMap((connection) => connection.evidenceRefs))].sort(),
       };
     });

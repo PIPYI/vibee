@@ -47,6 +47,7 @@ export async function commitAnalysisBundle(
       const result = validateAnalysisBundle({
         bundle,
         evidence: snapshot.evidence,
+        systemFacts: snapshot.systemFacts,
         memory: snapshot.memory,
         projectPath: store.projectPath,
       });

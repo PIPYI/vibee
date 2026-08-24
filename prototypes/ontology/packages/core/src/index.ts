@@ -90,3 +90,20 @@ export {
   describeRepositoryTopology,
   detectRepositoryTopology,
 } from "./repository-topology.js";
+export {
+  buildEngineSystemFactStore,
+  canonicalResourceRef,
+  emptySystemFactStore,
+  findSystemEntity,
+  findSystemLink,
+  mergeProposedSystemFacts,
+  normalizeSystemMechanism,
+  systemEntityId,
+  systemLinkId,
+  systemLinksForEntity,
+} from "./system-facts.js";
+export {
+  validateSystemFactProposal,
+  type SystemFactProposalContext,
+  type ValidatedSystemFactBatch,
+} from "./system-fact-proposal.js";

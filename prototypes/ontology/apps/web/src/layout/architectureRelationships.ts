@@ -145,7 +145,7 @@ export function backendReplacementSeams(
 
 /**
  * Architecture edge와 Sequence를 라벨 유사도로 추측하지 않는다. 동기/제어 edge의
- * traceLinkRefs와 Sequence message evidence가 정확히 겹치고, 참가자·메시지가 각각 2개
+ * connection evidence와 Sequence message evidence가 정확히 겹치고, 참가자·메시지가 각각 2개
  * 이상인 경우만 연결한다. 따라서 클릭 시 추가 AI 호출이나 코드 재분석이 필요 없다.
  */
 export function matchArchitectureSequences(
@@ -164,7 +164,10 @@ export function matchArchitectureSequences(
     if (connection.role !== "sync" && connection.role !== "control" && connection.role !== undefined) continue;
     let best: ArchitectureSequenceMatch | undefined;
     for (const candidate of candidates) {
-      const sharedEvidenceRefs = [...new Set(connection.traceLinkRefs.filter((ref) => candidate.messageEvidence.has(ref)))].sort();
+      const sharedEvidenceRefs = [...new Set(
+        [...(connection.traceLinkRefs ?? []), ...connection.evidenceRefs]
+          .filter((ref) => candidate.messageEvidence.has(ref)),
+      )].sort();
       if (sharedEvidenceRefs.length === 0) continue;
       if (!best || sharedEvidenceRefs.length > best.sharedEvidenceRefs.length) {
         best = { sequence: candidate.sequence, sharedEvidenceRefs };

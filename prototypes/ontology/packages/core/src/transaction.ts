@@ -24,10 +24,23 @@
  * 셈이다. 규칙도 단순해진다: **하나의 transaction은 언제나 정확히 하나의 analysisVersion에
  * 묶인다.**
  */
-import type { Diagnostic, Evidence, EvidenceIndex, EvidenceProposal, Outcome } from "@onto/protocol";
+import type {
+  Diagnostic,
+  Evidence,
+  EvidenceIndex,
+  EvidenceProposal,
+  Outcome,
+  SystemEntity,
+  SystemFactProposal,
+  SystemFactProposalResult,
+  SystemFactStore,
+  SystemLink,
+} from "@onto/protocol";
 
 import { validateProposal } from "./propose.js";
 import { diagnostic } from "./schema.js";
+import { emptySystemFactStore, mergeProposedSystemFacts } from "./system-facts.js";
+import { validateSystemFactProposal } from "./system-fact-proposal.js";
 
 /**
  * 한 task에서 허용하는 재시작 횟수 (T3).
@@ -53,6 +66,8 @@ export type DiscardedProposal = {
 
 export class AnalyzeTransaction {
   readonly pendingEvidence: Evidence[] = [];
+  readonly pendingSystemEntities: SystemEntity[] = [];
+  readonly pendingSystemLinks: SystemLink[] = [];
   status: TransactionStatus = "open";
   abortReason?: string;
   /** 이 transaction 안에서 성공한 커밋들의 generation. 진단·시험용이며 상태를 바꾸지 않는다 */
@@ -65,6 +80,8 @@ export class AnalyzeTransaction {
     readonly baseAnalysisVersion: number,
     /** base 시점의 인덱스. symbolHint 대조와 graph 해석의 기준 */
     readonly index: EvidenceIndex,
+    /** base 시점의 V4 System Fact Store. 기존 endpoint 해석의 기준 */
+    readonly systemFacts: SystemFactStore = emptySystemFactStore(baseAnalysisVersion),
   ) {}
 
   /**
@@ -104,6 +121,59 @@ export class AnalyzeTransaction {
     return { ok: true, value: existing ?? outcome.value, diagnostics: outcome.diagnostics };
   }
 
+  /** anchor + entity + link를 검증한 뒤에만 pending 상태에 한꺼번에 넣는다. */
+  proposeSystemFacts(proposal: SystemFactProposal): Outcome<SystemFactProposalResult> {
+    if (this.status !== "open") {
+      return {
+        ok: false,
+        diagnostics: [
+          diagnostic("transaction/not-open", "error", `이 transaction 은 ${this.status} 상태입니다.`, {
+            subject: { taskId: this.taskId }, evidence: { status: this.status }, supportedFixes: ["새 transaction에서 다시 제안한다"],
+          }),
+        ],
+      };
+    }
+
+    const visibleStore = mergeProposedSystemFacts(this.systemFacts, {
+      entities: this.pendingSystemEntities,
+      links: this.pendingSystemLinks,
+    });
+    const outcome = validateSystemFactProposal(
+      {
+        projectPath: this.projectPath,
+        index: this.index,
+        systemFacts: visibleStore,
+        observedAtVersion: this.baseAnalysisVersion,
+      },
+      proposal,
+    );
+    if (!outcome.ok) return outcome;
+
+    const evidenceById = new Map(this.pendingEvidence.map((item) => [item.id, item] as const));
+    for (const item of outcome.value.evidence) evidenceById.set(item.id, item);
+    this.pendingEvidence.splice(0, this.pendingEvidence.length, ...evidenceById.values());
+
+    const entitiesById = new Map(this.pendingSystemEntities.map((item) => [item.id, item] as const));
+    for (const item of outcome.value.entities) entitiesById.set(item.id, item);
+    this.pendingSystemEntities.splice(0, this.pendingSystemEntities.length, ...entitiesById.values());
+
+    const linksById = new Map(this.pendingSystemLinks.map((item) => [item.id, item] as const));
+    for (const item of outcome.value.links) linksById.set(item.id, item);
+    this.pendingSystemLinks.splice(0, this.pendingSystemLinks.length, ...linksById.values());
+
+    return { ok: true, value: outcome.value.result, diagnostics: outcome.diagnostics };
+  }
+
+  /** System Fact transaction이 직접 의존하는 anchor Evidence. */
+  systemFactEvidenceRefs(): Set<string> {
+    const refs = new Set<string>();
+    for (const fact of [...this.pendingSystemEntities, ...this.pendingSystemLinks]) {
+      for (const id of fact.evidenceRefs) refs.add(id);
+      for (const id of fact.dependsOnEvidenceRefs) refs.add(id);
+    }
+    return refs;
+  }
+
   /** transaction 안에서만 보이는 근거를 포함해 조회한다 (§6.5 `get_evidence`). */
   visibleEvidence(): Evidence[] {
     const byId = new Map(this.index.evidence.map((item) => [item.id, item]));
@@ -136,11 +206,13 @@ export class AnalyzeTransaction {
     this.abortReason = reason;
     // **반쯤 쓰인 evidence는 없다.** 전부 버린다.
     this.pendingEvidence.length = 0;
+    this.pendingSystemEntities.length = 0;
+    this.pendingSystemLinks.length = 0;
     return discarded;
   }
 }
 
-export type ReopenResult = { baseAnalysisVersion: number; index: EvidenceIndex };
+export type ReopenResult = { baseAnalysisVersion: number; index: EvidenceIndex; systemFacts?: SystemFactStore };
 
 /**
  * 하나의 agent session이 여는 transaction들 (T3).
@@ -164,6 +236,7 @@ export class AnalyzeSession {
       projectPath,
       opened.baseAnalysisVersion,
       opened.index,
+      opened.systemFacts,
     );
   }
 
@@ -220,6 +293,7 @@ export class AnalyzeSession {
       this.projectPath,
       opened.baseAnalysisVersion,
       opened.index,
+      opened.systemFacts,
     );
     return { ok: true, value: this.current, diagnostics: [raceDiagnostic(changedFiles, opened)] };
   }

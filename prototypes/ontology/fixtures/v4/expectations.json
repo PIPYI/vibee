@@ -1,0 +1,29 @@
+{
+  "purpose": "V4 open-world discovery와 증분 재사용의 고정 평가 기준",
+  "fixtures": {
+    "unsupported-sveltekit": {
+      "readmePresent": false,
+      "phase1ExpectedGap": [
+        "SvelteKit runtime resource가 없다",
+        "+server.ts POST route가 없다",
+        "billingClient 외부 호출 대상이 없다"
+      ],
+      "v4ExpectedFacts": [
+        "resource:runtime:sveltekit-app",
+        "POST route",
+        "billing external call"
+      ]
+    },
+    "python-external": {
+      "readmePresent": false,
+      "phase1ExpectedGap": [
+        "OpenAI Responses API resource가 없다",
+        "client.responses.create attribute call link가 없다"
+      ],
+      "v4ExpectedFacts": [
+        "resource:external:openai-responses",
+        "answer → OpenAI Responses API"
+      ]
+    }
+  }
+}

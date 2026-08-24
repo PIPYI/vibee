@@ -154,11 +154,19 @@ function ConnectionDetail({
               <p>{replacementSeam.reason}입니다. 현재는 로컬 데이터에 직접 연결되어 있지만, 이 경계를 API/DB 호출로 바꾸면 화면과 서비스의 나머지 구조를 유지할 수 있습니다.</p>
             </section>
           )}
-          {connection.traceLinkRefs.length > 0 && (
+          {(connection.systemLinkRefs?.length ?? 0) > 0 && (
+            <section>
+              <h4>검증된 시스템 연결</h4>
+              <ul className="chip-list">
+                {connection.systemLinkRefs!.map((ref) => <li key={ref} className="chip">{ref}</li>)}
+              </ul>
+            </section>
+          )}
+          {(connection.systemLinkRefs?.length ?? 0) === 0 && (connection.traceLinkRefs?.length ?? 0) > 0 && (
             <section>
               <h4>코드에서 확인된 연결</h4>
               <ul className="chip-list">
-                {connection.traceLinkRefs.map((ref) => <li key={ref} className="chip">{ref}</li>)}
+                {connection.traceLinkRefs!.map((ref) => <li key={ref} className="chip">{ref}</li>)}
               </ul>
             </section>
           )}

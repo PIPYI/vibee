@@ -156,6 +156,42 @@ test("propose_evidence — bridge 가 Core 의 검증을 실제로 통과시킨�
   }
 });
 
+test("V4 Phase 2 — propose_system_facts가 신규 entity/link를 patch와 같은 generation에 커밋한다", async () => {
+  const { taskId, project, nextVersion } = await openAnalyzeTask();
+  try {
+    const proposed = await post("/internal/propose-system-facts", {
+      baseAnalysisVersion: nextVersion,
+      anchors: [
+        { localId: "call", kind: "call", filePath: "src/follow.js", location: { startLine: 1 }, summary: "외부 호출 지점" },
+        { localId: "config", kind: "config", filePath: "docs/policy.md", location: { startLine: 3 }, summary: "외부 대상 설정", normalizationProfile: "prose" },
+      ],
+      entities: [
+        { localId: "local", ref: { kind: "symbol", symbolId: "src/follow.js#requestFollow" }, kind: "service", anchorLocalIds: ["call"], certainty: "grounded" },
+        { localId: "remote", ref: { kind: "resource", namespace: "external", key: "follow-provider" }, kind: "external", anchorLocalIds: ["config"], certainty: "grounded" },
+      ],
+      links: [
+        { localId: "invoke", from: { localId: "local" }, to: { localId: "remote" }, kind: "external-sdk-call", mechanism: "requestFollow", anchorLocalIds: ["call"], dependencyAnchorLocalIds: ["config"], certainty: "grounded" },
+      ],
+    });
+    assert.equal(proposed.ok, true, JSON.stringify(proposed));
+
+    const patched = await post("/internal/semantic-patch", {
+      baseAnalysisVersion: nextVersion,
+      baseSemanticVersion: 0,
+    });
+    assert.equal(patched.ok, true, JSON.stringify(patched));
+    assert.equal(patched.committedSystemLinkIds.length, 1);
+
+    const factsResponse = await fetch(`${BASE_URL}/api/system-facts?entityId=${encodeURIComponent(proposed.issued.entityIds.remote)}`);
+    const facts = await factsResponse.json();
+    assert.equal(facts.links.length, 1);
+    assert.equal(facts.links[0].certainty, "grounded");
+    assert.equal(new SemanticStore(project).load().systemFacts.links.length, 1);
+  } finally {
+    endTask(taskId);
+  }
+});
+
 test("acceptance 7 — 지어낸 범위는 bridge 를 거쳐도 거절된다", async () => {
   const { taskId } = await openAnalyzeTask();
   try {

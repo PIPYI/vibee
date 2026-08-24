@@ -16,14 +16,14 @@ export const BRIDGE_HOST = "127.0.0.1";
 export const DEFAULT_BRIDGE_PORT = 43220;
 
 /**
- * Web과 Bridge가 같은 wire contract를 말하는지 확인하는 V3.2 handshake.
+ * Web과 Bridge가 같은 wire contract를 말하는지 확인하는 V4 handshake.
  *
  * `buildId`는 제품 버전 표기가 아니라 **실행 호환성 표식**이다. Web dev server는 소스를
  * hot reload하지만 Bridge 프로세스는 재시작 전까지 이전 모듈을 계속 들고 있을 수 있다.
  * 프로토콜 모양이 바뀌는 릴리스에서 이 값을 함께 올리면 그 조합을 분석 시작 전에 막는다.
  */
-export const ONTO_PROTOCOL_VERSION = "3.2";
-export const ONTO_BUILD_ID = "v3.2-runtime-2";
+export const ONTO_PROTOCOL_VERSION = "4.0";
+export const ONTO_BUILD_ID = "v4-system-facts-phase3-1";
 
 export type RuntimeIdentity = {
   protocolVersion: string;
@@ -63,7 +63,9 @@ export type McpToolName =
   | "get_scenario_context"
   | "get_impact_context"
   | "get_impact_context_batch"
+  | "get_system_facts"
   | "propose_evidence"
+  | "propose_system_facts"
   | "submit_semantic_patch"
   | "submit_view_ir"
   | "submit_analysis_bundle"

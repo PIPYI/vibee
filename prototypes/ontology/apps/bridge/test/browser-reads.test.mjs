@@ -81,7 +81,7 @@ test("GET /api/memory — 아직 인덱싱하지 않은 프로젝트는 memory_u
   assert.equal(body.reason, "not_indexed");
 });
 
-test("GET /api/memory · GET /api/evidence — 토큰 없이도 인덱싱된 프로젝트를 읽을 수 있다", async () => {
+test("GET /api/memory · GET /api/evidence · GET /api/system-facts — 토큰 없이 현재 generation을 읽는다", async () => {
   const dir = freshProject();
   await post("/api/index", { projectPath: dir });
 
@@ -100,6 +100,15 @@ test("GET /api/memory · GET /api/evidence — 토큰 없이도 인덱싱된 프
   assert.ok(symbol, "requestFollow 심볼이 보여야 한다");
   // 엔진이 만든 evidence다 — relocationConfidence는 agent evidence에만 붙는다.
   assert.equal(symbol.origin, "engine");
+
+  const facts = await get("/api/system-facts?origin=engine&certainty=confirmed");
+  assert.equal(facts.status, 200);
+  assert.equal(facts.body.schemaVersion, 4);
+  assert.equal(facts.body.analysisVersion, 1);
+  assert.ok(facts.body.counts.entities > 0, JSON.stringify(facts.body));
+  assert.ok(facts.body.counts.links > 0, JSON.stringify(facts.body));
+  assert.ok(facts.body.entities.every((item) => item.origin === "engine"));
+  assert.ok(facts.body.links.every((item) => item.certainty === "confirmed"));
 });
 
 test("GET /api/evidence — includeSource=true면 실제 소스 발췌를 함께 준다", async () => {

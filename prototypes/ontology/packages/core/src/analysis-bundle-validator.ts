@@ -1,5 +1,5 @@
 /**
- * `submit_analysis_bundle`의 Validator (schema3 §5.2 Stage 3~4, §6.2, I18~I20).
+ * `submit_analysis_bundle`의 Validator (V4 Phase 3, I18~I20-v4).
  *
  * `view-validator.ts`와 같은 층위 — schema(ajv) → 참조 무결성 → 구조 검증 순서로 진행하고,
  * 실패는 전부 `Diagnostic[]`로 돌아온다(A3). `AnalysisBundle`은 `SemanticStore`에 커밋되는
@@ -27,19 +27,22 @@ import type {
   EvidenceIndex,
   RepositoryTopology,
   SemanticMemory,
+  SystemFactStore,
   UserMapIR,
   WorkflowIR,
 } from "@onto/protocol";
 
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
-import { buildEvidenceGraph } from "./trace.js";
 import { assessRepositoryCoverage, detectRepositoryTopology } from "./repository-topology.js";
 import { validateViewIR } from "./view-validator.js";
+import { buildEngineSystemFactStore, systemEntityId } from "./system-facts.js";
 
 export type AnalysisBundleValidateInput = {
   bundle: unknown;
   evidence: EvidenceIndex;
   memory: SemanticMemory;
+  /** V4 System Graph. 생략한 레거시 호출은 Evidence에서 engine-confirmed store를 투영한다. */
+  systemFacts?: SystemFactStore;
   /** 있으면 manifest/entrypoint/data asset completeness gate도 수행한다. */
   projectPath?: string;
 };
@@ -50,22 +53,33 @@ export type AnalysisBundleValidateResult = {
   repositoryTopology?: RepositoryTopology;
 };
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
 export function validateAnalysisBundle(input: AnalysisBundleValidateInput): AnalysisBundleValidateResult {
   const diagnostics = validateAgainst("analysis-bundle", input.bundle);
   if (hasError(diagnostics)) return { diagnostics };
-  const bundle = input.bundle as AnalysisBundle;
+  // migration이 호출자의 draft를 바꾸지 않도록 복제한다.
+  const bundle = structuredClone(input.bundle as AnalysisBundle);
 
-  const graph = buildEvidenceGraph(input.evidence);
+  // 레거시 generation/test가 빈 store를 넘겨도 현재 engine Evidence를 즉시 투영하고,
+  // 기존 Vibee fact는 buildEngineSystemFactStore의 carry 규칙으로 함께 보존한다.
+  const systemFacts = buildEngineSystemFactStore(input.evidence, input.systemFacts);
   const presentEvidence = new Map(
     input.evidence.evidence.filter((item) => item.status === "present").map((item) => [item.id, item] as const),
   );
   const allEvidenceIds = new Set(input.evidence.evidence.map((item) => item.id));
-  // I20 — 골격 링크의 안정적 참조는 그것을 뒷받침하는 link-role evidence id뿐이다 (파일 상단 주석 참고).
-  const linkEvidenceIds = new Set(
-    input.evidence.evidence
-      .filter((item) => item.status === "present" && item.graph?.role === "link")
-      .map((item) => item.id),
-  );
+  const systemEntityIds = new Set(systemFacts.entities.map((item) => item.id));
+  const systemLinksById = new Map(systemFacts.links.map((item) => [item.id, item] as const));
+  const systemLinksByEvidence = new Map<string, string[]>();
+  for (const link of systemFacts.links) {
+    for (const evidenceId of link.evidenceRefs) {
+      const ids = systemLinksByEvidence.get(evidenceId) ?? [];
+      ids.push(link.id);
+      systemLinksByEvidence.set(evidenceId, ids);
+    }
+  }
   const conceptIds = new Set(input.memory.concepts.map((item) => item.id));
 
   const checkEvidenceRefs = (refs: readonly string[], base: string): void => {
@@ -123,15 +137,15 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
 
   const checkEntityRefs = (refs: readonly string[], base: string): void => {
     refs.forEach((ref, index) => {
-      if (graph.nodes.has(ref)) return;
+      if (systemEntityIds.has(ref)) return;
       diagnostics.push(
         diagnostic(
           "bundle/unknown-entity",
           "error",
-          `${base}/${index} 가 Stage 1 골격에 없는 entity "${ref}" 를 가리킵니다.`,
+          `${base}/${index} 가 현재 System Fact Store에 없는 entity "${ref}" 를 가리킵니다.`,
           {
             subject: { path: `${base}/${index}` },
-            supportedFixes: ["get_impact_context/get_evidence로 실재하는 골격 노드를 확인한다"],
+            supportedFixes: ["GET /api/system-facts 또는 get_evidence로 실재하는 System Entity를 확인한다"],
           },
         ),
       );
@@ -241,33 +255,94 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     checkEvidenceRefs(connection.evidenceRefs, `${base}/evidenceRefs`);
     requireGrounded(connection.evidenceRefs, base, "bundle/connection-ungrounded");
 
-    if (connection.traceLinkRefs.length === 0) {
+    // V3 traceLinkRefs를 같은 evidence를 가진 SystemLink ID로 읽기 migration한다.
+    if (connection.systemLinkRefs === undefined && connection.traceLinkRefs !== undefined) {
+      connection.systemLinkRefs = uniqueStrings(
+        connection.traceLinkRefs.flatMap((evidenceId) => systemLinksByEvidence.get(evidenceId) ?? []),
+      );
+    }
+    const refs = connection.systemLinkRefs ?? [];
+    if (refs.length === 0) {
+      const legacy = connection.traceLinkRefs !== undefined;
       diagnostics.push(
         diagnostic(
-          "bundle/connection-not-grounded-in-skeleton",
+          legacy
+            ? "bundle/connection-not-grounded-in-skeleton"
+            : "bundle/connection-not-grounded-in-system-graph",
           "error",
-          `${base}/traceLinkRefs 가 비어 있습니다 — Stage 1 골격 엣지 없이 연결을 만들 수 없습니다 (I20).`,
+          legacy
+            ? `${base}/traceLinkRefs가 유효한 Stage 1 link evidence를 가리키지 않습니다 (V3 I20 migration).`
+            : `${base}/systemLinkRefs가 비어 있습니다 — 검증된 System Link 없이 연결을 만들 수 없습니다 (I20-v4).`,
           {
-            subject: { path: `${base}/traceLinkRefs` },
-            supportedFixes: ["이 연결이 요약하는 골격 링크의 evidence id를 하나 이상 붙인다"],
+            subject: { path: legacy ? `${base}/traceLinkRefs` : `${base}/systemLinkRefs` },
+            supportedFixes: [legacy ? "실재하는 link-role Evidence를 쓰거나 V4 systemLinkRefs로 전환한다" : "이 연결이 요약하는 valid/relocated System Link ID를 하나 이상 붙인다"],
           },
         ),
       );
     }
-    connection.traceLinkRefs.forEach((ref, i) => {
-      if (linkEvidenceIds.has(ref)) return;
+    const resolvedLinks = refs.map((ref, i) => {
+      const link = systemLinksById.get(ref);
+      if (!link) {
+        diagnostics.push(
+          diagnostic("bundle/unknown-system-link", "error", `${base}/systemLinkRefs/${i}가 없는 System Link "${ref}"를 가리킵니다.`, {
+            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { systemLinkId: ref }, supportedFixes: ["현재 generation의 System Link ID를 사용한다"],
+          }),
+        );
+        return undefined;
+      }
+      if (!(["confirmed", "grounded"] as const).includes(link.certainty as "confirmed" | "grounded") || !(["valid", "relocated"] as const).includes(link.status as "valid" | "relocated")) {
+        diagnostics.push(
+          diagnostic("bundle/system-link-not-authoritative", "error", `${base}/systemLinkRefs/${i}의 Link는 ${link.certainty}/${link.status} 상태라 확정 연결에 쓸 수 없습니다.`, {
+            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { certainty: link.certainty, status: link.status }, supportedFixes: ["confirmed|grounded이며 valid|relocated인 Link를 사용한다", "이 관계를 assumptions/unknowns로 분리한다"],
+          }),
+        );
+      }
+      if (link.evidenceRefs.length === 0 || link.evidenceRefs.some((id) => !presentEvidence.has(id))) {
+        diagnostics.push(
+          diagnostic("bundle/system-link-evidence-invalid", "error", `${base}/systemLinkRefs/${i}의 Link가 현재 present Evidence로 뒷받침되지 않습니다.`, {
+            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { evidenceRefs: link.evidenceRefs }, supportedFixes: ["현재 source anchor로 System Fact를 다시 검증한다"],
+          }),
+        );
+      }
+      return link;
+    }).filter((item): item is NonNullable<typeof item> => item !== undefined);
+
+    for (let i = 1; i < resolvedLinks.length; i += 1) {
+      if (systemEntityId(resolvedLinks[i - 1]!.to) === systemEntityId(resolvedLinks[i]!.from)) continue;
       diagnostics.push(
         diagnostic(
-          "bundle/connection-not-grounded-in-skeleton",
+          "bundle/system-link-path-discontinuous",
           "error",
-          `${base}/traceLinkRefs/${i} 가 Stage 1 골격의 link evidence가 아닌 "${ref}" 를 가리킵니다 (I20).`,
+          `${base}/systemLinkRefs가 연속된 방향 경로를 이루지 않습니다 (${i - 1} → ${i}).`,
           {
-            subject: { path: `${base}/traceLinkRefs/${i}`, evidenceId: ref },
-            supportedFixes: ["get_impact_context/get_evidence로 실재하는 골격 링크 evidence id를 확인한다"],
+            subject: { path: `${base}/systemLinkRefs/${i}` },
+            evidence: { previousTo: systemEntityId(resolvedLinks[i - 1]!.to), nextFrom: systemEntityId(resolvedLinks[i]!.from) },
+            supportedFixes: ["from component에서 to component로 이어지는 순서로 Link ID를 배열한다"],
           },
         ),
       );
-    });
+    }
+
+    if (resolvedLinks.length > 0) {
+      const fromComponent = architecture.components.find((item) => item.id === connection.from);
+      const toComponent = architecture.components.find((item) => item.id === connection.to);
+      const pathStart = systemEntityId(resolvedLinks[0]!.from);
+      const pathEnd = systemEntityId(resolvedLinks[resolvedLinks.length - 1]!.to);
+      if (fromComponent && !fromComponent.entityRefs.includes(pathStart)) {
+        diagnostics.push(
+          diagnostic("bundle/system-link-direction-mismatch", "error", `${base}의 System Link 경로 시작점이 from component에 포함되지 않습니다.`, {
+            subject: { path: `${base}/from`, componentId: connection.from }, evidence: { pathStart, entityRefs: fromComponent.entityRefs }, supportedFixes: ["connection 방향을 고치거나 올바른 System Link 경로를 사용한다"],
+          }),
+        );
+      }
+      if (toComponent && !toComponent.entityRefs.includes(pathEnd)) {
+        diagnostics.push(
+          diagnostic("bundle/system-link-direction-mismatch", "error", `${base}의 System Link 경로 끝점이 to component에 포함되지 않습니다.`, {
+            subject: { path: `${base}/to`, componentId: connection.to }, evidence: { pathEnd, entityRefs: toComponent.entityRefs }, supportedFixes: ["connection 방향을 고치거나 올바른 System Link 경로를 사용한다"],
+          }),
+        );
+      }
+    }
   }
 
   let repositoryTopology: RepositoryTopology | undefined;

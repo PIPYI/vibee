@@ -20,6 +20,7 @@ import {
   OVERVIEW_IR_SCHEMA,
   SCENARIO_IR_SCHEMA,
   SEMANTIC_PATCH_SCHEMA,
+  SYSTEM_FACT_PROPOSAL_SCHEMA,
 } from "@onto/protocol";
 
 /**
@@ -81,6 +82,7 @@ function toDiagnostic(error: ErrorObject, root: unknown, code: string): Diagnost
 const SCHEMAS_BY_KEY = {
   "semantic-patch": { schema: SEMANTIC_PATCH_SCHEMA, code: "patch/schema" },
   "evidence-proposal": { schema: EVIDENCE_PROPOSAL_SCHEMA, code: "proposal/schema" },
+  "system-fact-proposal": { schema: SYSTEM_FACT_PROPOSAL_SCHEMA, code: "system-fact/schema" },
   "overview-ir": { schema: OVERVIEW_IR_SCHEMA, code: "view/schema" },
   "scenario-ir": { schema: SCENARIO_IR_SCHEMA, code: "view/schema" },
   "analysis-bundle": { schema: ANALYSIS_BUNDLE_SCHEMA, code: "bundle/schema" },

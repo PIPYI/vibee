@@ -118,7 +118,11 @@ test("유효한 bundle은 커밋되고 analysisVersion/semanticVersion/freshness
   assert.equal(after1.analysisBundle.analysisVersion, after1.project.analysisVersion);
   assert.equal(after1.analysisBundle.semanticVersion, after1.project.semanticVersion);
   assert.equal(after1.analysisBundle.freshness, "current");
-  assert.deepEqual(after1.analysisBundle.architecture, validBundle().architecture);
+  assert.deepEqual(
+    after1.analysisBundle.architecture.connections[0].traceLinkRefs,
+    validBundle().architecture.connections[0].traceLinkRefs,
+  );
+  assert.equal(after1.analysisBundle.architecture.connections[0].systemLinkRefs.length, 1);
 });
 
 test("agent가 analysisVersion/semanticVersion/freshness를 함께 보내도 Core가 덮어쓴다", async () => {

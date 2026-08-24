@@ -177,7 +177,11 @@ test("submit_analysis_bundle — 유효한 bundle은 커밋되고 GET /api/analy
     const result = await get(`/api/analysis-bundle?projectPath=${encodeURIComponent(seeded.project)}`);
     assert.equal(result.status, 200);
     assert.equal(result.body.bundle.freshness, "current");
-    assert.deepEqual(result.body.bundle.architecture, validBundle().architecture);
+    assert.deepEqual(
+      result.body.bundle.architecture.connections[0].traceLinkRefs,
+      validBundle().architecture.connections[0].traceLinkRefs,
+    );
+    assert.equal(result.body.bundle.architecture.connections[0].systemLinkRefs.length, 1);
     assert.deepEqual(result.body.bundle.workflow, validBundle().workflow);
   } finally {
     endTask(taskId);

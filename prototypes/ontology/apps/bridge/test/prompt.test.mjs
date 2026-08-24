@@ -199,7 +199,8 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   const topology = "독립 실행 런타임 2개: traveler, admin";
   const prompt = buildAssemblyPrompt("/tmp/proj", summary, topology);
   assert.match(prompt, /submit_analysis_bundle/);
-  assert.match(prompt, /traceLinkRefs/);
+  assert.match(prompt, /systemLinkRefs/);
+  assert.match(prompt, /I20-v4/);
   assert.match(prompt, /1엣지-1시퀀스/);
   assert.match(prompt, /위치 · 추천 조회/);
   assert.match(prompt, /런타임 2개/);

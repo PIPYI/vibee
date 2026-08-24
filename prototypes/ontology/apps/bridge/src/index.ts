@@ -19,12 +19,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AnalyzeSession,
   SemanticStore,
+  buildEngineSystemFactStore,
   buildEvidenceGraph,
   commitAnalysisBundle,
   commitPatch,
   describeRepositoryTopology,
   detectRepositoryTopology,
   assessRepositoryCoverage,
+  findSystemEntity,
   hasError,
   initialProjectState,
   projectReachability,
@@ -55,6 +57,7 @@ import type {
   ScenarioIR,
   SemanticPatch,
   SemanticWorkSet,
+  SystemFactProposal,
   TaskMode,
   ViewKind,
   ViewRequest,
@@ -110,6 +113,9 @@ const RUNTIME_CAPABILITIES = [
   "impact-context-batch",
   "python-evidence-v1",
   "provider-model-discovery",
+  "system-fact-store-v4",
+  "propose-system-facts-v4",
+  "analysis-bundle-i20-v4",
 ] as const;
 
 const state = new BridgeState();
@@ -297,6 +303,61 @@ app.get("/api/evidence", (req: Request, res: Response) => {
     }
   }
   res.json(result);
+});
+
+/**
+ * V4 System Fact Store 읽기. 브라우저와 진단 도구가 LLM turn 없이 현재 generation의
+ * runtime·route·external·storage 관계를 조회한다.
+ */
+function respondWithSystemFacts(req: Request, res: Response): void {
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+
+  const origin = typeof req.query["origin"] === "string" ? req.query["origin"] : undefined;
+  const certainty = typeof req.query["certainty"] === "string" ? req.query["certainty"] : undefined;
+  const status = typeof req.query["status"] === "string" ? req.query["status"] : undefined;
+  const entityId = typeof req.query["entityId"] === "string" ? req.query["entityId"] : undefined;
+  const limitValue = Number(req.query["limit"] ?? 500);
+  const limit = Number.isFinite(limitValue) ? Math.min(Math.max(Math.floor(limitValue), 1), 2_000) : 500;
+
+  const entities = loaded.systemFacts.entities
+    .filter((item) => !origin || item.origin === origin)
+    .filter((item) => !certainty || item.certainty === certainty)
+    .filter((item) => !status || item.status === status)
+    .filter((item) => !entityId || item.id === entityId)
+    .slice(0, limit);
+  const links = loaded.systemFacts.links
+    .filter((item) => !origin || item.origin === origin)
+    .filter((item) => !certainty || item.certainty === certainty)
+    .filter((item) => !status || item.status === status)
+    .filter(
+      (item) =>
+        !entityId ||
+        findSystemEntity(loaded.systemFacts, item.from)?.id === entityId ||
+        findSystemEntity(loaded.systemFacts, item.to)?.id === entityId,
+    )
+    .slice(0, limit);
+
+  res.json({
+    schemaVersion: loaded.systemFacts.schemaVersion,
+    analysisVersion: loaded.systemFacts.analysisVersion,
+    counts: {
+      entities: loaded.systemFacts.entities.length,
+      links: loaded.systemFacts.links.length,
+    },
+    entities,
+    links,
+    diagnostics: loaded.systemFacts.diagnostics,
+  });
+}
+
+app.get("/api/system-facts", respondWithSystemFacts);
+app.get("/internal/system-facts", requireToken, (req: Request, res: Response) => {
+  recordArrival("get_system_facts");
+  respondWithSystemFacts(req, res);
 });
 
 /**
@@ -520,6 +581,9 @@ async function performReindex(
       snapshot.project.semanticReconciledAnalysisVersion = nextVersion;
     }
     snapshot.evidence = withMissing;
+    // V4 Phase 1 — 결정론적 Evidence Graph를 같은 generation의 System Fact Store로 승격한다.
+    // 이전 store는 stable fact의 firstSeenVersion을 보존하는 데만 사용한다.
+    snapshot.systemFacts = buildEngineSystemFactStore(withMissing, snapshot.systemFacts);
     return snapshot;
   });
 
@@ -547,7 +611,11 @@ async function reindex(
 
   state.setAnalyzeSession(
     taskId,
-    new AnalyzeSession(taskId, projectPath, { baseAnalysisVersion: nextVersion, index: after.evidence }),
+    new AnalyzeSession(taskId, projectPath, {
+      baseAnalysisVersion: nextVersion,
+      index: after.evidence,
+      systemFacts: after.systemFacts,
+    }),
   );
   state.setDirtyEvidenceCount(taskId, work.dirtyEvidence.length);
 
@@ -1318,6 +1386,28 @@ app.post("/internal/propose-evidence", requireToken, (req: Request, res: Respons
   res.json({ ok: true, evidence: outcome.value, diagnostics: outcome.diagnostics });
 });
 
+/** V4 Phase 2 — source anchors와 신규 System Entity/Link를 원자적으로 제안한다. */
+app.post("/internal/propose-system-facts", requireToken, (req: Request, res: Response) => {
+  recordArrival("propose_system_facts");
+  const taskId = state.getActiveTaskId();
+  const session = taskId ? state.getAnalyzeSession(taskId) : undefined;
+  if (!taskId || !session) {
+    res.json({
+      error: "no_active_transaction",
+      next_step: "analyze turn이 진행 중일 때만 propose_system_facts를 쓸 수 있습니다.",
+    });
+    return;
+  }
+
+  const outcome = session.transaction.proposeSystemFacts(req.body as SystemFactProposal);
+  if (!outcome.ok) {
+    state.emit({ type: "validation.failed", taskId, tool: "propose_system_facts", diagnostics: outcome.diagnostics });
+    res.json({ ok: false, diagnostics: outcome.diagnostics });
+    return;
+  }
+  res.json({ ok: true, issued: outcome.value, diagnostics: outcome.diagnostics });
+});
+
 /**
  * `submit_semantic_patch` (§6.3 Validator ⓪~⑤). 실패하면 `{ok:false, diagnostics}` —
  * 같은 turn 에서 고쳐 다시 제출할 수 있다.
@@ -1374,6 +1464,7 @@ app.post("/internal/semantic-patch", requireToken, async (req: Request, res: Res
     const restarted = session.restartAfterRace(changedFiles, () => ({
       baseAnalysisVersion: reindexed.nextVersion,
       index: reindexed.after.evidence,
+      systemFacts: reindexed.after.systemFacts,
     }));
     state.emit({
       type: "validation.failed",

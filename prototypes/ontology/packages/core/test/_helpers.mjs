@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { SemanticStore, initialProjectState } from "@onto/core";
+import { SemanticStore, buildEngineSystemFactStore, initialProjectState } from "@onto/core";
 import { buildWorkSet, carryAgentEvidence, carryMissingEvidence, diffEvidence, indexProject } from "@onto/evidence";
 import { readFileSync, existsSync } from "node:fs";
 
@@ -57,6 +57,7 @@ export async function reindex(dir) {
     snapshot.project.analysisVersion = version;
     if (workEmpty) snapshot.project.semanticReconciledAnalysisVersion = version;
     snapshot.evidence = withMissing;
+    snapshot.systemFacts = buildEngineSystemFactStore(withMissing, snapshot.systemFacts);
     return snapshot;
   });
 

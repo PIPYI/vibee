@@ -44,6 +44,7 @@ import {
 import { applyPatch, evidenceRefSites, referencedEvidenceIds, type PatchResult } from "./patch.js";
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
 import type { LoadedState, SemanticStore } from "./store.js";
+import { mergeProposedSystemFacts } from "./system-facts.js";
 import type { AnalyzeTransaction } from "./transaction.js";
 
 export type ValidateInput = {
@@ -455,6 +456,8 @@ export type CommitPatchResult = {
   semanticVersion: number;
   diffSummary: SemanticDiffSummary;
   committedEvidenceIds: string[];
+  committedSystemEntityIds: string[];
+  committedSystemLinkIds: string[];
   /** patch가 끝내 참조하지 않은 제안. 버리되 **조용히 버리지 않는다** (S2) */
   unusedProposalIds: string[];
 };
@@ -481,6 +484,7 @@ export async function commitPatch(
   const projected = result.projected;
 
   const referenced = referencedEvidenceIds(patch);
+  for (const id of transaction.systemFactEvidenceRefs()) referenced.add(id);
   const committedEvidence = transaction.pendingEvidence.filter((item) => referenced.has(item.id));
   const unused = transaction.unusedProposals(referenced);
 
@@ -544,6 +548,10 @@ export async function commitPatch(
           ...snapshot.evidence,
           evidence: [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
         };
+        snapshot.systemFacts = mergeProposedSystemFacts(snapshot.systemFacts, {
+          entities: transaction.pendingSystemEntities,
+          links: transaction.pendingSystemLinks,
+        });
         snapshot.memory = projected.memory;
         snapshot.grounding = projected.grounding;
         // 인덱스는 그대로다. 의미만 올라간다.
@@ -567,6 +575,8 @@ export async function commitPatch(
         semanticVersion: committed.project.semanticVersion,
         diffSummary: projected.summary,
         committedEvidenceIds: committedEvidence.map((item) => item.id).sort(),
+        committedSystemEntityIds: transaction.pendingSystemEntities.map((item) => item.id).sort(),
+        committedSystemLinkIds: transaction.pendingSystemLinks.map((item) => item.id).sort(),
         unusedProposalIds: unused.map((item) => item.id).sort(),
       },
       diagnostics: result.diagnostics,

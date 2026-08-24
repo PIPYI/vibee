@@ -20,6 +20,7 @@ import type {
   SemanticMemory,
   ViewAnchor,
 } from "@onto/protocol";
+import { entityKey } from "@onto/protocol";
 
 import { buildEvidenceGraph, seedsFor, TRACE_NODE_CEILING } from "./trace.js";
 
@@ -37,13 +38,7 @@ function entityEvidenceIds(index: EvidenceIndex): Map<string, string[]> {
   const byEntity = new Map<string, string[]>();
   for (const evidence of index.evidence) {
     if (evidence.status !== "present" || evidence.graph?.role !== "entity") continue;
-    const key = evidence.graph.entity.kind === "file"
-      ? `file:${evidence.graph.entity.filePath}`
-      : evidence.graph.entity.kind === "symbol"
-        ? `symbol:${evidence.graph.entity.symbolId}`
-        : evidence.graph.entity.kind === "route"
-          ? `route:${evidence.graph.entity.routeKey}`
-          : `model:${evidence.graph.entity.modelKey}`;
+    const key = entityKey(evidence.graph.entity);
     const list = byEntity.get(key);
     if (list) list.push(evidence.id);
     else byEntity.set(key, [evidence.id]);

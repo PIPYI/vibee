@@ -58,6 +58,15 @@ const entityRef = {
       required: ["kind", "modelKey"],
       properties: { kind: { const: "model" }, modelKey: nonEmptyString },
     },
+    {
+      additionalProperties: false,
+      required: ["kind", "namespace", "key"],
+      properties: {
+        kind: { const: "resource" },
+        namespace: nonEmptyString,
+        key: nonEmptyString,
+      },
+    },
   ],
 } as const;
 
@@ -436,6 +445,86 @@ export const EVIDENCE_PROPOSAL_SCHEMA = {
   },
 } as const;
 
+const proposedSystemEntityEndpoint = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["entityId"],
+      properties: { entityId: nonEmptyString },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["localId"],
+      properties: { localId: nonEmptyString },
+    },
+  ],
+} as const;
+
+/** V4 Phase 2 — anchor/entity/link를 하나의 검증 단위로 받는다. */
+export const SYSTEM_FACT_PROPOSAL_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $id: "onto://schemas/system-fact-proposal.json",
+  title: "SystemFactProposal",
+  type: "object",
+  additionalProperties: false,
+  required: ["baseAnalysisVersion", "anchors", "entities", "links"],
+  properties: {
+    baseAnalysisVersion: version,
+    anchors: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localId", "kind", "filePath", "location", "summary"],
+        properties: {
+          localId: nonEmptyString,
+          kind: nonEmptyString,
+          filePath: nonEmptyString,
+          location: sourceRange,
+          symbolHint: { type: "string" },
+          summary: nonEmptyString,
+          normalizationProfile: { enum: ["code", "prose"] },
+        },
+      },
+    },
+    entities: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localId", "ref", "kind", "anchorLocalIds", "certainty"],
+        properties: {
+          localId: nonEmptyString,
+          ref: entityRef,
+          kind: nonEmptyString,
+          anchorLocalIds: { type: "array", items: nonEmptyString },
+          certainty: { enum: ["grounded", "inferred"] },
+        },
+      },
+    },
+    links: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localId", "from", "to", "kind", "anchorLocalIds", "certainty"],
+        properties: {
+          localId: nonEmptyString,
+          from: proposedSystemEntityEndpoint,
+          to: proposedSystemEntityEndpoint,
+          kind: nonEmptyString,
+          mechanism: { type: "string" },
+          anchorLocalIds: { type: "array", items: nonEmptyString },
+          dependencyAnchorLocalIds: { type: "array", items: nonEmptyString },
+          certainty: { enum: ["grounded", "inferred"] },
+        },
+      },
+    },
+  },
+} as const;
+
 // ---------------------------------------------------------------------------
 // AnalysisBundle (schema3 §3~§4) — Architecture / Workflow / Sequence
 // ---------------------------------------------------------------------------
@@ -502,14 +591,17 @@ const architectureBoundary = {
 const architectureConnection = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "from", "to", "traceLinkRefs", "evidenceRefs"],
+  required: ["id", "from", "to", "evidenceRefs"],
+  anyOf: [{ required: ["systemLinkRefs"] }, { required: ["traceLinkRefs"] }],
   properties: {
     id: nonEmptyString,
     from: nonEmptyString,
     to: nonEmptyString,
     label: { type: "string" },
     role: { enum: ["sync", "async", "data", "control"] },
-    // schema3 §5.2, I20 — Stage 1 골격 엣지 롤업. 빈 배열이면 grounding validator가 거부한다.
+    // V4 I20 — 검증된 System Link 롤업. 빈 배열이면 grounding validator가 거부한다.
+    systemLinkRefs: { type: "array", items: nonEmptyString },
+    // V3 읽기 호환. Core가 가능한 경우 systemLinkRefs로 migration한다.
     traceLinkRefs: { type: "array", items: nonEmptyString },
     evidenceRefs,
   },
@@ -699,6 +791,7 @@ export function analysisContractDigest(): string {
   const values = (items: readonly string[]): string => items.map((value) => `\`${value}\``).join(" | ");
   return [
     `architecture.connections[].role: ${values(architectureConnection.properties.role.enum)}`,
+    "architecture.connections[].systemLinkRefs: 현재 generation의 confirmed|grounded + valid|relocated System Link ID",
     `workflow.lanes[].kind: ${values(workflowLane.properties.kind.enum)}`,
     `workflow.edges[].role: ${values(workflowEdge.properties.role.enum)}`,
     `userMap.journeys[].transitions[] 허용 필드: ${Object.keys(scenarioTransition.properties).join(", ")} (id·label 금지)`,

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 
 import { SemanticStore, initialProjectState } from "@onto/core";
-import { generationDir, headPath } from "@onto/protocol/node";
+import { STATE_FILES, generationDir, headPath } from "@onto/protocol/node";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const roots = [];
@@ -40,6 +40,17 @@ test("init 은 generation 1 을 만들고 HEAD 가 그것을 가리킨다", asyn
   assert.equal(state.project.semanticReconciledAnalysisVersion, 0);
   assert.equal(state.versions.length, 1);
   assert.equal(state.versions[0].source, "init");
+  assert.deepEqual(state.systemFacts, {
+    schemaVersion: 4,
+    analysisVersion: 0,
+    entities: [],
+    links: [],
+    diagnostics: [],
+  });
+  const dir = generationDir(root, 1);
+  const manifest = JSON.parse(readFileSync(join(dir, STATE_FILES.manifest), "utf8"));
+  assert.ok(manifest.files[STATE_FILES.systemFacts], "system-facts.json이 manifest hash 대상이어야 한다");
+  assert.ok(existsSync(join(dir, STATE_FILES.systemFacts)));
 });
 
 test("commit 마다 generation 이 하나씩 늘고 이전 것은 그대로 읽힌다", async () => {
@@ -215,6 +226,51 @@ test("analysis-bundle.json이 없는 레거시 generation도 analysisBundle: nul
   const reloaded = store.readGeneration(after1.generation);
   assert.equal(reloaded.analysisBundle, null);
   assert.equal(store.load().analysisBundle, null, "HEAD를 다시 읽어도 크래시하지 않는다");
+});
+
+test("system-facts.json이 없는 V3 generation은 빈 store와 명시적 migration 진단으로 읽힌다", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+  const after1 = await store.commit("index", "index", (s) => {
+    s.project.analysisVersion = 1;
+    s.evidence.analysisVersion = 1;
+    return s;
+  });
+
+  const dir = generationDir(root, after1.generation);
+  const manifestPath = join(dir, STATE_FILES.manifest);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete manifest.files[STATE_FILES.systemFacts];
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  rmSync(join(dir, STATE_FILES.systemFacts));
+
+  const legacy = store.readGeneration(after1.generation);
+  assert.equal(legacy.systemFacts.analysisVersion, 1);
+  assert.deepEqual(legacy.systemFacts.entities, []);
+  assert.deepEqual(legacy.systemFacts.links, []);
+  assert.equal(legacy.systemFacts.diagnostics[0]?.code, "system-facts/migration-required");
+});
+
+test("system-facts.json hash가 바뀌면 손상된 HEAD를 읽지 않고 이전 generation으로 물러선다", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+  await store.commit("index", "index", (s) => {
+    s.project.analysisVersion = 1;
+    s.systemFacts.analysisVersion = 1;
+    return s;
+  });
+
+  writeFileSync(
+    join(generationDir(root, 2), STATE_FILES.systemFacts),
+    '{"schemaVersion":4,"analysisVersion":999,"entities":[],"links":[],"diagnostics":[]}\n',
+    "utf8",
+  );
+
+  const loaded = store.load();
+  assert.equal(loaded.generation, 1);
+  assert.equal(store.readHead().generation, 1);
 });
 
 test("고아 generation 이 남아 있어도 다음 커밋이 그것을 덮어쓴다", async () => {

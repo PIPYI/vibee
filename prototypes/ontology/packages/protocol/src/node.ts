@@ -19,6 +19,8 @@ export const STATE_FILES = {
   memory: "semantic-memory.json",
   grounding: "grounding.json",
   versions: "versions.json",
+  /** V4 — 검증된 런타임·외부 서비스·저장소·호출 관계의 증분 상태. */
+  systemFacts: "system-facts.json",
   /** schema3 §5.4 — AnalysisBundle. 아직 분석하지 않은 generation에서는 `null`이다. */
   analysisBundle: "analysis-bundle.json",
   manifest: "manifest.json",
@@ -33,6 +35,7 @@ export const MANIFEST_MEMBERS: StateFileName[] = [
   STATE_FILES.memory,
   STATE_FILES.grounding,
   STATE_FILES.versions,
+  STATE_FILES.systemFacts,
   STATE_FILES.analysisBundle,
 ];
 

@@ -41,6 +41,7 @@ import type {
   ProjectState,
   SemanticMemory,
   SemanticVersion,
+  SystemFactStore,
 } from "@onto/protocol";
 import {
   GEN_DIR,
@@ -69,6 +70,8 @@ export type Manifest = {
 export type StateSnapshot = {
   project: ProjectState;
   evidence: EvidenceIndex;
+  /** V4 — Evidence와 Semantic Memory 사이의 영속적인 시스템 구조 사실. */
+  systemFacts: SystemFactStore;
   memory: SemanticMemory;
   grounding: GroundingStore;
   versions: SemanticVersion[];
@@ -209,12 +212,16 @@ export class SemanticStore {
     const manifest = JSON.parse(manifestRaw) as Manifest;
 
     const contents: Record<string, string> = {};
+    const legacyOptionalFiles = new Set<string>([
+      STATE_FILES.analysisBundle,
+      STATE_FILES.systemFacts,
+    ]);
     for (const name of MANIFEST_MEMBERS) {
       // schema3 §5.4 이전 generation에는 analysis-bundle.json이 없다 — manifest에도 안 실려
       // 있고 파일도 없으면 "아직 분석 파이프라인을 돌리지 않은 generation"과 같은 것으로
       // 취급한다(null). 새로 쓰는 generation은 `writeGeneration`이 이 파일을 항상 함께
       // 쓰므로(null이라도) 여기로 빠지지 않는다 — 레거시 generation만의 경로다.
-      if (name === STATE_FILES.analysisBundle && manifest.files[name] === undefined && !existsSync(join(dir, name))) {
+      if (legacyOptionalFiles.has(name) && manifest.files[name] === undefined && !existsSync(join(dir, name))) {
         continue;
       }
       const raw = this.readFileOrThrow(dir, name);
@@ -236,10 +243,33 @@ export class SemanticStore {
       contents[name] = raw;
     }
 
+    const project = JSON.parse(contents[STATE_FILES.project]!) as ProjectState;
     const analysisBundleRaw = contents[STATE_FILES.analysisBundle];
+    const systemFactsRaw = contents[STATE_FILES.systemFacts];
+    const systemFacts: SystemFactStore = systemFactsRaw
+      ? (JSON.parse(systemFactsRaw) as SystemFactStore)
+      : {
+          schemaVersion: 4,
+          analysisVersion: project.analysisVersion,
+          entities: [],
+          links: [],
+          diagnostics: [
+            {
+              code: "system-facts/migration-required",
+              severity: "warning",
+              message:
+                `generation ${generation}은 V4 이전 상태라 system-facts.json이 없습니다. ` +
+                "빈 System Fact Store로 읽었으며 다음 re-index에서 결정론적으로 생성됩니다.",
+              subject: { generation, file: STATE_FILES.systemFacts },
+              evidence: { analysisVersion: project.analysisVersion },
+              supportedFixes: ["프로젝트를 다시 인덱싱해 V4 System Fact Store를 생성한다"],
+            },
+          ],
+        };
     return {
-      project: JSON.parse(contents[STATE_FILES.project]!) as ProjectState,
+      project,
       evidence: JSON.parse(contents[STATE_FILES.evidence]!) as EvidenceIndex,
+      systemFacts,
       memory: JSON.parse(contents[STATE_FILES.memory]!) as SemanticMemory,
       grounding: JSON.parse(contents[STATE_FILES.grounding]!) as GroundingStore,
       versions: JSON.parse(contents[STATE_FILES.versions]!) as SemanticVersion[],
@@ -294,6 +324,13 @@ export class SemanticStore {
           evidence: [],
           adapterReport: [],
         },
+        systemFacts: {
+          schemaVersion: 4,
+          analysisVersion: project.analysisVersion,
+          entities: [],
+          links: [],
+          diagnostics: [],
+        },
         memory: {
           semanticVersion: project.semanticVersion,
           concepts: [],
@@ -336,6 +373,7 @@ export class SemanticStore {
     const payloads: Record<string, string> = {
       [STATE_FILES.project]: serialize(state.project),
       [STATE_FILES.evidence]: serialize(state.evidence),
+      [STATE_FILES.systemFacts]: serialize(state.systemFacts),
       [STATE_FILES.memory]: serialize(state.memory),
       [STATE_FILES.grounding]: serialize(state.grounding),
       [STATE_FILES.versions]: serialize(state.versions),

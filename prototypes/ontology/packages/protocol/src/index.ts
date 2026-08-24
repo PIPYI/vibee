@@ -109,7 +109,21 @@ export type EntityRef =
   | { kind: "file"; filePath: string }
   | { kind: "symbol"; symbolId: string }
   | { kind: "route"; routeKey: string }
-  | { kind: "model"; modelKey: string };
+  | { kind: "model"; modelKey: string }
+  | ResourceEntityRef;
+
+/**
+ * Core adapter가 미리 알지 못한 런타임·외부 서비스·저장소도 주소를 잃지 않게 하는 V4 주소.
+ *
+ * `namespace`는 확장 가능한 문자열이다. `external`, `runtime`, `storage` 등이 권장값이지만
+ * 닫힌 enum이 아니다. `key`에는 표시 label이 아니라 provider/resource의 안정적인 식별자를
+ * 넣는다. 예: `resource:external:openai-responses`.
+ */
+export type ResourceEntityRef = {
+  kind: "resource";
+  namespace: string;
+  key: string;
+};
 
 /** entity의 정규 문자열. **그 자체로 전순서**라 Trace 정렬의 tie-break이 단순해진다 (U2). */
 export function entityKey(ref: EntityRef): string {
@@ -122,8 +136,57 @@ export function entityKey(ref: EntityRef): string {
       return `route:${ref.routeKey}`;
     case "model":
       return `model:${ref.modelKey}`;
+    case "resource":
+      return `resource:${ref.namespace}:${ref.key}`;
   }
 }
+
+// ---------------------------------------------------------------------------
+// System Fact Store (V4)
+// ---------------------------------------------------------------------------
+
+/** 누가 fact를 발견했는지와, 어느 수준까지 사실로 승인됐는지는 서로 다른 축이다. */
+export type FactOrigin = "engine" | "vibee";
+export type FactCertainty = "confirmed" | "grounded" | "inferred";
+export type SystemFactStatus = "valid" | "relocated" | "stale" | "missing" | "needs_review";
+
+export type SystemEntity = {
+  id: string;
+  ref: EntityRef;
+  kind: string;
+  origin: FactOrigin;
+  certainty: FactCertainty;
+  evidenceRefs: string[];
+  dependsOnEvidenceRefs: string[];
+  status: SystemFactStatus;
+  firstSeenVersion: number;
+  lastValidatedVersion: number;
+};
+
+export type SystemLink = {
+  id: string;
+  from: EntityRef;
+  to: EntityRef;
+  kind: string;
+  mechanism?: string;
+  origin: FactOrigin;
+  certainty: FactCertainty;
+  evidenceRefs: string[];
+  dependsOnEvidenceRefs: string[];
+  status: SystemFactStatus;
+  firstSeenVersion: number;
+  lastValidatedVersion: number;
+};
+
+/** generation 안의 `system-facts.json`. */
+export type SystemFactStore = {
+  schemaVersion: 4;
+  analysisVersion: number;
+  entities: SystemEntity[];
+  links: SystemLink[];
+  /** migration·adapter·무결성 진단. fact를 조용히 버리지 않는다. */
+  diagnostics: Diagnostic[];
+};
 
 /**
  * 이 evidence가 Trace 그래프에서 무엇인가 (T2).
@@ -300,6 +363,64 @@ export type EvidenceProposal = {
   normalizationProfile?: NormalizationProfile;
   /** 선택. EntityRef가 인덱스에서 해석되지 않으면 비순회 evidence로 저장하고 warning */
   graph?: EvidenceGraphRole;
+};
+
+// ---------------------------------------------------------------------------
+// V4 Vibee System Fact Proposal
+// ---------------------------------------------------------------------------
+
+/** 한 batch 안에서 Core가 검증하고 Evidence ID를 발급할 source anchor. */
+export type SourceAnchorProposal = {
+  localId: string;
+  kind: string;
+  filePath: string;
+  location: SourceRange;
+  symbolHint?: string;
+  summary: string;
+  normalizationProfile?: NormalizationProfile;
+};
+
+/** Link endpoint는 이미 발급된 entity 또는 같은 batch의 local entity를 가리킨다. */
+export type ProposedSystemEntityEndpoint =
+  | { entityId: string }
+  | { localId: string };
+
+export type ProposedSystemEntity = {
+  localId: string;
+  ref: EntityRef;
+  kind: string;
+  anchorLocalIds: string[];
+  certainty: "grounded" | "inferred";
+};
+
+export type ProposedSystemLink = {
+  localId: string;
+  from: ProposedSystemEntityEndpoint;
+  to: ProposedSystemEntityEndpoint;
+  kind: string;
+  mechanism?: string;
+  anchorLocalIds: string[];
+  dependencyAnchorLocalIds?: string[];
+  certainty: "grounded" | "inferred";
+};
+
+/**
+ * 신규 entity와 그것을 사용하는 link를 원자적으로 제안한다.
+ * localId는 batch 내부 주소일 뿐 generation에 저장되는 identity가 아니다.
+ */
+export type SystemFactProposal = {
+  baseAnalysisVersion: number;
+  anchors: SourceAnchorProposal[];
+  entities: ProposedSystemEntity[];
+  links: ProposedSystemLink[];
+};
+
+export type SystemFactProposalResult = {
+  anchorIds: Record<string, string>;
+  entityIds: Record<string, string>;
+  linkIds: Record<string, string>;
+  downgradedFactLocalIds: string[];
+  unusedLocalIds: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -839,8 +960,10 @@ export type ArchitectureConnection = {
   to: string;
   label?: string;
   role?: "sync" | "async" | "data" | "control";
-  /** Stage 1 골격 엣지 롤업 — AI가 지어낸 연결이 아님을 증명한다 (schema3 §5.2, I20) */
-  traceLinkRefs: string[];
+  /** V4 I20의 source of truth. 현재 generation의 검증된 SystemLink.id 목록. */
+  systemLinkRefs?: string[];
+  /** V3 읽기 호환. 제출 시 Core가 가능한 경우 systemLinkRefs로 migration한다. */
+  traceLinkRefs?: string[];
   evidenceRefs: string[];
 };
 
