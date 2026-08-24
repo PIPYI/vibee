@@ -3,7 +3,7 @@
  *
  * ```text
  * NoProject → (프로젝트 열기) → Indexing → Ready(분석 시작 CTA, 이미 분석된 적 있으면 바로 Analyzed)
- * Ready → (분석 시작) → Analyzing(실시간 상황판, 별도 콘솔 탭 없음) → Analyzed(아키텍처/워크플로우 탭)
+ * Ready → (분석 시작) → Analyzing(실시간 상황판, 별도 콘솔 탭 없음) → Analyzed(프로젝트/사용자 지도 탭)
  * Analyzed → 블록 클릭 → Passport 우측 패널 / 엣지 라벨 클릭 → 같은 자리에 Sequence
  * ```
  *
@@ -17,7 +17,6 @@ import type {
   AnalysisBundle,
   ArchitectureComponent,
   SequenceIR,
-  WorkflowEdge,
   WorkflowNode,
 } from "@onto/protocol";
 
@@ -26,12 +25,11 @@ import { ArchitectureView } from "./components/ArchitectureView.js";
 import { DiagnosticsDrawer, PhaseStepper, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
 import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
 import { SequenceView } from "./components/SequenceView.js";
-import { ViewerShell, type ViewerNode } from "./components/ViewerShell.js";
-import { WorkflowView } from "./components/WorkflowView.js";
+import { UserMapView } from "./components/UserMapView.js";
 import { useAgentEvents } from "./ws.js";
 
 type Screen = "no-project" | "indexing" | "ready" | "analyzing" | "analyzed";
-type Tab = "architecture" | "workflow";
+type Tab = "architecture" | "userMap";
 type PassportTarget = { tab: Tab; id: string };
 
 function short(id: string): string {
@@ -249,19 +247,6 @@ export function App(): React.JSX.Element {
     [bundle],
   );
 
-  const onSelectEdge = useCallback(
-    (edge: WorkflowEdge) => {
-      if (edge.sequenceRef) openSequence(edge.sequenceRef);
-    },
-    [openSequence],
-  );
-
-  const workflowNodes: ViewerNode[] = (bundle?.workflow.nodes ?? []).map((n) => ({
-    id: n.id,
-    label: n.label,
-    ...(n.sublabel ? { sublabel: n.sublabel } : {}),
-  }));
-
   return (
     <div className="app">
       <header className="app-header">
@@ -343,8 +328,8 @@ export function App(): React.JSX.Element {
                 <button type="button" role="tab" aria-selected={tab === "architecture"} onClick={() => selectTab("architecture")}>
                   프로젝트 지도
                 </button>
-                <button type="button" role="tab" aria-selected={tab === "workflow"} onClick={() => selectTab("workflow")}>
-                  사용자 흐름
+                <button type="button" role="tab" aria-selected={tab === "userMap"} onClick={() => selectTab("userMap")}>
+                  사용자 지도
                 </button>
               </nav>
               {bundle.freshness === "needs_review" && (
@@ -364,17 +349,16 @@ export function App(): React.JSX.Element {
                   }}
                 />
               )}
-              {tab === "workflow" && (
-                <ViewerShell viewKind="workflow" viewKey={`wf-${bundle.analysisVersion}-${bundle.semanticVersion}`} nodes={workflowNodes}>
-                  <WorkflowView
-                    ir={bundle.workflow}
-                    onSelectNode={(id) => {
-                      setSequenceView(null);
-                      setPassportTarget({ tab: "workflow", id });
-                    }}
-                    onSelectEdge={onSelectEdge}
-                  />
-                </ViewerShell>
+              {tab === "userMap" && (
+                <UserMapView
+                  userMap={bundle.userMap}
+                  workflow={bundle.workflow}
+                  sequences={bundle.sequences}
+                  onOpenSequence={(sequence) => {
+                    setPassportTarget(null);
+                    setSequenceView(sequence);
+                  }}
+                />
               )}
 
               <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
@@ -388,7 +372,7 @@ export function App(): React.JSX.Element {
               >
                 <section className="detail-modal sequence-modal" role="dialog" aria-modal="true" aria-label={sequenceView.title}>
                   <div className="sequence-modal-head">
-                    <div><p className="detail-eyebrow">사용자 흐름 상세</p><h3>{sequenceView.title}</h3></div>
+                    <div><p className="detail-eyebrow">사용자 지도 · 코드 호출</p><h3>{sequenceView.title}</h3></div>
                     <button type="button" className="close-button" onClick={() => setSequenceView(null)} aria-label="닫기">×</button>
                   </div>
                   <SequenceView ir={sequenceView} />

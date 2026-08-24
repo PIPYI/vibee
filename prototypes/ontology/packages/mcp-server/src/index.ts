@@ -405,9 +405,9 @@ server.registerTool(
 server.registerTool(
   "submit_analysis_bundle",
   {
-    title: "Architecture/Workflow/Sequence Bundle 제출",
+    title: "Architecture/User Map/Sequence Bundle 제출",
     description:
-      "이번 assembly turn에서 만든 ArchitectureIR + WorkflowIR + SequenceIR 전체를 한 번에 " +
+      "이번 assembly turn에서 만든 ArchitectureIR + WorkflowIR + UserMapIR + SequenceIR 전체를 한 번에 " +
       "제출한다. analyze turn(Stage 2)이 끝난 뒤 이어지는 assembly turn 밖에서 부르면 " +
       "no_active_transaction을 돌려준다.\n\n" +
       "architecture: { title, components: [{ id, label, presentationType, entityRefs, " +
@@ -417,6 +417,10 @@ server.registerTool(
       "workflow: { title, lanes: [{ id, label, kind }], mainPath: [nodeId...], " +
       "nodes: [{ id, laneId, label, presentationType, entityRefs, evidenceRefs, ... }], " +
       "edges: [{ id, from, to, role, evidenceRefs, label?, labelTerms?, sequenceRef? }] }.\n\n" +
+      "userMap: { title, journeys: [ScenarioIR...] }. 각 journey는 하나의 Canonical Scenario만 " +
+      "설명하며 { id, name, type, goal?, outcome?, participants, steps, transitions, branches?, " +
+      "stateChanges?, phases?, entryStepId, outcomeStepIds } 형태다. 서로 다른 목적을 한 journey에 " +
+      "합치지 않는다.\n\n" +
       "sequences: [{ id, title, triggeredByEdgeId, participants, messages: [{ id, " +
       "fromParticipantId, toParticipantId, order, label, kind, evidenceRefs }], activations?, " +
       "phases?, evidenceRefs }].\n\n" +
@@ -429,14 +433,15 @@ server.registerTool(
     inputSchema: {
       architecture: z.record(z.unknown()).describe("ArchitectureIR"),
       workflow: z.record(z.unknown()).describe("WorkflowIR"),
+      userMap: z.record(z.unknown()).optional().describe("UserMapIR"),
       sequences: z.array(z.record(z.unknown())).describe("SequenceIR[]"),
     },
   },
-  async ({ architecture, workflow, sequences }) =>
+  async ({ architecture, workflow, userMap, sequences }) =>
     reply(
       await callBridge("/internal/submit-analysis-bundle", {
         method: "POST",
-        body: JSON.stringify({ architecture, workflow, sequences }),
+        body: JSON.stringify({ architecture, workflow, ...(userMap ? { userMap } : {}), sequences }),
       }),
     ),
 );

@@ -27,12 +27,14 @@ import type {
   EvidenceIndex,
   RepositoryTopology,
   SemanticMemory,
+  UserMapIR,
   WorkflowIR,
 } from "@onto/protocol";
 
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
 import { buildEvidenceGraph } from "./trace.js";
 import { assessRepositoryCoverage, detectRepositoryTopology } from "./repository-topology.js";
+import { validateViewIR } from "./view-validator.js";
 
 export type AnalysisBundleValidateInput = {
   bundle: unknown;
@@ -364,6 +366,93 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         );
       }
     }
+  }
+
+  const workflowEdgePairs = new Set(workflow.edges.map((edge) => `${edge.from}\u0000${edge.to}`));
+  workflow.mainPath.slice(0, -1).forEach((from, index) => {
+    const to = workflow.mainPath[index + 1]!;
+    if (workflowEdgePairs.has(`${from}\u0000${to}`)) return;
+    diagnostics.push(
+      diagnostic(
+        "bundle/disconnected-main-path",
+        "error",
+        `/workflow/mainPath/${index}의 "${from}" 다음 "${to}"로 이어지는 edge가 없습니다.`,
+        {
+          subject: { path: `/workflow/mainPath/${index}`, from, to },
+          supportedFixes: ["실제 edge가 있는 순서로 mainPath를 고치거나 빠진 edge를 근거와 함께 추가한다"],
+        },
+      ),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // User map — 서로 다른 Canonical Scenario를 한 그래프에 합치지 않는다.
+  // 레거시 bundle에는 없을 수 있어 선택 필드로 두되, 있으면 Scenario validator를 전부 적용한다.
+  // ---------------------------------------------------------------------------
+  const userMap: UserMapIR | undefined = bundle.userMap;
+  if (userMap) {
+    const activeScenarioIds = new Set(
+      input.memory.canonicalScenarios.filter((scenario) => scenario.status === "active").map((scenario) => scenario.id),
+    );
+    const journeyIds = new Set<string>();
+
+    userMap.journeys.forEach((journey, index) => {
+      const base = `/userMap/journeys/${index} (id: "${journey.id}")`;
+      if (journeyIds.has(journey.id)) diagnostics.push(duplicateId(base, journey.id));
+      journeyIds.add(journey.id);
+
+      if (!activeScenarioIds.has(journey.id)) {
+        diagnostics.push(
+          diagnostic(
+            "bundle/unknown-user-journey",
+            "error",
+            `${base} 가 active Canonical Scenario를 가리키지 않습니다.`,
+            {
+              subject: { path: base, scenarioId: journey.id },
+              supportedFixes: ["get_project_semantic_memory의 active canonicalScenarios[].id를 그대로 쓴다"],
+            },
+          ),
+        );
+      }
+
+      const result = validateViewIR({ viewKind: "scenario", ir: journey, memory: input.memory, evidence: input.evidence });
+      diagnostics.push(
+        ...result.diagnostics.map((item) => ({
+          ...item,
+          message: `${base}: ${item.message}`,
+          ...(item.subject
+            ? { subject: { ...item.subject, ...(item.subject.path ? { path: `${base}${String(item.subject.path)}` } : {}) } }
+            : {}),
+        })),
+      );
+    });
+
+    for (const scenarioId of activeScenarioIds) {
+      if (journeyIds.has(scenarioId)) continue;
+      diagnostics.push(
+        diagnostic(
+          "bundle/missing-user-journey",
+          "error",
+          `active Canonical Scenario "${scenarioId}" 가 userMap.journeys에서 빠졌습니다.`,
+          {
+            subject: { path: "/userMap/journeys", scenarioId },
+            supportedFixes: ["각 active Canonical Scenario마다 별도의 journey를 만든다"],
+          },
+        ),
+      );
+    }
+  } else if (input.memory.canonicalScenarios.some((scenario) => scenario.status === "active")) {
+    diagnostics.push(
+      diagnostic(
+        "bundle/missing-user-map",
+        "error",
+        "active Canonical Scenario가 있지만 userMap이 없습니다.",
+        {
+          subject: { path: "/userMap" },
+          supportedFixes: ["active Canonical Scenario마다 독립된 journey를 만들어 userMap에 넣는다"],
+        },
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------

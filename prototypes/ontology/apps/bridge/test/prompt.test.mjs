@@ -194,7 +194,7 @@ test("buildSkeletonSummary는 route/model/link가 없어도 (없음)으로 안�
 /**
  * `buildAssemblyPrompt` — schema3 §5.2 Stage 3, §3.4의 1엣지-1시퀀스·I20 규칙을 지시한다.
  */
-test("Assembly 프롬프트는 골격 요약을 포함하고 traceLinkRefs·1엣지-1시퀀스 규칙을 안내한다", () => {
+test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시퀀스 규칙을 안내한다", () => {
   const summary = buildSkeletonSummary(evidenceGraph());
   const topology = "독립 실행 런타임 2개: traveler, admin";
   const prompt = buildAssemblyPrompt("/tmp/proj", summary, topology);
@@ -204,10 +204,12 @@ test("Assembly 프롬프트는 골격 요약을 포함하고 traceLinkRefs·1엣
   assert.match(prompt, /위치 · 추천 조회/);
   assert.match(prompt, /런타임 2개/);
   assert.match(prompt, /viewPlan/);
+  assert.match(prompt, /userMap\.journeys/);
+  assert.match(prompt, /Canonical Scenario마다 하나씩/);
   assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
 });
 
 test("describeSession은 Assembly 프롬프트를 식별한다", () => {
   const prompt = buildAssemblyPrompt("/tmp/proj", buildSkeletonSummary(evidenceGraph()), "독립 실행 런타임 0개");
-  assert.equal(describeSession(prompt), "Architecture/Workflow/Sequence 조립");
+  assert.equal(describeSession(prompt), "Architecture/User Map/Sequence 조립");
 });

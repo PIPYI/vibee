@@ -288,7 +288,10 @@ const ASSEMBLY_RULES = [
   "8. 해석 가치가 있는 workflow.edges 에만 SequenceIR 을 만든다 — 모든 edge 에 만들 필요는",
   "   없다. edge.sequenceRef 와 그 SequenceIR.triggeredByEdgeId 는 반드시 서로를 가리켜야",
   "   한다(1엣지-1시퀀스, schema3 §3.4) — 어긋나면 거절된다.",
-  "9. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
+  "9. userMap.journeys 는 active Canonical Scenario마다 하나씩 만든다. 서로 다른 사용자 목적과",
+  "   시스템 목적을 한 journey에 합치지 않는다. journey.id는 Canonical Scenario id를 그대로",
+  "   쓰고 goal·entryStepId·outcomeStepIds·branch/loop를 보존한다. 모든 step은 근거가 있어야 한다.",
+  "10. 실패하면 diagnostics 를 보고 같은 turn 에서 고쳐 다시 submit_analysis_bundle 하라.",
 ].join("\n");
 
 /**
@@ -301,7 +304,7 @@ const ASSEMBLY_RULES = [
 export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string, topologySummary: string): string {
   return [
     "지금까지 만든 Semantic Memory와 Evidence 골격을 클러스터링·라벨링해서 " +
-      "ArchitectureIR + WorkflowIR + SequenceIR 한 벌(AnalysisBundle)을 만든다.",
+      "ArchitectureIR + WorkflowIR + UserMapIR + SequenceIR 한 벌(AnalysisBundle)을 만든다.",
     `프로젝트 경로: ${projectPath}`,
     "",
     "## Evidence 골격 요약",
@@ -331,7 +334,10 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     "   labelTerms 에는 그 용어들을 배열로도 넣는다.",
     "7. 해석 가치가 있는 workflow.edges 마다 그 구간을 SequenceIR 로 펼쳐 sequences 에",
     "   추가하고, edge.sequenceRef 와 SequenceIR.triggeredByEdgeId 를 서로 맞춘다.",
-    "8. submit_analysis_bundle 로 { architecture, workflow, sequences } 를 제출한다.",
+    "8. 각 active Canonical Scenario를 하나의 ScenarioIR로 펼쳐 userMap.journeys에 넣는다.",
+    "   사용자 목적과 시스템 목적을 섞지 말고, participants·phases·branches·stateChanges 중",
+    "   코드 근거가 있는 것만 쓴다. entry에서 모든 step이 도달 가능해야 한다.",
+    "9. submit_analysis_bundle 로 { architecture, workflow, userMap, sequences } 를 제출한다.",
     "",
     ASSEMBLY_RULES,
   ].join("\n");
@@ -351,7 +357,7 @@ export function describeSession(preview: string): string {
   if (text.startsWith("아래는 이 프로젝트의 Evidence Index 요약")) return "분석 (index-only arm)";
   if (text.startsWith("이 프로젝트가 무엇을 하는지")) return "Overview 생성";
   if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
-  if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/Workflow/Sequence 조립";
+  if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/User Map/Sequence 조립";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 

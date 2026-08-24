@@ -295,6 +295,74 @@ test("중복 id는 거절된다", () => {
   assert.ok(codesOf(result.diagnostics).includes("bundle/duplicate-id"));
 });
 
+test("workflow.mainPath의 연속 노드가 실제 edge로 이어지지 않으면 거절된다", () => {
+  const bundle = baseBundle();
+  bundle.workflow.nodes.push({
+    id: "node-2",
+    laneId: "lane-1",
+    label: "완료",
+    presentationType: "frontend",
+    entityRefs: ["symbol:svc#handle"],
+    evidenceRefs: [EV_SVC.id],
+  });
+  bundle.workflow.mainPath = ["node-1", "node-2"];
+  const result = validate(bundle);
+  assert.ok(codesOf(result.diagnostics).includes("bundle/disconnected-main-path"));
+});
+
+test("userMap은 active Canonical Scenario마다 독립된 grounded journey를 요구한다", () => {
+  const memory = memoryWith([conceptOf("cpt-1")]);
+  memory.canonicalScenarios = [{
+    id: "scenario:book",
+    name: "예약하기",
+    type: "user",
+    goal: "예약을 완료한다",
+    anchorConceptIds: ["cpt-1"],
+    status: "active",
+    createdAtVersion: 1,
+    updatedAtVersion: 1,
+  }];
+  const bundle = baseBundle({
+    userMap: {
+      title: "사용자 지도",
+      journeys: [{
+        id: "scenario:book",
+        name: "예약하기",
+        type: "user",
+        goal: "예약을 완료한다",
+        participants: [{ id: "p-user", label: "예약자" }],
+        steps: [{
+          id: "step-request",
+          label: "예약 요청",
+          participantId: "p-user",
+          conceptRefs: ["cpt-1"],
+          evidenceRefs: [EV_ROUTE.id],
+        }],
+        transitions: [],
+        entryStepId: "step-request",
+        outcomeStepIds: ["step-request"],
+      }],
+    },
+  });
+  const result = validate(bundle, memory);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("active Canonical Scenario가 있는데 userMap을 제출하지 않으면 거절된다", () => {
+  const memory = memoryWith([conceptOf("cpt-1")]);
+  memory.canonicalScenarios = [{
+    id: "scenario:book",
+    name: "예약하기",
+    type: "user",
+    anchorConceptIds: ["cpt-1"],
+    status: "active",
+    createdAtVersion: 1,
+    updatedAtVersion: 1,
+  }];
+  const result = validate(baseBundle(), memory);
+  assert.ok(codesOf(result.diagnostics).includes("bundle/missing-user-map"));
+});
+
 // ---------------------------------------------------------------------------
 // SequenceIR의 activation/phase — fromStepId/toStepId는 SequenceMessage.id를 가리킨다
 // (schema3 §3.5, steps[]가 없으므로 messages[]가 유일한 순서 있는 단위)

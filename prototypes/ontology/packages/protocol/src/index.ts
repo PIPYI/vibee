@@ -953,6 +953,18 @@ export type WorkflowIR = {
   edges: WorkflowEdge[];
 };
 
+/**
+ * 비전공자가 프로젝트의 여러 사용자/시스템 목적을 탐색하는 상위 지도.
+ *
+ * `WorkflowIR`처럼 서로 다른 목적을 한 그래프에 합치지 않는다. 각 journey는 기존
+ * `ScenarioIR`을 그대로 사용해 목표·결과·분기·상태 변화를 보존한다. 좌표는 없으며
+ * Renderer가 결정론적으로 계산한다.
+ */
+export type UserMapIR = {
+  title: string;
+  journeys: ScenarioIR[];
+};
+
 /** schema3 §3.5. */
 export type SequenceMessage = {
   id: string;
@@ -992,6 +1004,8 @@ export type AnalysisBundle = {
   semanticVersion: number;
   architecture: ArchitectureIR;
   workflow: WorkflowIR;
+  /** schema4. 없는 레거시 bundle은 Web이 WorkflowIR에서 읽기 전용 호환 지도를 투영한다. */
+  userMap?: UserMapIR;
   sequences: SequenceIR[];
   /** agent 입력이 아니라 Core가 저장소와 최종 Architecture를 대조해 커밋 시점에 만든다. */
   repositoryTopology?: RepositoryTopology;

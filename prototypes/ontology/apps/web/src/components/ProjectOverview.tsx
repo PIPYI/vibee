@@ -66,7 +66,7 @@ export function ProjectOverview({
         <div>
           <span className="overview-eyebrow">분석 범위 확인</span>
           <h3>{complete ? "탐지한 실행 단위와 데이터를 모두 표현했습니다" : "아키텍처에서 빠진 저장소 요소가 있습니다"}</h3>
-          <p className="dim">코드에서 직접 탐지한 항목과 AI가 구성한 지도를 대조한 결과입니다.</p>
+          <p className="dim">코드에서 직접 탐지한 항목과 vibee가 구성한 지도를 대조한 결과입니다.</p>
         </div>
         <div className="overview-metrics" aria-label="분석 범위 통계">
           <span><strong>{coverage.representedRuntimeCount}/{coverage.detectedRuntimeCount}</strong> 실행 단위</span>
@@ -79,7 +79,7 @@ export function ProjectOverview({
         <section className="overview-primary-path">
           <div className="overview-section-heading">
             <span className="overview-eyebrow">먼저 읽을 흐름</span>
-            <p className="dim">AI가 고른 설명 순서이며, 박스를 누르면 근거를 확인할 수 있습니다.</p>
+            <p className="dim">vibee가 고른 설명 순서이며, 박스를 누르면 근거를 확인할 수 있습니다.</p>
           </div>
           <ol>
             {primary.map((component) => (

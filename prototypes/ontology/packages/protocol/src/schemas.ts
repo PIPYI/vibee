@@ -616,6 +616,21 @@ export const WORKFLOW_IR_SCHEMA = {
   },
 } as const;
 
+/**
+ * 서로 다른 목적을 섞지 않는 사용자 지도. journey의 문법과 grounding 규칙은
+ * 기존 ScenarioIR을 그대로 재사용한다.
+ */
+const { $schema: _scenarioDraft, $id: _scenarioId, title: _scenarioTitle, ...scenarioIrItem } = SCENARIO_IR_SCHEMA;
+export const USER_MAP_IR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "journeys"],
+  properties: {
+    title: nonEmptyString,
+    journeys: { type: "array", minItems: 1, items: scenarioIrItem },
+  },
+} as const;
+
 const sequenceMessage = {
   type: "object",
   additionalProperties: false,
@@ -673,6 +688,7 @@ export const ANALYSIS_BUNDLE_SCHEMA = {
     semanticVersion: version,
     architecture: ARCHITECTURE_IR_SCHEMA,
     workflow: WORKFLOW_IR_SCHEMA,
+    userMap: USER_MAP_IR_SCHEMA,
     sequences: { type: "array", items: SEQUENCE_IR_SCHEMA },
     freshness: { enum: ["current", "needs_review"] },
   },
