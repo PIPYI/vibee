@@ -1478,6 +1478,76 @@ DEC으로 재는 것이 의미가 없다. 그래서 처음 켤 때의 기준점�
 diff는 bridge가 만들어 넘기므로 agent에게 셸이 필요 없다. 그래서 리뷰 경로에서는
 Finding 6(Claude의 Bash가 프로젝트 밖에 쓰는 것을 못 막는 문제)이 아예 성립하지 않는다.
 
+### 해소 — 판단과 실행은 옆 agent에게 넘긴다 (2026-08-24)
+
+검출은 절반이라고 위에 적어 뒀다. 나머지 절반 — 어긋난 것을 발견했을 때 무엇을 고칠지
+정하고 실제로 고치는 일 — 은 이 앱이 하지 않는다. §13 MVP 시나리오는
+"[기존 결정 유지] / [현재 구현 승인] / [새 결정으로 교체]" 세 선택지를 화면에서 고르는
+그림이었지만, 그러면 이 앱이 셋 중 뭐가 맞는지 판단하거나 최소한 후보를 좁히는 셈이 되어
+"이 프로젝트가 정한 것 하나만 본다"는 §3.3의 원칙, 그리고 "우리는 코드를 쓰는 곳이 아니라
+보는 곳"이라는 `docs/BYOA_MCP_INTEGRATION_SPIKE.md` §1.2의 원칙과 부딪힌다.
+
+그래서 셋을 둘로 접었다 — **판단도 실행도 사용자가 옆에 띄운 agent가 한다.** `report_drift`가
+돌아오면 bridge는 그 finding이 짚은 criterion으로 프롬프트 한 장을 렌더할 뿐이다
+(`renderResolutionPrompt`, LLM 없음). 이 프롬프트는 `DriftFinding.resolutionPrompt`에 실려
+화면까지 오고, 사용자는 "해소 프롬프트 복사" 버튼으로 그것을 옆 창에 붙여넣는다. 프롬프트는
+두 선택지를 함께 준다 — 코드가 틀렸으면 코드를, 결정이 낡았으면
+`.project-intel/design.json`의 그 항목만 고치라고. 이 파일을 고쳐도 된다는 허가를 명시하는
+이유는, 평범한 코딩 agent는 소스 코드만 프로젝트로 보고 이 파일은 산출물로 여겨 건드리지
+않을 수 있기 때문이다.
+
+### 검증 — `task` mode로 옆 agent를 흉내낸다
+
+이 프롬프트를 받는 agent는 우리 bridge가 통제하지 않는, 사용자가 별도로 띄운 세션이다.
+그것을 실제로 시험하려면 뭔가로 흉내를 내야 하는데, 마침 `task` mode(전체 쓰기 권한)가
+그 용도의 검증 장치라는 것이 이미 못박혀 있다(`docs/BYOA_MCP_INTEGRATION_SPIKE.md` §1.2).
+그래서 `scripts/drift.mjs`가 DEC-1 finding의 `resolutionPrompt`를 그대로 real `task` turn에
+먹이고, 결과를 기계적으로 검사한다.
+
+**어느 선택지를 고르는지는 강제하지 않는다.** 그것이 이 기능의 핵심이므로, 대신 **정확히
+하나만, 그 범위만** 바뀌었는지를 검사한다 — design.json과 소스 코드 중 한쪽만 바뀌었는가,
+design.json이 바뀌었다면 DEC-1 항목 하나만이고 나머지 구조(actors/reqs/surfaces/entities/
+flows/다른 DEC/RULE)는 그대로인가, 코드가 바뀌었다면 결제 호출이 실제로 제거됐고
+design.json은 그대로인가.
+
+두 provider 모두 3회 전부 **코드를 고치는 쪽**을 골랐다 — DEC-1을 어긴 근거(결제 코드를
+끼워 넣은 것)가 명백해서 결정을 갱신할 근거가 없었기 때문으로 보인다. Codex의 실제 수정:
+
+```diff
+- import Stripe from "stripe";
+- const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+- export async function chargeRentalFee(rental, amount) { ... }
++ // 대여료는 앱 밖에서 만나 현금으로 직접 정산한다.
++ export function rentalFeeSettlement(rental) { ... }
+```
+
+**결정을 갱신하는 쪽은 이번 실행에서 관측되지 않았다** — fixture에 그 판단이 타당해 보이는
+시나리오를 아직 만들지 않았기 때문이다. 프롬프트가 그 경로를 지시하고 있다는 것만
+문구로 확인했고(§3.3 이하 checks의 "해소 프롬프트에 필요한 것이 다 있다"), 실제로 그 경로를
+골랐을 때 결과가 올바른지(design.json 구조 보존 등)는 검사 로직만 준비됐을 뿐 아직
+실측하지 못했다.
+
+### 잡힌 버그
+
+- **`git status --porcelain`을 `trim()` 먼저 하면 경로가 한 글자 잘린다.** porcelain 한 줄은
+  `XY` + 공백 1칸(총 3칸) 다음에 경로가 온다. `.trim()`으로 앞 공백을 먼저 지우면
+  `" M src/a.js"`가 `"M src/a.js"`가 되어, 이어지는 `slice(3)`이 경로를 한 글자 더 잘라
+  `"rc/a.js"`가 된다. `isCodeClean()`처럼 `.includes()`만 쓰면 드러나지 않던 버그가, 경로를
+  그대로 써야 하는 이번 검사(`changedSince`)에서 처음 드러났다. 줄 자체는 다듬지 않고 빈 줄만
+  거르는 것으로 고쳤다.
+
+### 결과
+
+`npm run drift` — 기존 12개 항목 + 해소 4~6개 항목, 3회, 두 provider.
+
+| provider | 모델 | 통과 |
+| --- | --- | --- |
+| codex | `gpt-5.6-luna` (effort `low`) | 3/3 |
+| claude | `haiku` | 3/3 |
+
+`npm run acceptance` 9/9(codex·claude) — Codex CLI `0.148.0` → `0.149.0`, Claude Code
+`2.1.238` → `2.1.241`로 갱신된 뒤에도 회귀 없음.
+
 ### 이것이 확인해 주지 않는 것
 
 - **위반 커밋을 사람이 썼다.** 인터뷰가 만든 설계로 실제 앱이 만들어지고 **그 코드에서**
@@ -1486,8 +1556,11 @@ Finding 6(Claude의 Bash가 프로젝트 밖에 쓰는 것을 못 막는 문제)
   나뉘어 들어온 경우(import는 3커밋 전, 호출부는 지금)는 잡지 못한다.
 - **기준이 8개, 커밋이 2개일 때의 결과다.** 결정 30개 · 커밋 50개에서 정확도가 유지되는지는
   재지 않았다.
-- **해소 경로가 없다.** 검출만 있고, 어긋난 것을 고칠 프롬프트를 렌더하거나 DEC을 갱신하는
-  경로는 만들지 않았다. DEC이 바뀌면 `AGENTS.md`가 낡는데 다시 내보내는 시점도 정하지 않았다.
+- **해소 프롬프트의 "결정 갱신" 분기는 실측하지 않았다.** 문구가 그 경로를 지시하는 것과
+  프롬프트 스키마는 확인했지만, 실제로 그 분기를 골랐을 때 design.json이 올바르게(DEC 하나만,
+  구조 보존) 바뀌는지는 그 분기가 골라진 실행이 아직 없어 검사만 준비됐다.
+- **DEC이 바뀌면 `AGENTS.md`가 낡는다.** 해소 프롬프트가 design.json을 직접 고치게 했으므로
+  `app_design.md`/harness를 다시 내보내는 시점은 여전히 정하지 않았다.
 
 ---
 
@@ -1632,3 +1705,262 @@ Notion MCP·OpenWiki류 엔진·Stanford STORM을 검토했으나 채택하지 �
 - **위키와 드리프트의 데이터가 실제로 섞이지 않는지.** 둘 다 `.project-intel/`에 쓰지만
   같은 디렉터리를 공유하지는 않는다(`wiki/` vs `reviews.json`) — 다만 두 기능을 번갈아
   많이 썼을 때의 상호작용은 보지 않았다.
+
+---
+
+## 17. 아키텍처·기술부채 읽기 전용 보고서 (2026-08-24)
+
+`docs/product_flow_decisions.md` 질문 5의 최신 결정을 구현했다. 최초 초안은 agent에게 전체
+코드를 읽히고 결합도·순환 의존 같은 일반 아키텍처 항목을 찾게 했지만, 문서와 대조하자
+**명시적으로 범위 밖인 것**을 구현했다는 사실이 드러났다. 실제 검증 전에 폐기하고 아래 세
+가지만 남겼다.
+
+### 판단 전에 코드가 준비하는 것
+
+| 검출 | 결정론적 입력 | agent의 판단 |
+| --- | --- | --- |
+| 파일/모듈 비대화 | source 파일의 bytes·lines, 설계 REQ/ENTITY 이름의 exact match | 크기가 아니라 여러 프로젝트 책임이 실제로 한 파일에 쌓였는가 |
+| 의미 중복 | 함수/메서드 시그니처·파일·줄 | 이름과 텍스트가 달라도 같은 프로젝트 동작인가 |
+| 임시 조치 잔존 | TODO/FIXME/HACK/임시 마커, `git blame`, 이후 커밋 수 | 뒤에 기능이 쌓여 제거 비용이 커졌는가 |
+
+agent는 `get_architecture_context`로 이 목록을 먼저 받고 관련 파일만 Read/Grep/Glob으로
+확인한다. `report_architecture`는 위 세 category 외의 값을 스키마에서 거부한다. 크기나
+마커 자체는 finding의 충분조건이 아니며, finding은 실제 파일·구체적 근거·설계 id·사용자
+영향을 함께 내야 한다.
+
+Bridge는 finding마다 LLM 없이 해소 프롬프트를 렌더한다. 사용자는 이를 복사해 같은
+workspace의 Codex/Claude Code에 주고, 우리 앱의 분석 turn은 파일을 고치지 않는다. 결과는
+`.project-intel/architecture.json`(원본)과 `architecture.md`(파생물)에 현재 snapshot으로
+저장한다. 실행할 때마다 덮어쓰고, 별도 이력 배열·북마크 대신 git이 추세를 남긴다.
+
+`mode: "architecture"`는 읽기 전용이고 실행할 때 그 mode의 세션만 새로 만든다. 다른 mode의
+세션 참조와 Wiki·Drift 상태는 건드리지 않는다.
+
+### 실측 결과
+
+격리한 `tmp/architecture-fixture`에 세 증상을 함께 심었다: 회원·도서·대출 책임이 한 파일에
+모인 구조, 서로 다른 이름의 동일한 이름 정규화, 첫 커밋 뒤 5개 커밋 동안 남은 임시 저장소
+TODO. Codex `gpt-5.6-luna`(effort `low`)가 실제 MCP로 `get_architecture_context`와
+`report_architecture`를 호출해 **세 category를 각각 1건씩** 제출했고 task가 `completed`가
+됐다.
+
+세 finding 모두 실제 파일과 설계 id를 들었고, 임시 조치는 최초 commit과 `commitsSince: 5`를
+근거로 사용했다. JSON·Markdown·해소 프롬프트가 만들어졌으며, `git diff -- src package.json
+.project-intel/design.json`은 비어 있어 분석 중 소스/설계를 고치지 않았음을 확인했다. fixture
+자체 테스트 1/1, 전체 workspace의 `npm run typecheck`와 `npm run build`도 통과했다.
+`npm run acceptance codex` 9/9도 통과해 mode/session 변경 이후 기존 작업 경로의 회귀가
+없음을 확인했다.
+
+### 이것이 확인해 주지 않는 것
+
+- Claude provider의 실제 제출 경로는 아직 돌리지 않았다. 타입과 read-only 도구 제한만
+  기존 adapter 경계에서 확인했다.
+- source 확장자와 정규식 기반 시그니처 추출이다. 지원 목록 밖의 언어, 여러 줄 선언,
+  동적으로 만든 함수는 후보에서 빠질 수 있다.
+- 설계 매핑은 이름 exact match다. 코드 식별자가 번역돼 있거나 이름이 달라졌으면 agent가
+  `designRefs`와 실제 코드를 보고 보완해야 한다.
+- 큰 저장소 상한은 source 2,000개, 크기 목록 300개, 시그니처 1,000개, 임시 마커 100개다.
+  잘린 개수는 context에 드러나지만 이 상한의 적절성은 실측하지 않았다.
+- finding 정확도를 여러 현실 저장소의 정답표와 대조하지 않았다. 이번 검증은 의도한 세
+  category의 end-to-end 제출, git 나이, 저장, 해소 프롬프트, 소스 read-only 경계를 본 것이다.
+
+### 리뷰에서 나온 두 가지와 후속 조치 (같은 날, 다른 세션의 리뷰)
+
+이 절이 커밋되기 전에 별도 세션이 코드와 `docs/product_flow_decisions.md`를 대조해
+리뷰했다. 범위·격리·해소 handoff는 문서와 정확히 일치한다고 확인했지만, 두 가지를
+짚었다.
+
+**1. 회귀 검증 스크립트가 없었다.** 위 실측은 임시 fixture로 한 번 돌려본 것이라
+재현 가능한 형태로 남지 않았다 — Drift(`scripts/drift.mjs`)·Wiki(`scripts/wiki.mjs`)와
+다른 점이었다. `scripts/architecture-fixture.mjs`(세 증상을 심은 fixture, 6커밋)와
+`scripts/architecture.mjs`(`npm run architecture`)를 추가해 이 격차를 없앴다. 검증
+결과를 다시 실측하니 **두 provider 모두 13/13**으로 통과했다 — 위에서 "아직 돌리지
+않았다"고 적어 둔 Claude 경로도 이번에 실제로 확인됐다.
+
+```
+codex  (gpt-5.6-luna, low)  13/13
+claude (haiku)              13/13
+```
+
+**2. 함수 시그니처 목록의 문자 수 캡이 없었다.** 개수 상한(`MAX_SIGNATURES = 1,000`)만
+있어서, 항목당 최대 240자 기준으로 최악의 경우 24만 자에 달할 수 있었다 — Wiki 전체
+대화 캡(4만 자)의 6배, Drift 커밋 하나 diff 캡(2만 자)의 12배다. 질문 5에서 막 정한
+"토큰 비용은 항상 줄이는 방향으로"와 어긋나는 지점이었다. `architecture.ts`에
+`MAX_SIGNATURE_CHARS = 40_000`(Wiki와 같은 규모)를 추가해 개수 상한과 별개로 문자
+예산으로도 자르게 했다. 이 fixture는 작아서 어느 캡도 걸리지 않으므로, 이 변경은
+`npm run typecheck`/`build`로만 확인했다 — 큰 저장소에서 실제로 캡이 걸리는지는
+아직 실측하지 않았다.
+
+두 조치 모두 `npm run typecheck`·`npm run build`·`npm run acceptance codex`(9/9, 회귀
+없음)로 재확인했다.
+
+### 후속 결정 — design.json이 없는 "기존 코드베이스" 진입 경로 (같은 날, 이어진 대화)
+
+리뷰 직후 사용자가 짚었다 — `oversized-module`이 `designRefs`(REQ/ENTITY)에 의존하는데,
+**"이미 코드가 있는 프로젝트를 여는" 진입 경로는 애초에 인터뷰(그래서 design.json)를
+거치지 않는다**(`docs/product_flow_decisions.md` "프로젝트 진입 경로"). 즉 이 카테고리가
+가장 필요할 법한 경우에 근거가 통째로 사라지는 구조였다. 같은 문제를 Drift도 이미
+갖고 있었다("기존 코드베이스에 DEC/RULE이 없을 때 무엇을 기준으로 할지 미정") — 다만
+그때는 미정으로 남겨 뒀을 뿐 풀지 않았었다.
+
+**확정**: design.json이 있으면 그것으로 REQ/ENTITY 경계를 판단하고, 없으면 agent가
+코드를 직접 읽어 "실제로 서로 다른 책임이 한 파일에 있다"고 판단하는 것을 허용한다.
+이 경우 `designIds`는 비워 두고 근거는 `evidence`에 코드 판단으로 직접 적는다.
+
+**잡힌 회귀**: 처음에는 이 규칙을 8줄짜리 긴 문단으로 풀어 썼는데, 그러자 `oversized-
+module` 카테고리의 with-design 시나리오에서 Codex(`gpt-5.6-luna`, low)가 **2번 연속
+`report_architecture`를 아예 호출하지 않고 turn을 끝냈다** — `get_architecture_context`는
+불렀지만 그 뒤로 진행하지 않았다. 짧은 프롬프트(§17 본문)로는 안정적으로 통과하던
+시나리오가 문장을 늘렸다는 이유만으로 깨졌다 — **약한 모델은 지시가 길어질수록 마지막
+tool 호출까지 못 간다**는 것을 실측으로 확인한 셈이다. 3줄로 줄여 같은 규칙을 표현하자
+다시 안정적으로 통과했다. 프롬프트를 고칠 때는 길이 자체를 회귀 위험으로 본다.
+
+`scripts/architecture-fixture.mjs`에 `withDesign: false` 옵션(design.json 없이 같은
+세 증상을 심는 변형, `tmp/architecture-fixture-no-design`)을 추가하고,
+`scripts/architecture.mjs`가 두 provider 모두에서 두 시나리오(설계 있음/없음)를 전부
+확인하도록 늘렸다. 도중에 검증 스크립트 자체의 버그도 하나 잡았다 — `isSourceClean`이
+`git status --porcelain`을 기본 옵션으로 불러서, design.json이 없는 변형에서는
+`.project-intel/`이 처음 생기는 디렉터리라 `?? .project-intel/` 한 줄로 뭉뚱그려져
+그 안에 정말 `architecture.json`/`.md`만 생겼는지 확인할 수 없었다.
+`--untracked-files=all`로 고쳤다.
+
+```
+codex  (gpt-5.6-luna, low)  19/19 (기존 13 + 설계 없음 6)
+claude (haiku)              19/19
+```
+
+`npm run typecheck`·`npm run build`·`npm run acceptance`(codex·claude 9/9, 회귀 없음)도
+다시 확인했다. Drift 쪽의 같은 문제(DEC/RULE 없는 기존 저장소)는 이번에 풀지 않았다 —
+Drift는 "이 프로젝트가 정한 것 하나만 본다"는 원칙 자체가 명시적 결정에 의존하므로,
+코드만 보고 대신 판단하는 fallback이 architecture와 같은 방식으로 성립하는지는 별도로
+봐야 한다.
+
+## 18. 협업자 프로젝트(ontology2) 리뷰 — Claude 기본 tool 프리셋과 provider별 토큰 비용 격차 (2026-08-25)
+
+`docs/product_flow_decisions.md`가 가리키는 시각화 작업은 별도 브랜치(`ontology`/
+`ontology2`, 예전 `prototype/ontology`가 나뉜 것)에서 독립적으로 진행 중이다. 사용자가
+"코드 분석 시, 특히 Claude를 고르면 토큰을 너무 많이 쓴다"는 제보를 받아, `ontology2`를
+`../collab-ontology2/`에 별도 clone(이 저장소 git 이력과 섞지 않음, `.gitignore` 처리)해
+직접 리뷰·실측했다. **이 절은 우리 byoa-mcp-spike 코드가 아니라 그 별도 프로젝트를 다룬다**
+— 다만 발견된 함정이 §14에서 우리가 이미 확인한 것과 같은 종류(내장 도구를 안 끄면 turn이
+의도한 범위를 벗어난다)라 여기 같이 남긴다.
+
+### 원인 — TaskMode 네 개 전부가 read+MCP-only인데 Claude 기본 tool 프리셋이 그대로 열려 있었다
+
+`ontology2`의 `TaskMode`는 `analyze | view | chat | assembly` 네 가지뿐이고, `chat`조차
+실제로는 MCP 채널 검증 전용(`buildVerifyPrompt`: "코드를 고치지 마라. 파일을 쓰지 마라")이라
+넷 다 기능적으로 Bash·Write·Edit·Task(서브에이전트)가 필요 없다. 그런데 Claude adapter의
+`sdk.query()` 호출에는 `tools`/`disallowedTools`/`maxTurns`가 전혀 없어 SDK 기본값
+(`{type:'preset', preset:'claude_code'}`, 즉 Bash·Task 포함 전체 프리셋)이 매 turn 그대로
+켜져 있었다. `canUseTool`은 `WebFetch`/`WebSearch`만 거부하고 `Write`/`Edit`/
+`NotebookEdit`는 경로만 검사할 뿐, **`Bash`와 `Task`는 아예 검사 대상에도 없었다.**
+
+Codex는 이 배수 효과가 구조적으로 없다 — app-server 프로토콜 자체에 서브에이전트 개념이
+없다(`sandboxPolicy: workspaceWrite`는 쓰기만 제한하고 읽기 shell은 그대로 둔다). 즉
+"Claude에서만 유독 심하다"는 제보와 정확히 들어맞는 비대칭이었다.
+
+**고친 것 (1줄)**: `apps/bridge/src/agents/claude/adapter.ts`의 `query()` options에
+`tools: ["Read", "Grep", "Glob"]`을 추가했다. `canUseTool`의 Write/Edit/WebFetch/
+WebSearch 분기는 이제 도달 불가능한 코드지만, "필수 부분만 최소로" 원칙에 따라 지우지
+않고 남겼다. `maxTurns` 캡은 일부러 넣지 않았다 — 협업자 자신의
+`docs/ontology/structure/v4/README.md`에 "정확한 토큰 상한은 fixture baseline을 측정한
+뒤 확정한다, 임의 숫자를 먼저 두지 않는다"는 원칙이 이미 있어서 그것과 충돌하지 않게
+했다.
+
+### 실측 — 같은 fixture, 같은 turn을 두 provider로 각각 처음부터 실행
+
+`npm run create-fixture`가 만드는 실제 fixture(팔로우 기능, Next.js route 2개 + Prisma
+모델 3개, entity 21개·link 28개)를 대상으로, model/effort는 둘 다 지정하지 않고(provider
+기본값) `/api/analyze`를 처음부터(첫 분석, `mode: full`) 실행했다.
+
+```
+                 semantic stage   assembly stage   합계          소요시간
+Claude(수정 후)   12,240 tokens    52,728 tokens    64,968 tokens   10분 32초
+Codex             432,460 tokens   646,915 tokens  1,079,375 tokens  7분 16초
+```
+
+Claude는 `exploredFiles`가 정확히 8개 — fixture의 실제 소스 파일과 1:1로 일치했고
+`mcpCalls`에 Bash/Task 흔적이 전혀 없었다. **before(수정 전) 수치는 재지 않았다** —
+사용자가 "지금 결과로 충분하다"고 판단해 생략했다.
+
+**Codex 쪽에서 새로 발견한 것 — 무관한 전역 파일을 읽었다.** Codex의 `exploredFiles`에
+`~/.codex/skills/karpathy-guidelines/SKILL.md`(2,459 bytes, fixture와 무관한 사용자의
+전역 Codex skill)가 찍혔다. `ontology2`의 Codex adapter는 우리 project와 달리
+`project_doc_max_bytes` 같은 문서 억제 설정을 전혀 넘기지 않는다 — 다만 이 파일은
+AGENTS.md가 아니라 **Codex CLI 자체의 전역 skill 자동 로딩** 경로(`~/.codex/skills/`)라,
+우리 project_doc 억제와는 다른 메커니즘이다. 크기 자체는 작아 토큰 격차의 주된 원인은
+아니지만, "분석 turn이 프로젝트 밖 파일을 읽지 않는다"는 전제가 Codex에서는 깨져 있다는
+뜻이다. **우리 자신의 Codex adapter가 이 전역 skill 자동 로딩을 억제하는지는 이번에
+확인하지 못했다 — 별도로 봐야 한다.**
+
+**토큰 격차(16.6배)의 진짜 원인으로 보이는 것**은 이 파일이 아니라 caching이다. Claude는
+두 stage 모두 `inputTokens`가 12·16으로 사실상 0에 수렴하고 `cacheReadTokens`가
+141,154·393,838로 커서, tool-loop 내내 반복되는 context가 거의 전부 prompt cache로
+재사용됐다. Codex는 같은 자리의 `inputTokens`가 423,183·634,733으로 그 자체가 이미
+Claude의 전체 토큰 합계보다 훨씬 크다 — tool-loop을 도는 동안 매 왕복마다 누적 context를
+**캐시 없이 새로 지불**한 것에 가깝다. 두 turn 모두 provider 기본 모델/effort를 그대로
+썼으므로, Codex의 기본 모델이 reasoning trace를 매 호출 context로 다시 실어 나르는
+무거운 구성일 가능성이 높다 — 다만 이건 관찰이지 실측으로 원인을 분리하진 못했다
+(모델을 고정해 재실행해야 확인된다).
+
+**결론**: 애초 제보("Claude가 유독 많이 쓴다")의 원인이었던 Bash/Task 노출은 실재했고
+고쳤다. 그런데 그 gap을 닫고 나니, **이 fixture 기준으로는 오히려 Codex가 기본 설정에서
+16배 더 많은 토큰을 쓴다** — "Claude가 원래 더 비싸다"는 전제로 이 결과를 일반화하면
+안 된다. Codex 쪽은 코드를 고치지 않았다 — model/effort를 고정하지 않고는 무엇이
+진짜 원인인지(모델 기본값 vs 프로토콜 자체의 caching 특성) 분리할 수 없어서다.
+
+### 재확인 — model/effort를 같은 급으로 고정해도 같은 배수가 나온다 (같은 날, 이어진 대화)
+
+"provider 기본값" confound를 없애려고 fixture를 다시 새로 만들어 두 provider를 같은
+effort로 재실행했다: Claude `model: "sonnet"`(Sonnet 5) + `effort: "medium"`, Codex
+`model: "gpt-5.6-terra"`("everyday work"용 중간 등급, 이전 실측이 쓴 기본 모델
+`gpt-5.6-sol`이 아니다) + `effort: "medium"`.
+
+```
+                 semantic stage   assembly stage   합계          소요시간
+Claude(sonnet/medium)   34,263    23,874    58,137 tokens    9분 19초
+Codex(terra/medium)    372,578   327,568   700,146 tokens    5분 51초
+```
+
+**격차가 약 12배로, 앞의 16.6배와 같은 자릿수다.** 이번 Codex 실행에서는
+`exploredFiles`가 비어 있어 무관한 전역 skill 파일을 다시 읽지는 않았다 — 그 발견은
+이 재현에서는 일회성이었던 것으로 보인다(모델이 달라졌으니 직접 비교는 아니다).
+`inputTokens`(캐시 아닌 신규분)는 Claude가 20·8로 여전히 0에 수렴하는데 Codex는
+363,843·318,912로 여전히 거대하다 — **모델·effort 등급을 맞춰도 caching 비대칭은 그대로
+남는다.** 즉 앞서 "Codex 기본 모델이 무거워서"라는 가설은 격차의 전부를 설명하지
+못한다 — 등급을 맞춘 뒤에도 자릿수가 같다는 것은, Codex 쪽 app-server 프로토콜이 MCP
+tool-loop 왕복마다 누적 context를 캐시 없이 재전송하는 특성 자체가 원인일 가능성을
+더 지지한다. 이번에도 코드는 고치지 않았다 — 이건 어댑터의 버그가 아니라 provider
+자체의 caching 동작 차이로 보이고, 하나의 fixture·하나의 재실행으로 결론 내릴 문제는
+아니다.
+
+### 핵심 파일 코드리뷰 (같은 날, `apps/bridge/src/index.ts` · 두 adapter · validator)
+
+사용자가 "전체 코드리뷰는 시간·토큰이 많이 들면 생략하자, 핵심 부분만"이라고 범위를
+좁혀서, `index.ts`(HTTP API·`/api/analyze` 파이프라인)·두 provider adapter·
+`analysis-bundle-validator.ts`만 하위 모델(haiku) 서브에이전트로 리뷰했다. 보고된 것 중
+직접 코드를 다시 읽어 검증한 결과:
+
+- **오탐(false positive)으로 확인**: `/internal/evidence`의 `filePath` 쿼리가 검증 없이
+  쓰인다는 지적 — `queryEvidence`(`memory-api.ts:132`)를 직접 읽어보니 이미 인덱싱된
+  메모리상의 `Evidence[]`를 `item.filePath === query.filePath`로 **정확히 일치하는 것만
+  거르는 필터**일 뿐, 그 값으로 파일시스템을 다시 읽지 않는다. 경로 순회 가능성 없음.
+- **실재하지만 이미 죽은 코드로 확인**: Claude adapter `canUseTool`의 Write/Edit/
+  NotebookEdit 분기(`adapter.ts:188`)가 `startsWith()`로만 경로를 비교해 `/project`와
+  `/project-evil`을 구분 못 하는 것은 사실이지만, §18 앞부분에서 이미 `tools:
+  ["Read","Grep","Glob"]`로 그 tool들 자체를 모델 컨텍스트에서 없앴으므로 **지금은
+  도달 불가능하다.** 첫 code-review(diff 전용) 서브에이전트가 지적한 dead code와 같은
+  자리다 — tool을 다시 넓힐 일이 있으면 그때 같이 고쳐야 한다.
+- **실재하는 저위험 버그로 확인**: Codex adapter의 `handleServerRequest`
+  (`codex/adapter.ts:291-310`)가 MCP elicitation 승인 이벤트를 `turnId`/`threadId`로
+  찾지 않고 `[...emitters.keys()][0]`(첫 번째 task)에 무조건 보낸다. 다만 이 앱은
+  `state.getActiveTaskId()`로 동시 task 자체를 막아 두므로(§`/api/analyze` 가드),
+  `emitters`가 실제로 2개 이상일 상황이 정상 흐름에는 없다 — 승인/거부 판단
+  자체(`accepted = params.serverName === MCP_SERVER_NAME`)는 task와 무관하게 항상
+  맞게 동작하고, 틀릴 수 있는 건 어느 task의 UI 로그에 그 이벤트가 찍히느냐뿐이다.
+  `/api/tasks/:taskId/stop`(`index.ts:1245`)이 `adapter.stopTask()`를 try/catch 없이
+  부르는 것도 확인했다 — adapter 쪽 RPC가 실패하면 stop 요청이 `{ok:true}`를 돌려주기
+  전에 처리되지 않은 rejection으로 샐 수 있다. 둘 다 저위험이라 고치지 않았다.
+- **미확인**: `propose_evidence`로 검증받은 evidence id가 이후 실제 커밋 전에 근거가
+  사라져도 재검증하지 않을 수 있다는 지적은 코드를 따로 추적하지 못했다 — TOCTOU 성격의
+  주장이라 근거가 있는지는 별도로 봐야 한다.

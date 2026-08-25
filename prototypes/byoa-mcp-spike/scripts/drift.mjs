@@ -19,6 +19,11 @@
  * 잴 수 있다. 리뷰 단위가 커밋이므로 finding은 커밋 sha를 달고 돌아와야 한다.
  *
  * 판정은 LLM에게 맡기지 않는다. 돌아온 `criterionId`와 `commit`을 문자열로 대조한다.
+ *
+ * **세 번째로 재는 것 — 해소.** 검출은 절반이다. DEC-1 finding이 들고 온 `resolutionPrompt`를
+ * 실제 `task` mode turn에 먹여서, 옆에 띄운 사용자의 agent를 흉내낸다. 어느 쪽으로
+ * 판단하는지는 강제하지 않는다 — 코드를 고치는지 `.project-intel/design.json`의 DEC-1만
+ * 고치는지는 agent 몫이다. 우리가 재는 것은 **둘 중 정확히 하나만, 그 범위만** 바뀌었는가다.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +35,7 @@ import {
   commitViolation,
   createDriftFixture,
   driftFixtureDir,
+  git,
   isCodeClean,
 } from "./drift-fixture.mjs";
 
@@ -115,7 +121,9 @@ async function runOnce(agentId, prefix) {
   const benignSha = commitBenign(dir);
 
   const observed = await review(agentId, dir);
-  return report(observed, { dir, violationSha, benignSha }, prefix);
+  const detectionOk = report(observed, { dir, violationSha, benignSha }, prefix);
+  const resolutionOk = await reportResolution(agentId, observed, { dir, violationSha, benignSha }, prefix);
+  return detectionOk && resolutionOk;
 }
 
 async function review(agentId, dir) {
@@ -228,6 +236,200 @@ function report(observed, { dir, violationSha, benignSha }, prefix) {
     }
   }
   if (observed.report) console.log(`${prefix}       리포트: ${observed.report.summary.replace(/\s+/g, " ").slice(0, 96)}…`);
+  return ok;
+}
+
+/**
+ * 해소 프롬프트를 실제 `task` mode turn에 먹인다.
+ *
+ * 이 turn은 우리 앱이 돌리는 것이 아니라 **사용자가 옆에 띄운 agent를 흉내내는 것**이다 —
+ * 그래서 `mode: "task"`(전체 쓰기 권한)를 쓴다. `task`가 검증 장치라는 것은
+ * `docs/BYOA_MCP_INTEGRATION_SPIKE.md` §1.2에 못박혀 있다.
+ */
+async function resolveDrift(agentId, dir, prompt) {
+  const { WebSocket } = await import(join(spikeRoot, "node_modules", "ws", "index.js")).then((m) => ({
+    WebSocket: m.default ?? m,
+  }));
+  const socket = new WebSocket(`${config.baseUrl.replace("http", "ws")}/events`);
+  await new Promise((resolve, reject) => {
+    socket.on("open", resolve);
+    socket.on("error", reject);
+  });
+
+  const observed = { error: null };
+  let taskId = null;
+  let settle = null;
+
+  socket.on("message", (raw) => {
+    const { event } = JSON.parse(raw.toString());
+    if (!taskId || event.taskId !== taskId) return;
+    if (event.type === "task.error") observed.error = event.message;
+    if (["task.completed", "task.error", "task.interrupted"].includes(event.type)) {
+      setTimeout(() => settle?.(), 600);
+    }
+  });
+
+  const done = new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), TURN_TIMEOUT_MS);
+    settle = () => {
+      clearTimeout(timer);
+      resolve("done");
+    };
+  });
+
+  try {
+    const response = await fetch(`${config.baseUrl}/api/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: agentId, projectPath: dir, prompt, ...CHEAP[agentId] }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    taskId = body.taskId;
+    if ((await done) === "timeout") observed.error = observed.error ?? "turn이 시간 안에 끝나지 않았습니다";
+  } catch (cause) {
+    observed.error = String(cause);
+  }
+
+  socket.close();
+  return observed;
+}
+
+/** commit `sha` 이후로 바뀐 파일 전체 — 커밋된 것과 워킹 트리에 남은 것을 합친다. */
+function changedSince(dir, sha) {
+  const committed = git(dir, ["diff", "--name-only", `${sha}..HEAD`])
+    .split("\n")
+    .filter(Boolean);
+  // trim으로 먼저 앞 공백을 지우면 " M path" 같은 줄이 "M path"가 되어 slice(3)이 한 글자를
+  // 더 잘라낸다 (경로가 "rc/…"로 잘리는 버그). porcelain 줄은 XY+공백 3칸이 고정이므로
+  // 줄 자체는 다듬지 않고 끝의 빈 줄만 거른다.
+  const uncommitted = git(dir, ["status", "--porcelain"])
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => line.slice(3));
+  return new Set([...committed, ...uncommitted]);
+}
+
+/** design.json의 항목 하나짜리 배열(decisions/rules) 중 id별로 무엇이 바뀌었는지. 개수가 달라지면 구조가 흔들린 것이다. */
+function diffById(before, after) {
+  if (!Array.isArray(after) || before.length !== after.length) return null;
+  const changed = [];
+  for (const b of before) {
+    const a = after.find((x) => x.id === b.id);
+    if (!a) return null;
+    if (JSON.stringify(a) !== JSON.stringify(b)) changed.push(b.id);
+  }
+  return changed;
+}
+
+/** decisions/rules 말고 design.json의 나머지 구조가 그대로인가. */
+function designStructureUnchanged(before, after) {
+  return (
+    !!after &&
+    before.title === after.title &&
+    before.summary === after.summary &&
+    JSON.stringify(before.actors) === JSON.stringify(after.actors) &&
+    JSON.stringify(before.reqs) === JSON.stringify(after.reqs) &&
+    JSON.stringify(before.surfaces) === JSON.stringify(after.surfaces) &&
+    JSON.stringify(before.entities) === JSON.stringify(after.entities) &&
+    JSON.stringify(before.flows) === JSON.stringify(after.flows)
+  );
+}
+
+function readDesign(dir) {
+  try {
+    return JSON.parse(readFileSync(join(dir, ".project-intel", "design.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** DEC-1을 어긴 결제 호출이 여전히 코드에 있는가. */
+function violationStillInCode(dir) {
+  try {
+    return readFileSync(join(dir, "src", "rental.js"), "utf8").includes("chargeRentalFee");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 해소 프롬프트가 실제로 그렇게 동작하는지 확인한다.
+ *
+ * 어느 쪽(코드 수정 / 결정 갱신)을 골랐는지는 강제하지 않는다 — 그것은 agent의 판단이다.
+ * 대신 **정확히 한쪽만, 그 범위만** 바뀌었는지를 기계적으로 검사한다. LLM 판정에 기대지 않는다.
+ */
+async function reportResolution(agentId, observed, { dir, violationSha, benignSha }, prefix) {
+  const onViolation = (observed.report?.findings ?? []).filter((f) => f.commit === violationSha);
+  const decFinding = onViolation.find((f) => f.criterionId === EXPECTED);
+
+  if (!decFinding?.resolutionPrompt) {
+    console.log(`${prefix}[FAIL] 해소 — DEC-1 finding에 resolutionPrompt가 없어 시험할 수 없습니다`);
+    return false;
+  }
+
+  // 리뷰가 reviews.json에 남긴 변경까지 baseline에 넣는다. 그래야 해소 turn이 만든 변경만
+  // 걸러낼 수 있다 — 안 그러면 우리 자신의 기록 파일이 "바뀐 파일"로 잘못 잡힌다.
+  const before = changedSince(dir, benignSha);
+  const resolved = await resolveDrift(agentId, dir, decFinding.resolutionPrompt);
+  const after = changedSince(dir, benignSha);
+  const files = [...after].filter((f) => !before.has(f));
+
+  const design = readDesign(dir);
+  const touchedDesign = files.includes(".project-intel/design.json");
+  const touchedCode = files.some((f) => f.startsWith("src/"));
+  const decisionsDiff = design ? diffById(DESIGN.decisions, design.decisions) : null;
+  const rulesDiff = design ? diffById(DESIGN.rules, design.rules) : null;
+
+  const checks = [
+    [
+      "해소 프롬프트에 필요한 것이 다 있다",
+      () =>
+        (decFinding.resolutionPrompt.includes("DEC-1") &&
+          decFinding.resolutionPrompt.includes(".project-intel/design.json")) ||
+        "id 또는 파일 경로가 빠졌습니다",
+    ],
+    ["해소 turn이 오류 없이 끝났다", () => !resolved.error || resolved.error],
+    ["방치되지 않았다 — 뭔가 바뀌었다", () => files.length > 0 || "워킹 트리가 그대로입니다"],
+    [
+      "코드와 결정 중 한쪽만 고쳤다",
+      () =>
+        touchedDesign !== touchedCode ||
+        `design.json: ${touchedDesign}, 코드: ${touchedCode} (바뀐 파일: ${files.join(", ") || "없음"})`,
+    ],
+  ];
+
+  if (touchedDesign) {
+    checks.push(
+      ["design.json 구조는 그대로다", () => designStructureUnchanged(DESIGN, design) || "actors/reqs/surfaces/entities/flows 일부가 바뀌었습니다"],
+      ["RULE은 건드리지 않았다", () => rulesDiff?.length === 0 || `RULE 변경: ${JSON.stringify(rulesDiff)}`],
+      [
+        "DEC-1만 고쳤다",
+        () => JSON.stringify(decisionsDiff) === JSON.stringify(["DEC-1"]) || `바뀐 DEC: ${JSON.stringify(decisionsDiff)}`,
+      ],
+      [
+        "design.json 말고는 안 건드렸다",
+        () => files.length === 1 || `함께 바뀐 파일: ${files.filter((f) => f !== ".project-intel/design.json").join(", ")}`,
+      ],
+    );
+  } else if (touchedCode) {
+    checks.push(
+      ["결제 호출을 걷어냈다", () => !violationStillInCode(dir) || "rental.js가 여전히 chargeRentalFee를 부릅니다"],
+      ["design.json은 그대로다", () => !touchedDesign || "design.json이 함께 바뀌었습니다"],
+    );
+  }
+
+  console.log(`${prefix}해소  : ${files.join(", ") || "(변경 없음)"}`);
+  let ok = true;
+  for (const [label, check] of checks) {
+    const result = check();
+    if (result === true) {
+      console.log(`${prefix}[PASS] ${label}`);
+    } else {
+      console.log(`${prefix}[FAIL] ${label} — ${result}`);
+      ok = false;
+    }
+  }
   return ok;
 }
 

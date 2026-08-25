@@ -236,6 +236,16 @@ export type DriftFinding = {
   /** 무엇이 어긋났는지 한 문장. */
   detail: string;
   confidence: "high" | "low";
+  /**
+   * 이 finding을 고칠 프롬프트. **agent는 이 필드를 채우지 않는다** — bridge가
+   * `criterionId`로 찾은 criterion과 함께 `/internal/drift`에서 렌더해 붙인다
+   * (§3.3 표의 "해소 프롬프트" 행, LLM 없음).
+   *
+   * 판단과 실행 둘 다 이 프롬프트를 받는 **사용자의 옆 agent**가 한다 — 코드가 잘못됐으면
+   * 코드를, 결정이 낡았으면 `.project-intel/design.json`의 그 항목만 고친다. 우리 앱은
+   * 어느 쪽이 맞는지 정하지 않는다.
+   */
+  resolutionPrompt?: string;
 };
 
 /**
@@ -247,6 +257,96 @@ export type ReportDriftInput = {
   findings: DriftFinding[];
   /** 무엇을 근거로 그렇게 판단했는지 한 문단. */
   summary: string;
+};
+
+// ---------- 아키텍처·기술부채 ----------
+
+export type ArchitectureDebtCategory =
+  | "oversized-module"
+  | "duplicated-logic"
+  | "stale-temporary-workaround";
+
+/** 인터뷰 설계에서 구조 점검의 기준으로 가져온 REQ/ENTITY. */
+export type ArchitectureDesignRef = {
+  id: string;
+  name: string;
+  kind: "REQ" | "ENTITY";
+};
+
+/** 크기와 설계 단위 매핑을 코드가 결정론적으로 준비한 파일 하나. */
+export type ArchitectureFileSignal = {
+  path: string;
+  bytes: number;
+  lines: number;
+  /** 2MB 상한 안에서 본문까지 읽어 시그니처·설계 매핑을 준비했는가. */
+  contentScanned: boolean;
+  /** 파일명/본문에서 설계 단위 이름을 그대로 확인한 경우만 채운다. */
+  matchedDesignIds: string[];
+};
+
+/** 의미가 같은 로직인지 agent가 비교할 함수/메서드 후보. */
+export type ArchitectureSignature = {
+  path: string;
+  line: number;
+  signature: string;
+};
+
+/** 오래 방치됐는지 agent가 판단할 임시 조치 후보. */
+export type ArchitectureTemporaryMarker = {
+  path: string;
+  line: number;
+  text: string;
+  commit: string | null;
+  committedAt: string | null;
+  commitsSince: number | null;
+};
+
+/** `get_architecture_context`가 주는 결정론적 구조 점검 입력. */
+export type ArchitectureContext = {
+  designRefs: ArchitectureDesignRef[];
+  files: ArchitectureFileSignal[];
+  signatures: ArchitectureSignature[];
+  temporaryMarkers: ArchitectureTemporaryMarker[];
+  scannedFiles: number;
+  currentCommit: string | null;
+  truncated: {
+    files: number;
+    signatures: number;
+    temporaryMarkers: number;
+  };
+};
+
+/** 실제 코드 근거가 있는 기술부채 하나. */
+export type ArchitectureDebtFinding = {
+  category: ArchitectureDebtCategory;
+  severity: "high" | "medium" | "low";
+  title: string;
+  /** 코드가 현재 어떤 구조인지에 대한 설명. */
+  explanation: string;
+  /** 사용자 기능 확장이나 유지보수에 주는 영향. */
+  impact: string;
+  /** 실제로 읽고 판단한 프로젝트 기준 상대 경로. */
+  files: string[];
+  /** 함수 위치, 설계 id, TODO의 나이처럼 화면에 그대로 보일 구체적인 근거. */
+  evidence: string[];
+  /** 이 finding이 설계 경계를 근거로 삼은 경우의 REQ/ENTITY id. */
+  designIds: string[];
+  /** 연결된 코딩 에이전트에게 맡길 수 있는 다음 행동 한 가지. */
+  suggestion: string;
+  /** Bridge가 결정론적 템플릿으로 채운다. agent 입력에는 없다. */
+  resolutionPrompt?: string;
+};
+
+/** 읽기 전용 architecture turn이 앱에 제출하는 전체 결과. */
+export type ArchitectureDebtReport = {
+  summary: string;
+  findings: ArchitectureDebtFinding[];
+  /** 분석에서 확인하지 못했거나 제외한 범위. */
+  limitations: string[];
+  /** Bridge가 저장 시점에 채운다. */
+  generatedAt?: string;
+  /** 분석한 현재 git snapshot. 저장소가 아니거나 커밋이 없으면 null. */
+  commit?: string | null;
 };
 
 // ---------- 위키 (docs/vibe_coding_assistant_design.md §3.5) ----------
@@ -322,6 +422,8 @@ export type McpToolName =
   | "save_design"
   | "get_review_context"
   | "report_drift"
+  | "get_architecture_context"
+  | "report_architecture"
   | "get_wiki_transcript"
   | "save_wiki_keywords"
   | "get_wiki_context"
@@ -395,6 +497,7 @@ export type AgentEvent =
   | { type: "app.design"; taskId: string; design: DesignDoc }
   /** 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다. */
   | { type: "app.drift"; taskId: string; report: ReportDriftInput }
+  | { type: "app.architecture"; taskId: string; report: ArchitectureDebtReport }
   | { type: "app.wiki"; taskId: string; page: WikiPage }
   /** 위키 후보 키워드가 정해졌다. 사용자가 여기서 하나를 고른다. */
   | { type: "app.wiki.keywords"; taskId: string; keywords: WikiKeyword[] }
@@ -583,6 +686,18 @@ export type StartReviewResponse = {
   skipped: number;
   /** 기준이 하나도 없으면 리뷰가 성립하지 않는다. 그 사실을 조용히 넘기지 않는다. */
   criteriaCount: number;
+};
+
+/** 기존 코드베이스 전체의 아키텍처와 기술부채 분석을 시작한다. */
+export type StartArchitectureRequest = {
+  agent: AgentId;
+  projectPath: string;
+  model?: string;
+  effort?: string;
+};
+
+export type StartArchitectureResponse = {
+  taskId: string;
 };
 
 /**

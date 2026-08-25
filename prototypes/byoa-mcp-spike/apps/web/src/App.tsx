@@ -6,7 +6,9 @@ import type {
   AgentModelsResponse,
   AgentReadiness,
   AgentSessionsResponse,
+  ArchitectureDebtReport,
   BridgeStateResponse,
+  DriftFinding,
   ExportDesignResponse,
   HealthResponse,
   ModelOption,
@@ -14,6 +16,7 @@ import type {
   SelectedItem,
   SessionSummary,
   ShowResultInput,
+  StartArchitectureResponse,
   StartReviewResponse,
   StartTaskResponse,
   StartWikiKeywordsResponse,
@@ -35,6 +38,12 @@ const DEFAULT_PROMPT = 'README.md의 마지막에 "Edited by BYOA agent." 를 �
 
 type LogLine = { seq: number; at: string; text: string; tone: "info" | "mcp" | "good" | "bad" };
 
+const ARCHITECTURE_CATEGORY_LABEL = {
+  "oversized-module": "한 파일에 쌓인 책임",
+  "duplicated-logic": "의미가 같은 로직 중복",
+  "stale-temporary-workaround": "방치된 임시 조치",
+} as const;
+
 export function App() {
   const [agent, setAgent] = useState<AgentId>("codex");
   // 초기값은 비워 두고 bridge가 알려주는 fixture 경로로 채운다.
@@ -52,6 +61,11 @@ export function App() {
   // git은 agent와 같은 급의 전제 조건이다 — 없으면 되돌릴 지점을 남길 수 없다.
   const [tools, setTools] = useState<ToolReadiness[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
+  // 드리프트 리뷰 (§3.3). 고치는 일은 사용자의 옆 agent가 한다 — 여기서는 finding마다
+  // 해소 프롬프트를 보여주고 복사만 시킨다.
+  const [driftFindings, setDriftFindings] = useState<DriftFinding[]>([]);
+  // 코드가 준비한 세 구조 신호를 agent가 판단한 리포트. 다른 기능과 독립 상태다.
+  const [architectureReport, setArchitectureReport] = useState<ArchitectureDebtReport | null>(null);
   // 위키 (§3.5). 키워드는 agent가 고르고, 사용자가 그중 하나를 눌러 페이지를 만든다.
   const [keywords, setKeywords] = useState<WikiKeyword[] | null>(null);
   const [wikiPage, setWikiPage] = useState<WikiPage | null>(null);
@@ -230,6 +244,7 @@ export function App() {
         case "app.drift":
           // 결론이 도착했는데 화면이 조용하면 "리뷰가 돌지 않았다"와 구분되지 않는다.
           // 판정을 여기서 다시 하지 않는다 — 리포트에 담긴 것을 그대로 보여준다.
+          setDriftFindings(event.report.findings);
           if (event.report.findings.length === 0) {
             push("드리프트 없음 — 기준을 모두 확인했고 어긋난 것이 없습니다", "good");
           } else {
@@ -240,6 +255,10 @@ export function App() {
               push(`⚠ ${finding.criterionId} 깨짐 — ${short(finding.commit)} ${where}${guess}: ${finding.detail}`, "bad");
             }
           }
+          break;
+        case "app.architecture":
+          setArchitectureReport(event.report);
+          push(`구조 점검 완료 — 기술부채 ${event.report.findings.length}건`, "mcp");
           break;
         case "app.wiki.keywords":
           setKeywords(event.keywords);
@@ -426,6 +445,7 @@ export function App() {
   const review = useCallback(async () => {
     setError(null);
     setLines([]);
+    setDriftFindings([]);
     const response = await fetch("/api/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -438,6 +458,25 @@ export function App() {
     }
     if (!data.taskId) {
       setError("리뷰할 새 커밋이 없습니다");
+      return;
+    }
+    setTaskId(data.taskId);
+    setRunning(true);
+  }, [agent, projectPath, model, effort]);
+
+  /** 현재 프로젝트 전체를 읽기 전용으로 분석한다. Wiki·Drift 결과는 건드리지 않는다. */
+  const analyzeArchitecture = useCallback(async () => {
+    setError(null);
+    setLines([]);
+    setArchitectureReport(null);
+    const response = await fetch("/api/architecture", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent, projectPath, model, effort }),
+    });
+    const data = (await response.json()) as StartArchitectureResponse & { error?: string };
+    if (!response.ok) {
+      setError(data.error ?? "아키텍처 분석을 시작하지 못했습니다");
       return;
     }
     setTaskId(data.taskId);
@@ -638,6 +677,13 @@ export function App() {
           <button onClick={() => void review()} disabled={running || !projectPath.trim()} className="secondary">
             드리프트 리뷰
           </button>
+          <button
+            onClick={() => void analyzeArchitecture()}
+            disabled={running || !projectPath.trim()}
+            className="secondary"
+          >
+            아키텍처·기술부채
+          </button>
           <button onClick={() => void findKeywords()} disabled={running || !projectPath.trim()} className="secondary">
             위키
           </button>
@@ -814,6 +860,88 @@ export function App() {
                 복사
               </button>
             </div>
+          )}
+        </section>
+      )}
+
+      {driftFindings.length > 0 && (
+        <section className="panel">
+          <h2>드리프트</h2>
+          <p className="muted">
+            무엇이 맞는지는 이 앱이 정하지 않습니다. 옆에 띄워 둔 {agent === "claude" ? "Claude Code" : "Codex"}에
+            프롬프트를 붙여넣으면, 코드가 틀렸는지 결정이 낡았는지 판단해서 직접 고칩니다.
+          </p>
+          {driftFindings.map((finding, i) => (
+            <div key={`${finding.commit}-${finding.criterionId}-${i}`} className="result">
+              <h3>
+                {finding.criterionId} 깨짐 — {short(finding.commit)}
+                {finding.confidence === "low" ? " (추정)" : ""}
+              </h3>
+              <p>{finding.detail}</p>
+              {finding.files.length > 0 && <p className="muted">{finding.files.join(", ")}</p>}
+              {finding.resolutionPrompt && (
+                <button
+                  className="link"
+                  onClick={() => void navigator.clipboard.writeText(finding.resolutionPrompt ?? "")}
+                >
+                  해소 프롬프트 복사
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {architectureReport && (
+        <section className="panel">
+          <h2>아키텍처·기술부채</h2>
+          <p>{architectureReport.summary}</p>
+          <p className="muted">
+            현재 결과는 <code>.project-intel/architecture.json</code>과 <code>architecture.md</code>에 저장했습니다.
+          </p>
+
+          <h3>확인된 기술부채</h3>
+          {architectureReport.findings.length === 0 && <p className="muted">근거가 있는 기술부채를 찾지 못했습니다.</p>}
+          {architectureReport.findings.map((finding, index) => (
+            <div className="result warning" key={`${finding.title}-${index}`}>
+              <h4>
+                {finding.title} · {ARCHITECTURE_CATEGORY_LABEL[finding.category]} ·{" "}
+                {finding.severity === "high" ? "높음" : finding.severity === "medium" ? "중간" : "낮음"}
+              </h4>
+              <p>{finding.explanation}</p>
+              <p>
+                <strong>영향:</strong> {finding.impact}
+              </p>
+              <p>
+                <strong>다음 행동:</strong> {finding.suggestion}
+              </p>
+              {finding.designIds.length > 0 && <p className="muted">관련 설계: {finding.designIds.join(", ")}</p>}
+              <p className="muted">파일: {finding.files.join(", ")}</p>
+              <ul>
+                {finding.evidence.map((evidence, evidenceIndex) => (
+                  <li key={`${evidence}-${evidenceIndex}`}>{evidence}</li>
+                ))}
+              </ul>
+              {finding.resolutionPrompt && (
+                <button
+                  className="link"
+                  onClick={() => void navigator.clipboard.writeText(finding.resolutionPrompt ?? "")}
+                >
+                  해소 프롬프트 복사
+                </button>
+              )}
+            </div>
+          ))}
+
+          {architectureReport.limitations.length > 0 && (
+            <>
+              <h3>분석 한계</h3>
+              <ul>
+                {architectureReport.limitations.map((limitation, index) => (
+                  <li key={`${limitation}-${index}`}>{limitation}</li>
+                ))}
+              </ul>
+            </>
           )}
         </section>
       )}

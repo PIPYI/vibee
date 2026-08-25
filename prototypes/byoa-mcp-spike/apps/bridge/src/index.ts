@@ -22,6 +22,7 @@ import {
   BRIDGE_TOKEN_HEADER,
   type AgentEvent,
   type AgentReadiness,
+  type ArchitectureDebtReport,
   type AskUserInput,
   type DesignDoc,
   type ExportDesignRequest,
@@ -36,6 +37,7 @@ import {
   type ReviewStart,
   type ShowResultInput,
   type StartReviewRequest,
+  type StartArchitectureRequest,
   type StartTaskRequest,
   type StartWikiKeywordsRequest,
   type StartWikiRequest,
@@ -59,11 +61,18 @@ import {
   validateDesign,
 } from "./design.js";
 import {
+  collectArchitectureContext,
+  renderArchitectureMarkdown,
+  renderArchitectureResolutionPrompt,
+} from "./architecture.js";
+import {
+  buildArchitecturePrompt,
   buildInterviewPrompt,
   buildReviewPrompt,
   buildSpikePrompt,
   buildWikiKeywordsPrompt,
   buildWikiPrompt,
+  renderResolutionPrompt,
 } from "./prompt.js";
 import { condenseTranscript, countOccurrences, findAdvice, findMentions, renderWikiMarkdown } from "./wiki.js";
 import { BridgeState } from "./state.js";
@@ -382,6 +391,72 @@ app.post("/api/review", async (req: Request, res: Response) => {
   });
 
   void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * 기존 코드베이스 전체의 아키텍처·기술부채를 읽기 전용으로 분석한다.
+ *
+ * Wiki·Drift와 결과 상태를 공유하지 않는다. 이 기능을 다시 실행해도 architecture 결과만
+ * 교체되며, 다른 기능의 산출물은 그대로 남는다.
+ */
+app.post("/api/architecture", async (req: Request, res: Response) => {
+  const body = req.body as StartArchitectureRequest;
+
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
+  const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
+  let context;
+  try {
+    context = await collectArchitectureContext(projectPath, design);
+  } catch (error) {
+    res.status(400).json({ error: `구조 점검 입력을 만들지 못했습니다: ${asMessage(error)}` });
+    return;
+  }
+
+  state.startArchitecture(context);
+  // 구조 점검 한 번이 독립된 sitting 하나다. 다른 mode의 세션 참조는 건드리지 않는다.
+  adapter.resetSession(projectPath, "architecture");
+
+  const taskId = randomUUID();
+  const label = "architecture and technical debt";
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId });
+
+  void runTask(adapter, taskId, projectPath, buildArchitecturePrompt(), "architecture", {
     model: body.model || undefined,
     effort: body.effort || undefined,
   });
@@ -842,20 +917,24 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
   }
 
   const context = state.getReviewContext();
-  const knownCriteria = new Set((context?.criteria ?? []).map((c) => c.id));
   const knownCommits = new Set((context?.commits ?? []).map((c) => c.sha));
   const warnings: string[] = [];
-  for (const finding of report.findings) {
-    if (!knownCriteria.has(finding.criterionId)) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
+  // 해소 프롬프트는 여기서 채운다 — agent는 criterionId만 짚고, 그것을 고칠 문장은 우리가
+  // criterion 원문으로 렌더한다 (LLM 없음, docs/vibe_coding_assistant_design.md §3.3).
+  const findings = report.findings.map((finding) => {
+    const criterion = context?.criteria.find((c) => c.id === finding.criterionId);
+    if (!criterion) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
     if (!knownCommits.has(finding.commit)) warnings.push(`Unknown commit: ${finding.commit}`);
-  }
+    return criterion ? { ...finding, resolutionPrompt: renderResolutionPrompt(finding, criterion) } : finding;
+  });
+  const enrichedReport: ReportDriftInput = { ...report, findings };
 
-  state.recordDrift(report);
+  state.recordDrift(enrichedReport);
   const taskId = noteMcpEndpointHit("report_drift");
-  if (taskId) emit({ type: "app.drift", taskId, report });
+  if (taskId) emit({ type: "app.drift", taskId, report: enrichedReport });
   else log("report_drift arrived with no active task; stored but not routed to the UI");
 
-  log(`report_drift: ${report.findings.length}건 (${report.findings.map((f) => f.criterionId).join(", ") || "없음"})`);
+  log(`report_drift: ${findings.length}건 (${findings.map((f) => f.criterionId).join(", ") || "없음"})`);
   for (const warning of warnings) log(`  ! ${warning}`);
 
   /**
@@ -876,7 +955,7 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
           at: new Date().toISOString(),
           agent: task?.agent ?? "codex",
           commits: context.commits.map((c) => c.sha),
-          findings: report.findings,
+          findings,
           summary: report.summary,
         });
         await writeReviewLog(projectPath, existing);
@@ -886,6 +965,114 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
     })();
   }
 
+  res.json({ taskId, warnings });
+});
+
+/** 코드가 준비한 세 목록. agent는 이 중 의미가 있는 후보만 실제 파일을 열어 확인한다. */
+app.get("/internal/architecture-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_architecture_context");
+  const context = state.getArchitectureContext();
+  if (!context) {
+    res.status(409).json({ error: "No architecture structure check is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+/** architecture turn의 구조화된 결론. 근거를 검사하고 JSON+Markdown 현재 snapshot을 쓴다. */
+app.post("/internal/architecture", requireToken, async (req: Request, res: Response) => {
+  const report = req.body as ArchitectureDebtReport;
+  if (
+    typeof report?.summary !== "string" ||
+    !Array.isArray(report?.findings) ||
+    !Array.isArray(report?.limitations) ||
+    report.findings.some(
+      (finding) =>
+        !["oversized-module", "duplicated-logic", "stale-temporary-workaround"].includes(finding.category) ||
+        !Array.isArray(finding.files) ||
+        !Array.isArray(finding.evidence) ||
+        !Array.isArray(finding.designIds),
+    )
+  ) {
+    res.status(400).json({ error: "summary, findings, evidence, designIds and limitations are required" });
+    return;
+  }
+
+  const projectPath = state.getAppContext().projectPath;
+  const context = state.getArchitectureContext();
+  if (!context) {
+    res.status(409).json({ error: "No architecture structure check is in progress." });
+    return;
+  }
+  const evidence = new Set(report.findings.flatMap((finding) => finding.files));
+  const knownDesignIds = new Set(context.designRefs.map((ref) => ref.id));
+  const warnings: string[] = [];
+  for (const file of evidence) {
+    if (!file || file.startsWith("/") || file.split(/[\\/]/).includes("..")) {
+      warnings.push(`Invalid project-relative evidence path: ${file || "(empty)"}`);
+      continue;
+    }
+    try {
+      await stat(join(projectPath, file));
+    } catch {
+      warnings.push(`Evidence path does not exist: ${file}`);
+    }
+  }
+  for (const finding of report.findings) {
+    for (const id of finding.designIds) {
+      if (!knownDesignIds.has(id)) warnings.push(`Unknown design id: ${id}`);
+    }
+  }
+
+  const automaticLimitations: string[] = [];
+  if (context.designRefs.length === 0) {
+    // 인터뷰를 거치지 않은 "기존 코드베이스" 진입에서는 design.json이 없는 쪽이 더 흔하다
+    // (docs/product_flow_decisions.md). 이 경우에도 oversized-module 검출 자체는 계속한다 —
+    // agent가 REQ/ENTITY 대신 코드를 직접 읽고 책임 분리를 판단한다. 그 사실만 알린다.
+    automaticLimitations.push(
+      ".project-intel/design.json이 없어, oversized-module 판정에 REQ/ENTITY 경계 대신 agent가 코드를 직접 읽은 판단만 사용했습니다.",
+    );
+  }
+  const unreadContent = context.files.filter((file) => !file.contentScanned).length;
+  if (unreadContent > 0) {
+    automaticLimitations.push(`크기 상한 때문에 본문을 읽지 않은 source 파일이 ${unreadContent}개 있습니다.`);
+  }
+  if (context.truncated.files > 0) {
+    automaticLimitations.push(`source 파일 상한으로 ${context.truncated.files}개를 목록에서 제외했습니다.`);
+  }
+  if (context.truncated.signatures > 0) {
+    automaticLimitations.push(`함수/메서드 시그니처 상한으로 ${context.truncated.signatures}개를 제외했습니다.`);
+  }
+  if (context.truncated.temporaryMarkers > 0) {
+    automaticLimitations.push(`임시 조치 마커 상한으로 ${context.truncated.temporaryMarkers}개를 제외했습니다.`);
+  }
+
+  const generatedAt = new Date().toISOString();
+  const enrichedReport: ArchitectureDebtReport = {
+    ...report,
+    limitations: [...new Set([...report.limitations, ...automaticLimitations])],
+    generatedAt,
+    commit: context.currentCommit,
+    findings: report.findings.map((finding) => ({
+      ...finding,
+      resolutionPrompt: renderArchitectureResolutionPrompt(finding),
+    })),
+  };
+
+  try {
+    await writeArchitectureReport(projectPath, enrichedReport);
+  } catch (error) {
+    res.status(500).json({ error: `아키텍처 리포트 저장 실패: ${asMessage(error)}` });
+    return;
+  }
+
+  state.recordArchitecture(enrichedReport);
+  const taskId = noteMcpEndpointHit("report_architecture");
+  if (taskId) emit({ type: "app.architecture", taskId, report: enrichedReport });
+  else log("report_architecture arrived with no active task; stored but not routed to the UI");
+
+  log(`report_architecture: 부채 ${report.findings.length}건 → ${DESIGN_DIR}/architecture.{json,md}`);
+  for (const warning of warnings) log(`  ! ${warning}`);
   res.json({ taskId, warnings });
 });
 
@@ -1171,6 +1358,14 @@ async function writeWikiPage(projectPath: string, page: WikiPage): Promise<void>
   const slug = wikiSlug(page.term);
   await writeFile(join(dir, `${slug}.json`), JSON.stringify(page, null, 2), "utf8");
   await writeFile(join(dir, `${slug}.md`), renderWikiMarkdown(page), "utf8");
+}
+
+/** 구조 점검은 이력 배열을 쌓지 않고 현재 snapshot을 덮어쓴다. 추세는 git이 남긴다. */
+async function writeArchitectureReport(projectPath: string, report: ArchitectureDebtReport): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "architecture.json"), JSON.stringify(report, null, 2), "utf8");
+  await writeFile(join(dir, "architecture.md"), renderArchitectureMarkdown(report), "utf8");
 }
 
 /** 이미 만들어 둔 페이지들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
