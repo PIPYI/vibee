@@ -149,6 +149,8 @@ export class CodexAdapter implements AgentAdapter {
   private readonly activeTurns = new Map<string, TurnHandle>();
   private emitters = new Map<string, (event: AgentEvent) => void>();
   private turnResolvers = new Map<string, (outcome: TaskOutcome) => void>();
+  /** bridge가 커밋 완료한 stage를 끊을 때만 user Stop과 다른 결과를 사용한다. */
+  private readonly stopOutcomes = new Map<string, "completed">();
   private modelsCache: { at: number; models: ModelOption[] } | undefined;
 
   private ensureClient(): AppServerClient {
@@ -279,6 +281,7 @@ export class CodexAdapter implements AgentAdapter {
       this.emitters.delete(input.taskId);
       this.turnResolvers.delete(input.taskId);
       this.activeTurns.delete(input.taskId);
+      this.stopOutcomes.delete(input.taskId);
     }
   }
 
@@ -393,7 +396,8 @@ export class CodexAdapter implements AgentAdapter {
     if (notification.method === "turn/completed") {
       const turn = (params["turn"] ?? {}) as { status?: string };
       // 중단은 예외가 아니라 status 로만 구분된다 (Finding 2).
-      const outcome: TaskOutcome = turn.status === "interrupted" ? "interrupted" : "completed";
+      const outcome: TaskOutcome = this.stopOutcomes.get(taskId) ??
+        (turn.status === "interrupted" ? "interrupted" : "completed");
       this.turnResolvers.get(taskId)?.(outcome);
     }
   }
@@ -406,9 +410,11 @@ export class CodexAdapter implements AgentAdapter {
     return undefined;
   }
 
-  async stopTask(taskId: string): Promise<void> {
+  async stopTask(taskId: string, outcome?: "completed"): Promise<void> {
     const handle = this.activeTurns.get(taskId);
     if (!handle) return;
+    if (outcome) this.stopOutcomes.set(taskId, outcome);
+    else this.stopOutcomes.delete(taskId);
     await this.ensureClient().call("turn/interrupt", {
       threadId: handle.threadId,
       ...(handle.turnId ? { turnId: handle.turnId } : {}),

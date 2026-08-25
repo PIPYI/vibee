@@ -84,6 +84,7 @@ import { WebSocketServer } from "ws";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter, TaskOutcome } from "./agents/types.js";
+import { completeSemanticTurnAfterResponse } from "./stage-completion.js";
 import type { BundlePatchOperation } from "./bundle-patch.js";
 import {
   conceptContext,
@@ -1770,6 +1771,13 @@ app.post("/internal/semantic-patch", requireToken, async (req: Request, res: Res
       semanticVersion: outcome.value.semanticVersion,
       summary: `concept +${outcome.value.diffSummary.conceptsAdded.length} · claim +${outcome.value.diffSummary.claimsAdded.length}`,
     });
+    const task = state.getTask(taskId);
+    const adapter = task ? adapters.get(task.agent) : undefined;
+    if (adapter) {
+      completeSemanticTurnAfterResponse(res, adapter, taskId, (error) => {
+        log("semantic turn completion interrupt failed", taskId, asMessage(error));
+      });
+    }
     res.json({ ok: true, ...outcome.value, diagnostics: outcome.diagnostics });
     return;
   }

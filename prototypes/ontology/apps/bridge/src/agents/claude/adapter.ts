@@ -77,6 +77,8 @@ export class ClaudeAdapter implements AgentAdapter {
   private sdk: ClaudeSdk | undefined;
   private readonly sessionByProject = new Map<string, string>();
   private readonly aborters = new Map<string, AbortController>();
+  /** bridge가 이미 커밋된 stage를 끝낼 때만 user Stop과 다른 결과를 보존한다. */
+  private readonly stopOutcomes = new Map<string, "completed">();
   private modelsCache: { at: number; models: ModelOption[] } | undefined;
 
   constructor(private readonly options: ClaudeAdapterOptions) {}
@@ -152,6 +154,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const resumeFrom = this.sessionByProject.get(input.projectPath);
     const analyzeLike = input.mode === "analyze" || input.mode === "view";
+    let stoppedOutcome: TaskOutcome | undefined;
 
     const stream = sdk.query({
       prompt: input.prompt,
@@ -205,13 +208,16 @@ export class ClaudeAdapter implements AgentAdapter {
       }
     } catch (error) {
       // Finding 7 — abort 는 result 메시지 경로에 도달하지 않는다.
-      if (abortController.signal.aborted) return "interrupted";
-      throw error;
+      if (!abortController.signal.aborted) throw error;
     } finally {
+      // 일부 SDK 버전은 abort 뒤 iterator를 throw하지 않고 정상 종료할 수 있다. cleanup 전에
+      // outcome을 잡아야 그 경우에도 완료형 중단이 user Stop으로 바뀌지 않는다.
+      stoppedOutcome = this.stopOutcomes.get(input.taskId);
       this.aborters.delete(input.taskId);
+      this.stopOutcomes.delete(input.taskId);
     }
 
-    return abortController.signal.aborted ? "interrupted" : "completed";
+    return abortController.signal.aborted ? (stoppedOutcome ?? "interrupted") : "completed";
   }
 
   private handleMessage(
@@ -293,8 +299,12 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
-  async stopTask(taskId: string): Promise<void> {
-    this.aborters.get(taskId)?.abort();
+  async stopTask(taskId: string, outcome?: "completed"): Promise<void> {
+    const aborter = this.aborters.get(taskId);
+    if (!aborter) return;
+    if (outcome) this.stopOutcomes.set(taskId, outcome);
+    else this.stopOutcomes.delete(taskId);
+    aborter.abort();
   }
 
   resetSession(projectPath: string): void {

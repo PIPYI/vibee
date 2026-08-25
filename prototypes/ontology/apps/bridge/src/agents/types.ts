@@ -29,7 +29,11 @@ export interface AgentAdapter {
   listModels(): Promise<ModelOption[]>;
   /** turn이 어떻게 끝났는지를 resolve로 알린다. **실제 실패일 때만 throw 한다** */
   startTask(input: StartTaskInput, emit: (event: AgentEvent) => void): Promise<TaskOutcome>;
-  stopTask(taskId: string): Promise<void>;
+  /**
+   * 기본 Stop은 사용자 취소라 `interrupted`다. Semantic Patch가 커밋된 뒤의 내부 Stop만
+   * `completed`를 요청해 다음 pipeline stage로 넘긴다.
+   */
+  stopTask(taskId: string, outcome?: "completed"): Promise<void>;
   /** 프로젝트에 묶어 둔 세션 참조를 버린다. 세션 파일은 디스크에 그대로 남는다 */
   resetSession(projectPath: string): void;
   listSessions(projectPath: string): Promise<SessionSummary[]>;
