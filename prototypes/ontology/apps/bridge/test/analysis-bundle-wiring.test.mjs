@@ -220,6 +220,25 @@ test("submit_analysis_bundle — I20 위반(traceLinkRefs 비어 있음)은 거�
   }
 });
 
+test("submit_analysis_bundle — 이전 시도가 실패해 draft가 있으면 재제출은 거절되고 patch_analysis_bundle로 안내한다", async () => {
+  const seeded = await seededProject();
+  const taskId = openTask(seeded, "assembly");
+  try {
+    const failing = validBundle();
+    failing.architecture.connections[0].traceLinkRefs = [];
+    const first = await post("/internal/submit-analysis-bundle", failing);
+    assert.equal(first.body.ok, false);
+    assert.ok(first.body.draftId, "실패한 제출은 draftId를 남겨야 한다");
+
+    const second = await post("/internal/submit-analysis-bundle", validBundle());
+    assert.equal(second.body.ok, false);
+    assert.equal(second.body.draftId, first.body.draftId, "같은 draft를 가리켜야 한다");
+    assert.match(second.body.next_step, /patch_analysis_bundle/);
+  } finally {
+    endTask(taskId);
+  }
+});
+
 test("GET /api/analysis-bundle — 아직 분석하지 않은(인덱싱만 된) 프로젝트는 404다", async () => {
   const dir = mkdtempSync(join(tmpdir(), "onto-bundle-wiring-empty-"));
   scratches.push(dir);

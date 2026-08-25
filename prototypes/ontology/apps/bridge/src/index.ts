@@ -2046,6 +2046,19 @@ app.post("/internal/submit-analysis-bundle", requireToken, async (req: Request, 
     res.json({ error: "no_active_transaction", next_step: "assembly turn 중에만 Bundle을 제출할 수 있습니다." });
     return;
   }
+  // 이전 시도가 검증에 실패해 draft가 이미 있으면, 전체 Bundle을 다시 검증하지 않고
+  // 즉시 patch_analysis_bundle로 유도한다. 최종 커밋되는 내용에는 영향이 없다 —
+  // 이미 프롬프트가 권장하던 경로(§ASSEMBLY_RULES 11)를 서버에서 강제할 뿐이다.
+  const existingDraft = state.getBundleDraft(active.taskId);
+  if (existingDraft) {
+    res.status(200).json({
+      ok: false,
+      retryable: true,
+      draftId: existingDraft.draftId,
+      next_step: "이미 이전 시도의 draft가 있습니다. patch_analysis_bundle로 실패 경로만 고치세요. 전체 Bundle을 다시 제출할 수 없습니다.",
+    });
+    return;
+  }
   const result = await validateBundleCandidate(active.projectPath, active.taskId, req.body, "submit_analysis_bundle");
   res.status(result.status).json(result.body);
 });

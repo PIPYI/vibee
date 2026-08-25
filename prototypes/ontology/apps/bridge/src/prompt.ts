@@ -19,6 +19,7 @@ import {
 const EVIDENCE_RULES = [
   "규칙:",
   "1. 경로·심볼·줄번호를 지어내지 마라. 모든 evidenceRefs 는 get_evidence 로 확인한 실재 id여야 한다.",
+  "   여러 id를 확인할 때는 get_evidence 를 여러 번 부르지 말고 ids 배열에 한 번에 담아 불러라.",
   "2. 엔진이 인덱싱하지 못한 근거를 발견했다면 **버리지 말고** propose_evidence 로 등록을 요청하라.",
   "   Core 가 검증한 뒤 id 를 발급하며, 발급받은 id 에만 grounding 할 수 있다.",
   "3. Core adapter가 모르는 runtime·route·외부 SDK·저장소와 실제 호출 관계를 발견했다면",

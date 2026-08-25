@@ -11,6 +11,7 @@ import { test } from "node:test";
 import {
   buildAssemblyPrompt,
   buildEvidenceBundle,
+  buildFullAnalyzePrompt,
   buildIncrementalAssemblyPrompt,
   buildOverviewPrompt,
   buildScenarioPrompt,
@@ -239,4 +240,9 @@ test("V4 증분 Assembly 프롬프트는 기존 draft와 ImpactSet ID만 수정�
 test("describeSession은 Assembly 프롬프트를 식별한다", () => {
   const prompt = buildAssemblyPrompt("/tmp/proj", buildSkeletonSummary(evidenceGraph()), "독립 실행 런타임 0개");
   assert.equal(describeSession(prompt), "Architecture/User Map/Sequence 조립");
+});
+
+test("EVIDENCE_RULES는 get_evidence를 여러 id 한 번에 불러오라고 지시한다", () => {
+  const prompt = buildFullAnalyzePrompt("/tmp/project");
+  assert.match(prompt, /get_evidence.*ids 배열에 한 번에/);
 });
