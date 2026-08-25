@@ -13,6 +13,7 @@ import type {
   EvidenceIndex,
   RepositoryCoverage,
   RepositoryDataStore,
+  RepositoryRouteSurface,
   RepositoryRuntime,
   RepositoryRuntimeKind,
   RepositoryTopology,
@@ -120,10 +121,74 @@ function dataRoot(filePath: string): string | null {
   return index < 0 ? null : parts.slice(0, index + 1).join("/");
 }
 
+const TIMESTAMP_LIKE_DIR = /^(?:\d{4}-\d{2}-\d{2}(?:[_t]\d{2}[-:]?\d{2}[-:]?\d{2})?|\d{8}[-_]?\d{6}|\d{10,13}|run[-_]?\d+)$/iu;
+
+/**
+ * data root 바로 아래 타임스탬프형 자식 디렉터리가 반복되고, 그 안에서 같은 상대 파일명이
+ * 되풀이되는 패턴을 찾는다(V5 C1) — 내용을 열어보지 않는 이름 패턴 휴리스틱이다. 같은 root
+ * 안에 사람이 선언한 파일과 파이프라인 산출물이 섞여 있을 수 있으므로, root 전체가 아니라
+ * "어떤 자식 디렉터리 이름이 타임스탬프형이고 어떤 상대 파일명이 반복되는가"만 돌려주고,
+ * 실제 declared/generated-artifact 판정은 파일 단위로 한다(fileDataOrigin).
+ */
+function analyzeDataRootOrigin(
+  rootPath: string,
+  filesUnderRoot: readonly string[],
+): { timestampLikeDirs: Set<string>; repeatedTrailingPaths: Set<string> } {
+  const trailingByChildDir = new Map<string, string[]>();
+  for (const filePath of filesUnderRoot) {
+    const rest = rootPath === "" ? filePath : filePath.slice(rootPath.length + 1);
+    const segments = rest.split("/");
+    if (segments.length < 2) continue;
+    const childDir = segments[0]!;
+    const trailing = segments.slice(1).join("/");
+    const list = trailingByChildDir.get(childDir) ?? [];
+    list.push(trailing);
+    trailingByChildDir.set(childDir, list);
+  }
+  const childDirNames = [...trailingByChildDir.keys()];
+  const timestampLikeDirs = new Set(childDirNames.filter((name) => TIMESTAMP_LIKE_DIR.test(name)));
+  if (childDirNames.length < 2 || timestampLikeDirs.size < 2 || timestampLikeDirs.size / childDirNames.length < 0.5) {
+    return { timestampLikeDirs: new Set(), repeatedTrailingPaths: new Set() };
+  }
+
+  const countByTrailing = new Map<string, number>();
+  for (const childDir of timestampLikeDirs) {
+    for (const trailing of new Set(trailingByChildDir.get(childDir) ?? [])) {
+      countByTrailing.set(trailing, (countByTrailing.get(trailing) ?? 0) + 1);
+    }
+  }
+  const repeatedTrailingPaths = new Set([...countByTrailing.entries()].filter(([, count]) => count >= 2).map(([trailing]) => trailing));
+  return { timestampLikeDirs, repeatedTrailingPaths };
+}
+
+function fileDataOrigin(
+  rootPath: string,
+  filePath: string,
+  analysis: { timestampLikeDirs: Set<string>; repeatedTrailingPaths: Set<string> },
+): "declared" | "generated-artifact" {
+  const rest = rootPath === "" ? filePath : filePath.slice(rootPath.length + 1);
+  const segments = rest.split("/");
+  if (segments.length < 2) return "declared";
+  const childDir = segments[0]!;
+  if (!analysis.timestampLikeDirs.has(childDir)) return "declared";
+  const trailing = segments.slice(1).join("/");
+  return analysis.repeatedTrailingPaths.has(trailing) ? "generated-artifact" : "declared";
+}
+
 function entityPath(entityKey: string): string | undefined {
   if (entityKey.startsWith("file:")) return entityKey.slice("file:".length);
   if (entityKey.startsWith("symbol:")) return entityKey.slice("symbol:".length).split("#", 1)[0];
   return undefined;
+}
+
+/**
+ * "이 entityRefs 중 하나라도 어떤 컴포넌트에 실제로 참조되는가" — dataStore·routeSurface
+ * 커버리지 체크가 공유하는 단일 메커니즘(V5 원칙 2). 새 카탈로그가 늘어나도 이 헬퍼를
+ * 재사용하는 루프 하나만 추가하면 된다.
+ */
+function componentsCoverEntityRefs(architecture: ArchitectureIR, entityRefs: readonly string[]): boolean {
+  const refs = new Set(entityRefs);
+  return architecture.components.some((component) => component.entityRefs.some((ref) => refs.has(ref)));
 }
 
 export function detectRepositoryTopology(projectPath: string, index: EvidenceIndex): RepositoryTopology {
@@ -150,17 +215,35 @@ export function detectRepositoryTopology(projectPath: string, index: EvidenceInd
     });
   }
 
-  const grouped = new Map<string, { rootPath: string; runtime?: RepositoryRuntime; format: string; files: string[] }>();
+  const filesByDataRoot = new Map<string, string[]>();
+  for (const filePath of [...indexedPaths].sort()) {
+    const rootPath = dataRoot(filePath);
+    if (!rootPath) continue;
+    const list = filesByDataRoot.get(rootPath) ?? [];
+    list.push(filePath);
+    filesByDataRoot.set(rootPath, list);
+  }
+  const originAnalysisByDataRoot = new Map(
+    [...filesByDataRoot.entries()].map(([rootPath, files]) => [rootPath, analyzeDataRootOrigin(rootPath, files)] as const),
+  );
+
+  const grouped = new Map<
+    string,
+    { rootPath: string; runtime?: RepositoryRuntime; format: string; origin: "declared" | "generated-artifact"; files: string[] }
+  >();
   for (const filePath of [...indexedPaths].sort()) {
     const rootPath = dataRoot(filePath);
     if (!rootPath) continue;
     const extension = extname(filePath).replace(/^\./u, "").toLowerCase() || "data";
     const runtime = runtimeForPath(runtimes, filePath);
-    const key = `${runtime?.id ?? "unowned"}|${rootPath}|${extension}`;
+    const analysis = originAnalysisByDataRoot.get(rootPath)!;
+    const origin = fileDataOrigin(rootPath, filePath, analysis);
+    const key = `${runtime?.id ?? "unowned"}|${rootPath}|${extension}|${origin}`;
     const current = grouped.get(key) ?? {
       rootPath,
       ...(runtime ? { runtime } : {}),
       format: extension,
+      origin,
       files: [] as string[],
     };
     current.files.push(filePath);
@@ -169,31 +252,63 @@ export function detectRepositoryTopology(projectPath: string, index: EvidenceInd
 
   const dataStores: RepositoryDataStore[] = [...grouped.values()]
     .map((group) => ({
-      id: stableId("data", `${group.runtime?.id ?? "unowned"}|${group.rootPath}|${group.format}`),
-      label: `${group.runtime?.label ?? "공용"} 로컬 ${group.format.toUpperCase()}`,
+      id: stableId("data", `${group.runtime?.id ?? "unowned"}|${group.rootPath}|${group.format}|${group.origin}`),
+      label:
+        group.origin === "generated-artifact"
+          ? `${group.runtime?.label ?? "공용"} 파이프라인 산출물 ${group.format.toUpperCase()}`
+          : `${group.runtime?.label ?? "공용"} 로컬 ${group.format.toUpperCase()}`,
       rootPath: group.rootPath,
       ...(group.runtime ? { runtimeId: group.runtime.id } : {}),
       format: group.format,
+      origin: group.origin,
       entityRefs: group.files.sort().map((path) => `file:${path}`),
       evidenceRefs: group.files.map((path) => evidenceByPath.get(path)?.id).filter((id): id is string => Boolean(id)).sort(),
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 
+  const routesByFile = new Map<string, { routeKeys: Set<string>; evidenceIds: Set<string> }>();
+  for (const item of index.evidence) {
+    if (item.status !== "present" || item.kind !== "route" || item.graph?.role !== "entity" || !item.filePath) continue;
+    if (item.graph.entity.kind !== "route") continue;
+    const bucket = routesByFile.get(item.filePath) ?? { routeKeys: new Set<string>(), evidenceIds: new Set<string>() };
+    bucket.routeKeys.add(item.graph.entity.routeKey);
+    bucket.evidenceIds.add(item.id);
+    routesByFile.set(item.filePath, bucket);
+  }
+  const routeSurfaces: RepositoryRouteSurface[] = [...routesByFile.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([filePath, bucket]) => {
+      const runtime = runtimeForPath(runtimes, filePath);
+      return {
+        id: stableId("route-surface", filePath),
+        label: `${filePath} 라우트 ${bucket.routeKeys.size}개`,
+        filePath,
+        ...(runtime ? { runtimeId: runtime.id } : {}),
+        routeKeys: [...bucket.routeKeys].sort(),
+        entityRefs: [`file:${filePath}`],
+        evidenceRefs: [...bucket.evidenceIds].sort(),
+      };
+    });
+
   return {
     runtimes: runtimes.sort((a, b) => a.rootPath.localeCompare(b.rootPath)),
     dataStores,
-    coverage: emptyCoverage(runtimes.length, dataStores.length),
+    routeSurfaces,
+    coverage: emptyCoverage(runtimes.length, dataStores.length, routeSurfaces.length),
   };
 }
 
-function emptyCoverage(runtimeCount: number, dataStoreCount: number): RepositoryCoverage {
+function emptyCoverage(runtimeCount: number, dataStoreCount: number, routeSurfaceCount: number): RepositoryCoverage {
   return {
     detectedRuntimeCount: runtimeCount,
     representedRuntimeCount: 0,
     detectedDataStoreCount: dataStoreCount,
     representedDataStoreCount: 0,
+    detectedRouteSurfaceCount: routeSurfaceCount,
+    representedRouteSurfaceCount: 0,
     missingRuntimeIds: [],
     missingDataStoreIds: [],
+    missingRouteSurfaceIds: [],
     sharedBoundaryRuntimeIds: [],
   };
 }
@@ -233,8 +348,12 @@ export function assessRepositoryCoverage(topology: RepositoryTopology, architect
 
   const representedStores = new Set<string>();
   for (const store of topology.dataStores) {
-    const refs = new Set(store.entityRefs);
-    if (architecture.components.some((component) => component.entityRefs.some((ref) => refs.has(ref)))) representedStores.add(store.id);
+    if (componentsCoverEntityRefs(architecture, store.entityRefs)) representedStores.add(store.id);
+  }
+
+  const representedRouteSurfaces = new Set<string>();
+  for (const surface of topology.routeSurfaces) {
+    if (componentsCoverEntityRefs(architecture, surface.entityRefs)) representedRouteSurfaces.add(surface.id);
   }
 
   const runtimesByBoundary = new Map<string, Set<string>>();
@@ -258,8 +377,18 @@ export function assessRepositoryCoverage(topology: RepositoryTopology, architect
     representedRuntimeCount: representedRuntimes.size,
     detectedDataStoreCount: topology.dataStores.length,
     representedDataStoreCount: representedStores.size,
+    detectedRouteSurfaceCount: topology.routeSurfaces.length,
+    representedRouteSurfaceCount: representedRouteSurfaces.size,
     missingRuntimeIds: topology.runtimes.map((runtime) => runtime.id).filter((id) => !representedRuntimes.has(id)),
-    missingDataStoreIds: topology.dataStores.map((store) => store.id).filter((id) => !representedStores.has(id)),
+    // generated-artifact는 커버리지 게이트가 요구하지 않는다 — 파이프라인이 실행마다 만드는
+    // 산출물이라 architecture에 나타나지 않아도 결함이 아니다(V5 C1).
+    missingDataStoreIds: topology.dataStores
+      .filter((store) => store.origin !== "generated-artifact")
+      .map((store) => store.id)
+      .filter((id) => !representedStores.has(id)),
+    missingRouteSurfaceIds: topology.routeSurfaces
+      .map((surface) => surface.id)
+      .filter((id) => !representedRouteSurfaces.has(id)),
     sharedBoundaryRuntimeIds: [...sharedBoundaryRuntimeIds].sort(),
   };
   return { ...topology, coverage };
@@ -279,9 +408,18 @@ export function describeRepositoryTopology(topology: RepositoryTopology): string
     `로컬 데이터 저장소 ${topology.dataStores.length}개:`,
     ...topology.dataStores.map((store) =>
       [
-        `- ${store.id}: ${store.label}, root=${store.rootPath}, runtime=${store.runtimeId ?? "공용"}, 파일 ${store.entityRefs.length}개`,
+        `- ${store.id}: ${store.label}, root=${store.rootPath}, runtime=${store.runtimeId ?? "공용"}, ` +
+          `origin=${store.origin}, 파일 ${store.entityRefs.length}개`,
         `  entityRefs: ${store.entityRefs.join(", ")}`,
         `  evidenceRefs: ${store.evidenceRefs.join(", ")}`,
+      ].join("\n"),
+    ),
+    "",
+    `라우트 표면 ${topology.routeSurfaces.length}개:`,
+    ...topology.routeSurfaces.map((surface) =>
+      [
+        `- ${surface.id}: ${surface.filePath}, runtime=${surface.runtimeId ?? "미상"}, route ${surface.routeKeys.length}개`,
+        `  routeKeys: ${surface.routeKeys.join(", ")}`,
       ].join("\n"),
     ),
   ];

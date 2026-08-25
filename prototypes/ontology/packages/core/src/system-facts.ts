@@ -173,7 +173,8 @@ export function buildEngineSystemFactStore(
   };
 }
 
-function certaintyRank(value: SystemEntity["certainty"]): number {
+/** confirmed > grounded > inferred. V5 A4의 "여러 fact 중 가장 약한 certainty가 이긴다" 계산에도 쓴다. */
+export function certaintyRank(value: SystemEntity["certainty"]): number {
   return value === "confirmed" ? 3 : value === "grounded" ? 2 : 1;
 }
 

@@ -30,7 +30,15 @@ import {
   symbolEvidenceId,
   type LinkIdCandidate,
 } from "./ids.js";
-import { collectSourceFiles, isPythonSourceFile, isTestFile, isTypeScriptSourceFile, readSource } from "./lang.js";
+import { parseGenericRoutePatterns } from "./generic-patterns.js";
+import {
+  collectSourceFiles,
+  isGenericPatternSourceFile,
+  isPythonSourceFile,
+  isTestFile,
+  isTypeScriptSourceFile,
+  readSource,
+} from "./lang.js";
 import { defaultProfileFor } from "./normalize.js";
 import { parsePythonSource, type PythonSymbol } from "./python.js";
 import {
@@ -127,6 +135,9 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   const indexedSet = new Set(indexed);
   const parsed = indexed.filter((relPath) => sourcePaths.includes(relPath) && isTypeScriptSourceFile(relPath));
   const pythonPaths = indexed.filter((relPath) => sourcePaths.includes(relPath) && isPythonSourceFile(relPath));
+  const genericPatternPaths = indexed.filter(
+    (relPath) => sourcePaths.includes(relPath) && isGenericPatternSourceFile(relPath),
+  );
 
   const program = ts.createProgram({
     rootNames: parsed.map((relPath) => `${projectRoot}/${relPath}`),
@@ -140,6 +151,9 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   const bySymbolId = new Map<string, SymbolSite>();
   const sitesByFile = new Map<string, SymbolSite[]>();
   const pythonByFile = new Map(pythonPaths.map((relPath) => [relPath, parsePythonSource(relPath, sources.get(relPath)!)]));
+  const genericRoutesByFile = new Map(
+    genericPatternPaths.map((relPath) => [relPath, parseGenericRoutePatterns(sources.get(relPath)!)]),
+  );
 
   const queueLink = (spec: PendingLinkSpec): void => {
     const localFingerprint = fingerprintOf(spec.extentText, "code");
@@ -251,6 +265,44 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
           filePath: relPath,
           fileContentHash: fileHash,
           summary: `${route.routeKey} 를 ${route.handlerSymbolId} 가 처리한다`,
+        });
+      }
+      continue;
+    }
+
+    const genericRoutes = genericRoutesByFile.get(relPath);
+    if (genericRoutes) {
+      for (const route of genericRoutes) {
+        const routeEntity: EntityRef = { kind: "route", routeKey: route.routeKey };
+        const location = { startLine: route.line, endLine: route.line };
+        evidence.push({
+          id: `ev:route:${sha1(route.routeKey)}`,
+          kind: "route",
+          origin: "engine",
+          filePath: relPath,
+          location,
+          rawHash: rawHashOf(route.extentText),
+          normalizedFingerprint: fingerprintOf(route.extentText, "code"),
+          normalizationProfile: "code",
+          excerpt: route.extentText,
+          graph: { role: "entity", entity: routeEntity, label: route.routeKey },
+          summary: `${route.routeKey} (${relPath})`,
+          fileContentHash: fileHash,
+          observedAtVersion: version,
+          status: "present",
+        });
+        // 전용 심볼 파서가 없는 언어라 handler symbol로는 못 내려간다 — file이 라우트를
+        // 담고 있다는 사실만 근거 있게 남긴다(file→symbol contains와 같은 패턴).
+        queueLink({
+          linkKind: "contains",
+          from: fileEntity,
+          to: routeEntity,
+          extentText: `${relPath}#${route.routeKey}`,
+          location,
+          startColumn: 0,
+          filePath: relPath,
+          fileContentHash: fileHash,
+          summary: `${relPath} 이 ${route.routeKey} 를 담고 있다`,
         });
       }
       continue;

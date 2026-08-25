@@ -26,6 +26,17 @@ export const PYTHON: LanguageConfig = {
   testGlobs: ["test_", "_test.py", "/tests/"],
 };
 
+/**
+ * 심볼/호출 그래프까지 복원하는 전용 파서는 없지만, generic-patterns.ts의 언어 비종속
+ * 라우트 탐지기가 스캔할 수 있도록 파일 수집·file evidence 대상에는 포함하는 언어들.
+ */
+export const GENERIC_PATTERN_LANGUAGES: LanguageConfig[] = [
+  { name: "java", extensions: [".java"], testGlobs: ["Test.java", "Tests.java", "/test/"] },
+  { name: "csharp", extensions: [".cs"], testGlobs: ["Test.cs", "Tests.cs", "/Tests/"] },
+  { name: "ruby", extensions: [".rb"], testGlobs: ["_spec.rb", "/spec/"] },
+  { name: "go", extensions: [".go"], testGlobs: ["_test.go"] },
+];
+
 /** 걸어 들어가지 않는 디렉터리. `.project-intel`은 우리 산출물이므로 인덱싱하지 않는다. */
 export const SKIP_DIRS = new Set([
   "node_modules",
@@ -41,9 +52,14 @@ export const SKIP_DIRS = new Set([
   "__pycache__",
 ]);
 
+const GENERIC_PATTERN_EXTENSIONS = GENERIC_PATTERN_LANGUAGES.flatMap((language) => language.extensions);
+const GENERIC_PATTERN_TEST_GLOBS = GENERIC_PATTERN_LANGUAGES.flatMap((language) => language.testGlobs);
+
 export function isSourceFile(relPath: string): boolean {
   const lower = relPath.toLowerCase();
-  return [...TYPESCRIPT.extensions, ...PYTHON.extensions].some((extension) => lower.endsWith(extension));
+  return [...TYPESCRIPT.extensions, ...PYTHON.extensions, ...GENERIC_PATTERN_EXTENSIONS].some((extension) =>
+    lower.endsWith(extension),
+  );
 }
 
 export function isTypeScriptSourceFile(relPath: string): boolean {
@@ -55,9 +71,17 @@ export function isPythonSourceFile(relPath: string): boolean {
   return relPath.toLowerCase().endsWith(".py");
 }
 
+/** 전용 심볼 파서는 없지만 generic-patterns.ts 라우트 탐지 대상인 파일. */
+export function isGenericPatternSourceFile(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return GENERIC_PATTERN_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
 export function isTestFile(relPath: string): boolean {
   const lower = relPath.toLowerCase();
-  return [...TYPESCRIPT.testGlobs, ...PYTHON.testGlobs].some((marker) => lower.includes(marker));
+  return [...TYPESCRIPT.testGlobs, ...PYTHON.testGlobs, ...GENERIC_PATTERN_TEST_GLOBS].some((marker) =>
+    lower.includes(marker),
+  );
 }
 
 /** POSIX 구분자로 통일한다. evidence id가 플랫폼마다 달라지면 안 된다. */

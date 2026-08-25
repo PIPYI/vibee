@@ -1061,6 +1061,12 @@ export type ArchitectureComponent = {
   inputs?: ComponentIO[];
   outputs?: ComponentIO[];
   confidence?: number;
+  /**
+   * entityRefs가 가리키는 System Entity들의 최저 certainty(V5 A4) — Core가 채운다. LLM이
+   * 보내도 Core가 실제 System Fact 기준으로 덮어쓴다. "확정(confirmed로 표시)"과 "화면에
+   * 나타남"을 분리하는 축이다 — inferred여도 component 자체는 거부되지 않는다.
+   */
+  certainty?: FactCertainty;
 };
 
 /** schema3 §3.2. 시각적 그룹. `kind`는 자유 문자열이다 (I3와 같은 이유). */
@@ -1084,6 +1090,14 @@ export type ArchitectureConnection = {
   /** V3 읽기 호환. 제출 시 Core가 가능한 경우 systemLinkRefs로 migration한다. */
   traceLinkRefs?: string[];
   evidenceRefs: string[];
+  /**
+   * systemLinkRefs가 가리키는 System Link들의 최저 certainty(V5 A4) — Core가 채운다.
+   * "confirmed"|"grounded"인 Link만으로 이어지면 그대로, 하나라도 "inferred"면
+   * connection.certainty도 "inferred"가 된다. I20-v4는 inferred link를 더 이상 hard
+   * reject하지 않지만, "확정 연결"과 동등하게 취급하지도 않는다 — 렌더러가 이 필드로
+   * 시각적으로 구분해야 한다. status(valid/relocated가 아님)는 여전히 hard error다.
+   */
+  certainty?: FactCertainty;
 };
 
 export type ArchitectureViewGroup = {
@@ -1130,6 +1144,28 @@ export type RepositoryDataStore = {
   rootPath: string;
   runtimeId?: string;
   format: string;
+  /**
+   * "declared"는 사람이 선언한 데이터 자산, "generated-artifact"는 파이프라인이 실행마다
+   * 스스로 만들어낸 산출물 폴더로 추정된다(V5 C1) — 타임스탬프형 하위 디렉터리가 반복되고
+   * 그 안에서 같은 파일명이 되풀이될 때. 삭제하지 않고 표시만 하며, 커버리지 게이트의
+   * missingDataStoreIds 집계에서 제외한다.
+   */
+  origin: "declared" | "generated-artifact";
+  entityRefs: string[];
+  evidenceRefs: string[];
+};
+
+/**
+ * "이 파일이 HTTP 라우트를 선언한다"는 결정론적 신호(V5 A3) — 프레임워크 adapter든
+ * generic-patterns.ts의 언어 비종속 탐지기든, route kind Evidence가 나온 파일마다 하나씩
+ * 묶는다. RepositoryDataStore와 같은 자리에서 커버리지 검증기가 소비한다.
+ */
+export type RepositoryRouteSurface = {
+  id: string;
+  label: string;
+  filePath: string;
+  runtimeId?: string;
+  routeKeys: string[];
   entityRefs: string[];
   evidenceRefs: string[];
 };
@@ -1139,14 +1175,18 @@ export type RepositoryCoverage = {
   representedRuntimeCount: number;
   detectedDataStoreCount: number;
   representedDataStoreCount: number;
+  detectedRouteSurfaceCount: number;
+  representedRouteSurfaceCount: number;
   missingRuntimeIds: string[];
   missingDataStoreIds: string[];
+  missingRouteSurfaceIds: string[];
   sharedBoundaryRuntimeIds: string[];
 };
 
 export type RepositoryTopology = {
   runtimes: RepositoryRuntime[];
   dataStores: RepositoryDataStore[];
+  routeSurfaces: RepositoryRouteSurface[];
   coverage: RepositoryCoverage;
 };
 

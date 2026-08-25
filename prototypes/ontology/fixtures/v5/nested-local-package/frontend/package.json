@@ -1,0 +1,5 @@
+{
+  "name": "frontend",
+  "scripts": { "start": "react-scripts start" },
+  "dependencies": { "react": "18", "react-dom": "18" }
+}

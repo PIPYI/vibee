@@ -42,17 +42,20 @@ export {
 } from "./normalize.js";
 export {
   collectSourceFiles,
+  isGenericPatternSourceFile,
   isPythonSourceFile,
   isSourceFile,
   isTestFile,
   isTypeScriptSourceFile,
   toPosix,
+  GENERIC_PATTERN_LANGUAGES,
   PYTHON,
   TYPESCRIPT,
   type LanguageConfig,
 } from "./lang.js";
 export { collectSymbolSites, type SymbolSite } from "./sites.js";
 export { parsePythonSource, type PythonCall, type PythonRoute, type PythonSymbol } from "./python.js";
+export { parseGenericRoutePatterns, type GenericRoute } from "./generic-patterns.js";
 export {
   DEGRADED_SIMILARITY_THRESHOLD,
   carryAgentEvidence,

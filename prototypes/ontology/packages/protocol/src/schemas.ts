@@ -534,6 +534,11 @@ const presentationType = {
   enum: ["external", "frontend", "backend", "database", "queue", "security", "job", "cloud", "unknown"],
 } as const;
 
+/** V5 A4 — Core가 최종적으로 채우는 필드. LLM이 보내도 Core가 실제 System Fact 기준으로 덮어쓴다. */
+const factCertainty = {
+  enum: ["confirmed", "grounded", "inferred"],
+} as const;
+
 /**
  * schema3 §3.1. **여기서는 빈 배열을 막지 않는다** — `evidenceRefs`가 비면 안 된다는 규칙은
  * `scenarioStep`과 같은 이유로 grounding validator 층에서 다룬다(§6.7과 같은 관례).
@@ -572,6 +577,7 @@ const architectureComponent = {
     inputs: { type: "array", items: componentIO },
     outputs: { type: "array", items: componentIO },
     confidence,
+    certainty: factCertainty,
   },
 } as const;
 
@@ -604,6 +610,7 @@ const architectureConnection = {
     // V3 읽기 호환. Core가 가능한 경우 systemLinkRefs로 migration한다.
     traceLinkRefs: { type: "array", items: nonEmptyString },
     evidenceRefs,
+    certainty: factCertainty,
   },
 } as const;
 

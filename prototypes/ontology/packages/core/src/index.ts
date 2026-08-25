@@ -93,6 +93,7 @@ export {
 export {
   buildEngineSystemFactStore,
   canonicalResourceRef,
+  certaintyRank,
   emptySystemFactStore,
   findSystemEntity,
   findSystemLink,
@@ -117,6 +118,8 @@ export {
 } from "./system-fact-lifecycle.js";
 export {
   buildExternalIntegrationCatalog,
+  isExternalLookingImportName,
+  localModuleNames,
   planDiscoveryGaps,
 } from "./discovery.js";
 export { buildV4RolloutReport } from "./rollout.js";

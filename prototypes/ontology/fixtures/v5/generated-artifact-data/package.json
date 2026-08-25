@@ -1,0 +1,5 @@
+{
+  "name": "generated-artifact-data",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "express": "1" }
+}

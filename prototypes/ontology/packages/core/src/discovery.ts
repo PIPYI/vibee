@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { extname, join, posix } from "node:path";
 
 import type {
@@ -11,6 +12,38 @@ import type {
 
 const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".svelte"]);
 const LOCAL_PREFIXES = [".", "/", "$lib/", "@/"];
+
+// node:module의 builtinModules는 언어(JS/TS)에 종속되지 않는 실제 런타임 정보라서 하드코딩이 아니다.
+const NODE_BUILTIN_MODULES = new Set(builtinModules.map((name) => name.replace(/^node:/u, "")));
+
+// Python은 Node 런타임에서 내부 조회가 불가능하므로, 표준 라이브러리 top-level 모듈 이름만
+// 별도로 유지한다. 매니페스트 없이 import되는 이름이 이 목록에 없으면 외부 연동 후보로 본다.
+const PYTHON_STDLIB_MODULES = new Set([
+  "__future__", "__main__", "_thread", "abc", "aifc", "argparse", "array", "ast", "asyncio",
+  "atexit", "base64", "bdb", "binascii", "bisect", "builtins", "bz2", "calendar", "cgi", "cgitb",
+  "chunk", "cmath", "cmd", "code", "codecs", "codeop", "collections", "colorsys", "compileall",
+  "concurrent", "configparser", "contextlib", "contextvars", "copy", "copyreg", "cProfile", "crypt",
+  "csv", "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal", "difflib", "dis",
+  "distutils", "doctest", "email", "encodings", "ensurepip", "enum", "errno", "faulthandler",
+  "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc", "getopt",
+  "getpass", "gettext", "glob", "graphlib", "grp", "gzip", "hashlib", "heapq", "hmac", "html",
+  "http", "idlelib", "imaplib", "imghdr", "imp", "importlib", "inspect", "io", "ipaddress",
+  "itertools", "json", "keyword", "lib2to3", "linecache", "locale", "logging", "lzma", "mailbox",
+  "mailcap", "marshal", "math", "mimetypes", "mmap", "modulefinder", "msilib", "msvcrt",
+  "multiprocessing", "netrc", "nntplib", "numbers", "operator", "optparse", "os", "ossaudiodev",
+  "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil", "platform", "plistlib", "poplib",
+  "posixpath", "pprint", "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr", "pydoc",
+  "queue", "quopri", "random", "re", "readline", "reprlib", "resource", "rlcompleter", "runpy",
+  "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil", "signal", "site",
+  "smtpd", "smtplib", "sndhdr", "socket", "socketserver", "spwd", "sqlite3", "sre_compile",
+  "sre_constants", "sre_parse", "ssl", "stat", "statistics", "string", "stringprep", "struct",
+  "subprocess", "sunau", "symtable", "sys", "sysconfig", "syslog", "tabnanny", "tarfile",
+  "telnetlib", "tempfile", "termios", "textwrap", "threading", "time", "timeit", "tkinter",
+  "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty", "turtle", "types",
+  "typing", "unicodedata", "unittest", "urllib", "uu", "uuid", "venv", "warnings", "wave",
+  "weakref", "webbrowser", "winreg", "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc", "zipapp",
+  "zipfile", "zipimport", "zlib", "zoneinfo",
+]);
 
 const sorted = (values: Iterable<string>): string[] => [...new Set(values)].sort();
 const stableId = (prefix: string, material: string): string =>
@@ -88,11 +121,16 @@ function sourceSignals(projectPath: string, files: readonly string[]): {
         if (!["type", "as", "from"].includes(binding)) bindings.set(binding, name);
       }
     }
-    for (const match of text.matchAll(/^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import\s+([^\n]+)|import\s+([A-Za-z0-9_.]+)(?:\s+as\s+([A-Za-z0-9_]+))?)/gmu)) {
-      const name = (match[1] ?? match[3])!.split(".")[0]!;
-      record(imports, name, path);
-      const clause = match[2] ?? match[4] ?? name;
-      for (const binding of clause.match(/[A-Za-z_][A-Za-z0-9_]*/gu) ?? []) bindings.set(binding, name);
+    // Python 전용 문법이다 — JS의 "import X from 'y'"도 우연히 "import X" 부분까지는 매칭되므로
+    // (as절이 optional이라 "from" 앞에서 매칭이 끝나버린다) .py 파일에만 적용해야 한다. 아니면
+    // 바인딩 식별자(예: 기본 import한 "React")를 패키지 이름으로 잘못 기록하게 된다.
+    if (extname(path) === ".py") {
+      for (const match of text.matchAll(/^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import\s+([^\n]+)|import\s+([A-Za-z0-9_.]+)(?:\s+as\s+([A-Za-z0-9_]+))?)/gmu)) {
+        const name = (match[1] ?? match[3])!.split(".")[0]!;
+        record(imports, name, path);
+        const clause = match[2] ?? match[4] ?? name;
+        for (const binding of clause.match(/[A-Za-z_][A-Za-z0-9_]*/gu) ?? []) bindings.set(binding, name);
+      }
     }
     for (const [binding, name] of bindings) {
       const escaped = binding.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -103,6 +141,38 @@ function sourceSignals(projectPath: string, files: readonly string[]): {
     }
   }
   return { imports, calls, configKeys };
+}
+
+/**
+ * "매니페스트에 없어도 import되고 non-stdlib/non-local이면 후보로 본다"는 원시 판별 로직.
+ * 언어에 상관없이 재사용할 수 있도록 external-integration 후보 계산과 A2의 라우트/서비스
+ * 탐지기가 공유하는 공용 유틸이다.
+ */
+export function isExternalLookingImportName(name: string, localNames: ReadonlySet<string>): boolean {
+  if (!name) return false;
+  const bare = name.replace(/^node:/u, "");
+  if (NODE_BUILTIN_MODULES.has(bare)) return false;
+  if (PYTHON_STDLIB_MODULES.has(name)) return false;
+  if (localNames.has(name)) return false;
+  return true;
+}
+
+/**
+ * 로컬 first-party 모듈/패키지 이름 집합 — 인덱싱된 파일 트리의 모든 깊이의 디렉터리 이름과
+ * 파일 stem을 모은다. 저장소 최상위(예: "backend")뿐 아니라 그 아래 패키지(예:
+ * "backend/routes" → "routes")나 모듈(예: "backend/firebase_config.py" → "firebase_config")도
+ * Python에서는 sys.path 구성에 따라 아무 접두사 없이 import될 수 있어서, 최상위만 보면
+ * "routes"·"utils"처럼 흔한 로컬 패키지 이름을 외부 연동으로 오탐한다.
+ */
+export function localModuleNames(indexedFiles: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const path of indexedFiles) {
+    for (const segment of path.split("/")) {
+      const stem = segment.replace(/\.(?:js|jsx|mjs|cjs|ts|tsx|py|svelte)$/u, "");
+      if (stem.length > 0) names.add(stem);
+    }
+  }
+  return names;
 }
 
 function isCovered(name: string, facts: SystemFactStore): string[] {
@@ -149,9 +219,13 @@ export function buildExternalIntegrationCatalog(
   ]);
   const manifests = manifestDependencies(projectPath, files);
   const signals = sourceSignals(projectPath, files);
-  // import만 있고 manifest 선언이 없는 이름은 Python stdlib/node: built-in일 수 있다.
-  // 외부 연동 후보는 dependency+import 조합부터 시작해 문서/이름만으로 서비스를 만들지 않는다.
-  const names = sorted(manifests.keys());
+  // import만 있고 manifest 선언이 없는 이름은 Python stdlib/node: built-in이거나 로컬 first-party
+  // 모듈일 수 있다. 그 둘을 뺀 나머지는 매니페스트가 아예 없는 런타임(Flask 등)에서도 후보가 된다.
+  const localNames = localModuleNames(files);
+  const manifestLessImportNames = sorted(signals.imports.keys()).filter(
+    (name) => !manifests.has(name) && isExternalLookingImportName(name, localNames),
+  );
+  const names = sorted([...manifests.keys(), ...manifestLessImportNames]);
   return names.map((name) => {
     const coveredBySystemFactIds = isCovered(name, facts);
     return {

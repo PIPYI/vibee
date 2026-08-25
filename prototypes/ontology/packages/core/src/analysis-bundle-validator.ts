@@ -33,9 +33,10 @@ import type {
 } from "@onto/protocol";
 
 import { diagnostic, hasError, validateAgainst } from "./schema.js";
+import { buildExternalIntegrationCatalog } from "./discovery.js";
 import { assessRepositoryCoverage, detectRepositoryTopology } from "./repository-topology.js";
 import { validateViewIR } from "./view-validator.js";
-import { buildEngineSystemFactStore, systemEntityId } from "./system-facts.js";
+import { buildEngineSystemFactStore, certaintyRank, systemEntityId } from "./system-facts.js";
 
 export type AnalysisBundleValidateInput = {
   bundle: unknown;
@@ -71,6 +72,7 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
   );
   const allEvidenceIds = new Set(input.evidence.evidence.map((item) => item.id));
   const systemEntityIds = new Set(systemFacts.entities.map((item) => item.id));
+  const systemEntitiesById = new Map(systemFacts.entities.map((item) => [item.id, item] as const));
   const systemLinksById = new Map(systemFacts.links.map((item) => [item.id, item] as const));
   const systemLinksByEvidence = new Map<string, string[]>();
   for (const link of systemFacts.links) {
@@ -168,6 +170,16 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     componentIds.add(component.id);
 
     checkEntityRefs(component.entityRefs, `${base}/entityRefs`);
+    // V5 A4 — entityRefs가 가리키는 System Entity 중 가장 약한 certainty를 그대로 기록한다.
+    // LLM이 certainty를 보냈어도 Core가 실제 System Fact 기준으로 덮어쓴다(장식적 필드가
+    // 아니라 Core가 계산하는 값이다).
+    const componentEntities = component.entityRefs.map((ref) => systemEntitiesById.get(ref)).filter((item): item is NonNullable<typeof item> => item !== undefined);
+    if (componentEntities.length > 0) {
+      component.certainty = componentEntities.reduce(
+        (worst, entity) => (certaintyRank(entity.certainty) < certaintyRank(worst) ? entity.certainty : worst),
+        componentEntities[0]!.certainty,
+      );
+    }
     checkEvidenceRefs(component.evidenceRefs, `${base}/evidenceRefs`);
     requireGrounded(component.evidenceRefs, base, "bundle/component-ungrounded");
     checkConceptRefs(component.conceptRefs ?? [], `${base}/conceptRefs`);
@@ -280,6 +292,12 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         ),
       );
     }
+    // V5 A4 — certainty(confirmed/grounded/inferred)와 status(valid/relocated 등)는 서로 다른
+    // 축이다. status가 낡았으면(stale/missing/needs_review) 그 Link는 여전히 hard reject한다 —
+    // 근거 자체를 신뢰할 수 없기 때문이다. 반면 certainty가 inferred인 것만으로는 더 이상
+    // connection을 거부하지 않는다 — "확정(confirmed로 표시)"과 "화면에 나타남"을 분리해,
+    // connection.certainty를 "inferred"로 낮춰서 통과시키고 렌더러가 구분해서 보여주게 한다.
+    let connectionCertainty: "confirmed" | "grounded" | "inferred" = "confirmed";
     const resolvedLinks = refs.map((ref, i) => {
       const link = systemLinksById.get(ref);
       if (!link) {
@@ -290,12 +308,21 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         );
         return undefined;
       }
-      if (!(["confirmed", "grounded"] as const).includes(link.certainty as "confirmed" | "grounded") || !(["valid", "relocated"] as const).includes(link.status as "valid" | "relocated")) {
+      if (!(["valid", "relocated"] as const).includes(link.status as "valid" | "relocated")) {
         diagnostics.push(
-          diagnostic("bundle/system-link-not-authoritative", "error", `${base}/systemLinkRefs/${i}의 Link는 ${link.certainty}/${link.status} 상태라 확정 연결에 쓸 수 없습니다.`, {
-            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { certainty: link.certainty, status: link.status }, supportedFixes: ["confirmed|grounded이며 valid|relocated인 Link를 사용한다", "이 관계를 assumptions/unknowns로 분리한다"],
+          diagnostic("bundle/system-link-not-authoritative", "error", `${base}/systemLinkRefs/${i}의 Link는 ${link.status} 상태라 연결에 쓸 수 없습니다.`, {
+            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { certainty: link.certainty, status: link.status }, supportedFixes: ["valid|relocated인 Link를 사용한다", "이 관계를 assumptions/unknowns로 분리한다"],
           }),
         );
+      } else if (link.certainty === "inferred") {
+        connectionCertainty = "inferred";
+        diagnostics.push(
+          diagnostic("bundle/connection-uses-inferred-link", "warning", `${base}/systemLinkRefs/${i}의 Link는 inferred라 이 연결은 확정이 아니라 추정으로 표시됩니다.`, {
+            subject: { path: `${base}/systemLinkRefs/${i}`, systemLinkId: ref }, evidence: { certainty: link.certainty, status: link.status }, supportedFixes: ["connection.certainty가 렌더러에 자동으로 반영된다 — 확정하려면 confirmed|grounded Link로 교체한다"],
+          }),
+        );
+      } else if (link.certainty === "grounded" && connectionCertainty !== "inferred") {
+        connectionCertainty = "grounded";
       }
       if (link.evidenceRefs.length === 0 || link.evidenceRefs.some((id) => !presentEvidence.has(id))) {
         diagnostics.push(
@@ -306,6 +333,7 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
       }
       return link;
     }).filter((item): item is NonNullable<typeof item> => item !== undefined);
+    if (resolvedLinks.length > 0) connection.certainty = connectionCertainty;
 
     for (let i = 1; i < resolvedLinks.length; i += 1) {
       if (systemEntityId(resolvedLinks[i - 1]!.to) === systemEntityId(resolvedLinks[i]!.from)) continue;
@@ -350,6 +378,7 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
     repositoryTopology = assessRepositoryCoverage(detectRepositoryTopology(input.projectPath, input.evidence), architecture);
     const runtimeById = new Map(repositoryTopology.runtimes.map((runtime) => [runtime.id, runtime] as const));
     const storeById = new Map(repositoryTopology.dataStores.map((store) => [store.id, store] as const));
+    const routeSurfaceById = new Map(repositoryTopology.routeSurfaces.map((surface) => [surface.id, surface] as const));
     for (const runtimeId of repositoryTopology.coverage.missingRuntimeIds) {
       const runtime = runtimeById.get(runtimeId);
       diagnostics.push(
@@ -373,12 +402,49 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         }),
       );
     }
+    for (const surfaceId of repositoryTopology.coverage.missingRouteSurfaceIds) {
+      const surface = routeSurfaceById.get(surfaceId);
+      diagnostics.push(
+        diagnostic(
+          "bundle/route-surface-not-represented",
+          "error",
+          `탐지된 라우트 표면 "${surface?.filePath ?? surfaceId}"(${surface?.routeKeys.join(", ") ?? ""})가 아키텍처에서 빠졌습니다.`,
+          {
+            subject: { surfaceId, filePath: surface?.filePath ?? "" },
+            supportedFixes: ["이 파일의 entityRefs를 가진 component를 만들거나 기존 component의 entityRefs에 포함시킨다"],
+          },
+        ),
+      );
+    }
     if (repositoryTopology.coverage.sharedBoundaryRuntimeIds.length > 0) {
       diagnostics.push(
         diagnostic("bundle/runtime-boundary-collapsed", "error", "서로 독립적인 실행 런타임이 하나의 boundary에 합쳐져 있습니다.", {
           subject: { runtimeIds: repositoryTopology.coverage.sharedBoundaryRuntimeIds },
           supportedFixes: ["런타임마다 별도의 boundary를 만든다"],
         }),
+      );
+    }
+
+    // discovery-gap이면서 실제 호출 흔적(callPaths)까지 있는 후보는 조사 우선순위가 가장 높다.
+    // false-positive 비율을 관찰하기 전까지는 warning으로만 알리고 bundle 커밋을 막지 않는다.
+    const externalCatalog = buildExternalIntegrationCatalog(input.projectPath, input.evidence, systemFacts);
+    const architectureFileRefs = new Set(architecture.components.flatMap((component) => component.entityRefs));
+    for (const candidate of externalCatalog) {
+      if (candidate.status !== "discovery-gap" || candidate.callPaths.length === 0) continue;
+      const represented = [...candidate.importPaths, ...candidate.callPaths].some((path) =>
+        architectureFileRefs.has(`file:${path}`),
+      );
+      if (represented) continue;
+      diagnostics.push(
+        diagnostic(
+          "bundle/external-integration-not-represented",
+          "warning",
+          `"${candidate.packageName}" import와 실제 사용이 있지만 아키텍처 어느 component에도 나타나지 않습니다.`,
+          {
+            subject: { packageName: candidate.packageName, callPaths: candidate.callPaths },
+            supportedFixes: ["이 패키지를 사용하는 파일의 entityRefs를 가진 component(외부 연동 boundary)를 만든다"],
+          },
+        ),
       );
     }
   }
@@ -439,6 +505,73 @@ export function validateAnalysisBundle(input: AnalysisBundleValidateInput): Anal
         diagnostics.push(
           unknownRef("bundle/unknown-sequence", `${base}/sequenceRef`, edge.sequenceRef, "sequences[].id 중 하나를 쓴다"),
         );
+      }
+    }
+  }
+
+  // 서로 다른 boundary의 component를 잇는 workflow.edge인데 대응하는 architecture.connection이
+  // 없으면 경고한다(V5 C3) — I20-v4가 요구하는 evidence 검증을 우회하지 않도록 hard error가
+  // 아니라 warning으로만 알린다. repository-topology.ts의 componentBoundaryIds 패턴을 그대로 쓴다.
+  {
+    const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+    const componentsByEntityRef = new Map<string, string[]>();
+    for (const component of architecture.components) {
+      for (const ref of component.entityRefs) {
+        const ids = componentsByEntityRef.get(ref) ?? [];
+        ids.push(component.id);
+        componentsByEntityRef.set(ref, ids);
+      }
+    }
+    const componentBoundaryIds = new Map<string, Set<string>>();
+    for (const component of architecture.components) {
+      if (component.boundaryId) componentBoundaryIds.set(component.id, new Set([component.boundaryId]));
+    }
+    for (const boundary of architecture.boundaries) {
+      for (const componentId of boundary.wraps) {
+        const ids = componentBoundaryIds.get(componentId) ?? new Set<string>();
+        ids.add(boundary.id);
+        componentBoundaryIds.set(componentId, ids);
+      }
+    }
+    const connectedComponentPairs = new Set<string>();
+    for (const connection of architecture.connections) {
+      connectedComponentPairs.add(`${connection.from}::${connection.to}`);
+      connectedComponentPairs.add(`${connection.to}::${connection.from}`);
+    }
+    const componentsForNode = (node: (typeof workflow.nodes)[number]): string[] =>
+      [...new Set(node.entityRefs.flatMap((ref) => componentsByEntityRef.get(ref) ?? []))];
+
+    const reportedPairs = new Set<string>();
+    for (const edge of workflow.edges) {
+      const fromNode = nodeById.get(edge.from);
+      const toNode = nodeById.get(edge.to);
+      if (!fromNode || !toNode) continue;
+      for (const fromComponentId of componentsForNode(fromNode)) {
+        for (const toComponentId of componentsForNode(toNode)) {
+          if (fromComponentId === toComponentId) continue;
+          const fromBoundaries = componentBoundaryIds.get(fromComponentId);
+          const toBoundaries = componentBoundaryIds.get(toComponentId);
+          if (!fromBoundaries?.size || !toBoundaries?.size) continue;
+          if ([...fromBoundaries].some((id) => toBoundaries.has(id))) continue; // 같은 boundary면 대상이 아니다
+
+          const pairKey = `${fromComponentId}::${toComponentId}`;
+          const reverseKey = `${toComponentId}::${fromComponentId}`;
+          if (connectedComponentPairs.has(pairKey) || connectedComponentPairs.has(reverseKey)) continue;
+          if (reportedPairs.has(pairKey) || reportedPairs.has(reverseKey)) continue;
+          reportedPairs.add(pairKey);
+          diagnostics.push(
+            diagnostic(
+              "bundle/cross-boundary-edge-not-promoted",
+              "warning",
+              `workflow.edge "${edge.id}"가 서로 다른 boundary의 component(${fromComponentId} → ${toComponentId})를 ` +
+                "잇지만, 대응하는 architecture.connection이 없습니다.",
+              {
+                subject: { edgeId: edge.id, from: fromComponentId, to: toComponentId },
+                supportedFixes: ["두 component 사이의 architecture.connection을 systemLinkRefs와 함께 추가한다"],
+              },
+            ),
+          );
+        }
       }
     }
   }
