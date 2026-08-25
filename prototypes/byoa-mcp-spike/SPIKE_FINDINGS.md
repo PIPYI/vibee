@@ -1834,3 +1834,133 @@ claude (haiku)              19/19
 Drift는 "이 프로젝트가 정한 것 하나만 본다"는 원칙 자체가 명시적 결정에 의존하므로,
 코드만 보고 대신 판단하는 fallback이 architecture와 같은 방식으로 성립하는지는 별도로
 봐야 한다.
+
+## 18. 협업자 프로젝트(ontology2) 리뷰 — Claude 기본 tool 프리셋과 provider별 토큰 비용 격차 (2026-08-25)
+
+`docs/product_flow_decisions.md`가 가리키는 시각화 작업은 별도 브랜치(`ontology`/
+`ontology2`, 예전 `prototype/ontology`가 나뉜 것)에서 독립적으로 진행 중이다. 사용자가
+"코드 분석 시, 특히 Claude를 고르면 토큰을 너무 많이 쓴다"는 제보를 받아, `ontology2`를
+`../collab-ontology2/`에 별도 clone(이 저장소 git 이력과 섞지 않음, `.gitignore` 처리)해
+직접 리뷰·실측했다. **이 절은 우리 byoa-mcp-spike 코드가 아니라 그 별도 프로젝트를 다룬다**
+— 다만 발견된 함정이 §14에서 우리가 이미 확인한 것과 같은 종류(내장 도구를 안 끄면 turn이
+의도한 범위를 벗어난다)라 여기 같이 남긴다.
+
+### 원인 — TaskMode 네 개 전부가 read+MCP-only인데 Claude 기본 tool 프리셋이 그대로 열려 있었다
+
+`ontology2`의 `TaskMode`는 `analyze | view | chat | assembly` 네 가지뿐이고, `chat`조차
+실제로는 MCP 채널 검증 전용(`buildVerifyPrompt`: "코드를 고치지 마라. 파일을 쓰지 마라")이라
+넷 다 기능적으로 Bash·Write·Edit·Task(서브에이전트)가 필요 없다. 그런데 Claude adapter의
+`sdk.query()` 호출에는 `tools`/`disallowedTools`/`maxTurns`가 전혀 없어 SDK 기본값
+(`{type:'preset', preset:'claude_code'}`, 즉 Bash·Task 포함 전체 프리셋)이 매 turn 그대로
+켜져 있었다. `canUseTool`은 `WebFetch`/`WebSearch`만 거부하고 `Write`/`Edit`/
+`NotebookEdit`는 경로만 검사할 뿐, **`Bash`와 `Task`는 아예 검사 대상에도 없었다.**
+
+Codex는 이 배수 효과가 구조적으로 없다 — app-server 프로토콜 자체에 서브에이전트 개념이
+없다(`sandboxPolicy: workspaceWrite`는 쓰기만 제한하고 읽기 shell은 그대로 둔다). 즉
+"Claude에서만 유독 심하다"는 제보와 정확히 들어맞는 비대칭이었다.
+
+**고친 것 (1줄)**: `apps/bridge/src/agents/claude/adapter.ts`의 `query()` options에
+`tools: ["Read", "Grep", "Glob"]`을 추가했다. `canUseTool`의 Write/Edit/WebFetch/
+WebSearch 분기는 이제 도달 불가능한 코드지만, "필수 부분만 최소로" 원칙에 따라 지우지
+않고 남겼다. `maxTurns` 캡은 일부러 넣지 않았다 — 협업자 자신의
+`docs/ontology/structure/v4/README.md`에 "정확한 토큰 상한은 fixture baseline을 측정한
+뒤 확정한다, 임의 숫자를 먼저 두지 않는다"는 원칙이 이미 있어서 그것과 충돌하지 않게
+했다.
+
+### 실측 — 같은 fixture, 같은 turn을 두 provider로 각각 처음부터 실행
+
+`npm run create-fixture`가 만드는 실제 fixture(팔로우 기능, Next.js route 2개 + Prisma
+모델 3개, entity 21개·link 28개)를 대상으로, model/effort는 둘 다 지정하지 않고(provider
+기본값) `/api/analyze`를 처음부터(첫 분석, `mode: full`) 실행했다.
+
+```
+                 semantic stage   assembly stage   합계          소요시간
+Claude(수정 후)   12,240 tokens    52,728 tokens    64,968 tokens   10분 32초
+Codex             432,460 tokens   646,915 tokens  1,079,375 tokens  7분 16초
+```
+
+Claude는 `exploredFiles`가 정확히 8개 — fixture의 실제 소스 파일과 1:1로 일치했고
+`mcpCalls`에 Bash/Task 흔적이 전혀 없었다. **before(수정 전) 수치는 재지 않았다** —
+사용자가 "지금 결과로 충분하다"고 판단해 생략했다.
+
+**Codex 쪽에서 새로 발견한 것 — 무관한 전역 파일을 읽었다.** Codex의 `exploredFiles`에
+`~/.codex/skills/karpathy-guidelines/SKILL.md`(2,459 bytes, fixture와 무관한 사용자의
+전역 Codex skill)가 찍혔다. `ontology2`의 Codex adapter는 우리 project와 달리
+`project_doc_max_bytes` 같은 문서 억제 설정을 전혀 넘기지 않는다 — 다만 이 파일은
+AGENTS.md가 아니라 **Codex CLI 자체의 전역 skill 자동 로딩** 경로(`~/.codex/skills/`)라,
+우리 project_doc 억제와는 다른 메커니즘이다. 크기 자체는 작아 토큰 격차의 주된 원인은
+아니지만, "분석 turn이 프로젝트 밖 파일을 읽지 않는다"는 전제가 Codex에서는 깨져 있다는
+뜻이다. **우리 자신의 Codex adapter가 이 전역 skill 자동 로딩을 억제하는지는 이번에
+확인하지 못했다 — 별도로 봐야 한다.**
+
+**토큰 격차(16.6배)의 진짜 원인으로 보이는 것**은 이 파일이 아니라 caching이다. Claude는
+두 stage 모두 `inputTokens`가 12·16으로 사실상 0에 수렴하고 `cacheReadTokens`가
+141,154·393,838로 커서, tool-loop 내내 반복되는 context가 거의 전부 prompt cache로
+재사용됐다. Codex는 같은 자리의 `inputTokens`가 423,183·634,733으로 그 자체가 이미
+Claude의 전체 토큰 합계보다 훨씬 크다 — tool-loop을 도는 동안 매 왕복마다 누적 context를
+**캐시 없이 새로 지불**한 것에 가깝다. 두 turn 모두 provider 기본 모델/effort를 그대로
+썼으므로, Codex의 기본 모델이 reasoning trace를 매 호출 context로 다시 실어 나르는
+무거운 구성일 가능성이 높다 — 다만 이건 관찰이지 실측으로 원인을 분리하진 못했다
+(모델을 고정해 재실행해야 확인된다).
+
+**결론**: 애초 제보("Claude가 유독 많이 쓴다")의 원인이었던 Bash/Task 노출은 실재했고
+고쳤다. 그런데 그 gap을 닫고 나니, **이 fixture 기준으로는 오히려 Codex가 기본 설정에서
+16배 더 많은 토큰을 쓴다** — "Claude가 원래 더 비싸다"는 전제로 이 결과를 일반화하면
+안 된다. Codex 쪽은 코드를 고치지 않았다 — model/effort를 고정하지 않고는 무엇이
+진짜 원인인지(모델 기본값 vs 프로토콜 자체의 caching 특성) 분리할 수 없어서다.
+
+### 재확인 — model/effort를 같은 급으로 고정해도 같은 배수가 나온다 (같은 날, 이어진 대화)
+
+"provider 기본값" confound를 없애려고 fixture를 다시 새로 만들어 두 provider를 같은
+effort로 재실행했다: Claude `model: "sonnet"`(Sonnet 5) + `effort: "medium"`, Codex
+`model: "gpt-5.6-terra"`("everyday work"용 중간 등급, 이전 실측이 쓴 기본 모델
+`gpt-5.6-sol`이 아니다) + `effort: "medium"`.
+
+```
+                 semantic stage   assembly stage   합계          소요시간
+Claude(sonnet/medium)   34,263    23,874    58,137 tokens    9분 19초
+Codex(terra/medium)    372,578   327,568   700,146 tokens    5분 51초
+```
+
+**격차가 약 12배로, 앞의 16.6배와 같은 자릿수다.** 이번 Codex 실행에서는
+`exploredFiles`가 비어 있어 무관한 전역 skill 파일을 다시 읽지는 않았다 — 그 발견은
+이 재현에서는 일회성이었던 것으로 보인다(모델이 달라졌으니 직접 비교는 아니다).
+`inputTokens`(캐시 아닌 신규분)는 Claude가 20·8로 여전히 0에 수렴하는데 Codex는
+363,843·318,912로 여전히 거대하다 — **모델·effort 등급을 맞춰도 caching 비대칭은 그대로
+남는다.** 즉 앞서 "Codex 기본 모델이 무거워서"라는 가설은 격차의 전부를 설명하지
+못한다 — 등급을 맞춘 뒤에도 자릿수가 같다는 것은, Codex 쪽 app-server 프로토콜이 MCP
+tool-loop 왕복마다 누적 context를 캐시 없이 재전송하는 특성 자체가 원인일 가능성을
+더 지지한다. 이번에도 코드는 고치지 않았다 — 이건 어댑터의 버그가 아니라 provider
+자체의 caching 동작 차이로 보이고, 하나의 fixture·하나의 재실행으로 결론 내릴 문제는
+아니다.
+
+### 핵심 파일 코드리뷰 (같은 날, `apps/bridge/src/index.ts` · 두 adapter · validator)
+
+사용자가 "전체 코드리뷰는 시간·토큰이 많이 들면 생략하자, 핵심 부분만"이라고 범위를
+좁혀서, `index.ts`(HTTP API·`/api/analyze` 파이프라인)·두 provider adapter·
+`analysis-bundle-validator.ts`만 하위 모델(haiku) 서브에이전트로 리뷰했다. 보고된 것 중
+직접 코드를 다시 읽어 검증한 결과:
+
+- **오탐(false positive)으로 확인**: `/internal/evidence`의 `filePath` 쿼리가 검증 없이
+  쓰인다는 지적 — `queryEvidence`(`memory-api.ts:132`)를 직접 읽어보니 이미 인덱싱된
+  메모리상의 `Evidence[]`를 `item.filePath === query.filePath`로 **정확히 일치하는 것만
+  거르는 필터**일 뿐, 그 값으로 파일시스템을 다시 읽지 않는다. 경로 순회 가능성 없음.
+- **실재하지만 이미 죽은 코드로 확인**: Claude adapter `canUseTool`의 Write/Edit/
+  NotebookEdit 분기(`adapter.ts:188`)가 `startsWith()`로만 경로를 비교해 `/project`와
+  `/project-evil`을 구분 못 하는 것은 사실이지만, §18 앞부분에서 이미 `tools:
+  ["Read","Grep","Glob"]`로 그 tool들 자체를 모델 컨텍스트에서 없앴으므로 **지금은
+  도달 불가능하다.** 첫 code-review(diff 전용) 서브에이전트가 지적한 dead code와 같은
+  자리다 — tool을 다시 넓힐 일이 있으면 그때 같이 고쳐야 한다.
+- **실재하는 저위험 버그로 확인**: Codex adapter의 `handleServerRequest`
+  (`codex/adapter.ts:291-310`)가 MCP elicitation 승인 이벤트를 `turnId`/`threadId`로
+  찾지 않고 `[...emitters.keys()][0]`(첫 번째 task)에 무조건 보낸다. 다만 이 앱은
+  `state.getActiveTaskId()`로 동시 task 자체를 막아 두므로(§`/api/analyze` 가드),
+  `emitters`가 실제로 2개 이상일 상황이 정상 흐름에는 없다 — 승인/거부 판단
+  자체(`accepted = params.serverName === MCP_SERVER_NAME`)는 task와 무관하게 항상
+  맞게 동작하고, 틀릴 수 있는 건 어느 task의 UI 로그에 그 이벤트가 찍히느냐뿐이다.
+  `/api/tasks/:taskId/stop`(`index.ts:1245`)이 `adapter.stopTask()`를 try/catch 없이
+  부르는 것도 확인했다 — adapter 쪽 RPC가 실패하면 stop 요청이 `{ok:true}`를 돌려주기
+  전에 처리되지 않은 rejection으로 샐 수 있다. 둘 다 저위험이라 고치지 않았다.
+- **미확인**: `propose_evidence`로 검증받은 evidence id가 이후 실제 커밋 전에 근거가
+  사라져도 재검증하지 않을 수 있다는 지적은 코드를 따로 추적하지 못했다 — TOCTOU 성격의
+  주장이라 근거가 있는지는 별도로 봐야 한다.
