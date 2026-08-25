@@ -87,6 +87,7 @@ import type { AgentAdapter, TaskOutcome } from "./agents/types.js";
 import { completeSemanticTurnAfterResponse } from "./stage-completion.js";
 import type { BundlePatchOperation } from "./bundle-patch.js";
 import {
+  assemblyContext,
   conceptContext,
   impactContext,
   isUnavailable,
@@ -122,6 +123,7 @@ const RUNTIME_CAPABILITIES = [
   "validation-retry-events",
   "analysis-bundle-schema-contract",
   "bundle-draft-patch",
+  "assembly-context-packet",
   "impact-context-batch",
   "python-evidence-v1",
   "provider-model-discovery",
@@ -1527,6 +1529,39 @@ app.get("/internal/memory", requireToken, (req: Request, res: Response) => {
     return;
   }
   res.json(req.query["detail"] === "full" ? loaded : memoryDigest(loaded));
+});
+
+const ASSEMBLY_CONTEXT_DELIVERED_KEY = "assembly-context:delivered";
+
+app.get("/internal/assembly-context", requireToken, (_req: Request, res: Response) => {
+  recordArrival("get_assembly_context");
+  const activeTaskId = state.getActiveTaskId();
+  const activeTask = activeTaskId ? state.getTask(activeTaskId) : undefined;
+  if (activeTask && activeTask.mode !== "assembly") {
+    recordOutcome(true);
+    res.json({
+      error: "assembly_context_unavailable",
+      next_step: "full assembly task에서 첫 자료 조회로 한 번만 사용하세요.",
+    });
+    return;
+  }
+  if (activeTaskId && state.getRetrievalCache(activeTaskId, ASSEMBLY_CONTEXT_DELIVERED_KEY) === true) {
+    recordOutcome(true);
+    res.json({
+      error: "assembly_context_already_delivered",
+      next_step: "이미 받은 packet을 사용하고, 특정 누락 또는 validator diagnostics만 개별 fallback 조회하세요.",
+    });
+    return;
+  }
+  const loaded = loadState(state.getProjectPath());
+  recordOutcome(isUnavailable(loaded));
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const payload = assemblyContext(loaded);
+  if (activeTaskId) state.setRetrievalCache(activeTaskId, ASSEMBLY_CONTEXT_DELIVERED_KEY, true);
+  res.json(payload);
 });
 
 app.post("/internal/evidence", requireToken, (req: Request, res: Response) => {

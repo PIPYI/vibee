@@ -125,6 +125,7 @@ test("MCP server 가 §48 의 tool 들을 노출한다", async () => {
   const tools = await withMcpClient((client) => client.listTools());
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    "get_assembly_context",
     "get_concept_context",
     "get_evidence",
     "get_impact_context",
@@ -141,6 +142,24 @@ test("MCP server 가 §48 의 tool 들을 노출한다", async () => {
     "submit_semantic_patch",
     "submit_view_ir",
   ]);
+});
+
+test("get_assembly_context는 compact text 한 번으로 bridge에서 전체 후보 packet을 받는다", async () => {
+  const before = await (await fetch(`${BASE_URL}/api/mcp-arrivals`)).json();
+  const result = await withMcpClient((client) =>
+    client.callTool({ name: "get_assembly_context", arguments: {} }),
+  );
+  const text = result.content?.[0]?.text ?? "";
+  const payload = JSON.parse(text);
+
+  assert.equal(result.structuredContent, undefined, "큰 packet을 structuredContent로 중복 전송하면 안 된다");
+  assert.equal(text, JSON.stringify(payload), "Assembly packet은 pretty print 없이 전송해야 한다");
+  assert.ok(payload.semantic?.counts);
+  assert.ok(payload.systemFacts?.counts);
+
+  const after = await (await fetch(`${BASE_URL}/api/mcp-arrivals`)).json();
+  const added = after.arrivals.slice(before.arrivals.length);
+  assert.deepEqual(added.map((item) => item.tool), ["get_assembly_context"]);
 });
 
 test("acceptance 3 (절반) — get_evidence 호출이 bridge 에 실제로 도달한다", async () => {

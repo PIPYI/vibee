@@ -209,6 +209,11 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   assert.match(prompt, /userMap\.journeys/);
   assert.match(prompt, /Canonical Scenario마다 하나씩/);
   assert.match(prompt, /workflow\.mainPath의 모든 인접 node 쌍/);
+  assert.match(prompt, /첫 자료 조회로 get_assembly_context를 정확히 1회 호출한다/);
+  assert.match(prompt, /packet 누락 또는 validator diagnostics/);
+  assert.match(prompt, /개별 read tool[\s\S]*fallback/);
+  assert.doesNotMatch(prompt, /1\. get_project_semantic_memory/);
+  assert.doesNotMatch(prompt, /2\. get_system_facts로 검증된/);
   assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
 });
 

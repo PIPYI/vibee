@@ -166,6 +166,21 @@ test("활성 task가 있어도 mode가 assembly가 아니면 no_active_transacti
   }
 });
 
+test("get_assembly_context는 active assembly task마다 큰 packet을 한 번만 전달한다", async () => {
+  const seeded = await seededProject();
+  const taskId = openTask(seeded, "assembly");
+  try {
+    const first = await get("/internal/assembly-context");
+    assert.ok(first.body.semantic?.counts, JSON.stringify(first.body));
+
+    const second = await get("/internal/assembly-context");
+    assert.equal(second.body.error, "assembly_context_already_delivered");
+    assert.match(second.body.next_step, /이미 받은 packet.*validator diagnostics.*fallback/);
+  } finally {
+    endTask(taskId);
+  }
+});
+
 test("submit_analysis_bundle — 유효한 bundle은 커밋되고 GET /api/analysis-bundle이 재요청 없이 즉시 읽는다 (§5.4)", async () => {
   const seeded = await seededProject();
   const taskId = openTask(seeded, "assembly");

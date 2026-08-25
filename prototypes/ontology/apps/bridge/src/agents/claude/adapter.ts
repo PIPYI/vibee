@@ -26,6 +26,7 @@ import { MCP_SERVER_NAME } from "@onto/protocol";
 import { nodeExecutable, probeAgentVersion } from "../../platform.js";
 import { describeSession } from "../../prompt.js";
 import type { AgentAdapter, StartTaskInput, TaskOutcome } from "../types.js";
+import { normalizeStageUsage } from "../usage.js";
 
 /**
  * SDK 는 **선택적 런타임 의존성**이다.
@@ -279,20 +280,17 @@ export class ClaudeAdapter implements AgentAdapter {
     if (type === "result") {
       const usage = message["usage"] as Record<string, unknown> | undefined;
       if (usage) {
-        const inputTokens = Number(usage["input_tokens"] ?? 0);
-        const outputTokens = Number(usage["output_tokens"] ?? 0);
-        const cacheReadTokens = usage["cache_read_input_tokens"];
-        const cacheWriteTokens = usage["cache_creation_input_tokens"];
         emit({
           type: "agent.usage",
           taskId: input.taskId,
           stage: input.mode === "analyze" ? "semantic" : input.mode,
           ...(message["session_id"] ? { turnId: String(message["session_id"]) } : {}),
-          inputTokens,
-          outputTokens,
-          ...(typeof cacheReadTokens === "number" ? { cacheReadTokens } : {}),
-          ...(typeof cacheWriteTokens === "number" ? { cacheWriteTokens } : {}),
-          totalTokens: inputTokens + outputTokens,
+          ...normalizeStageUsage({
+            inputTokens: usage["input_tokens"] as number | undefined,
+            outputTokens: usage["output_tokens"] as number | undefined,
+            cacheReadTokens: usage["cache_read_input_tokens"] as number | undefined,
+            cacheWriteTokens: usage["cache_creation_input_tokens"] as number | undefined,
+          }, { inputIncludesCacheRead: false }),
           ...(input.model ? { model: input.model } : {}),
         });
       }

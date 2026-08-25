@@ -95,6 +95,11 @@ function reply(payload: unknown): {
   };
 }
 
+/** 큰 Assembly packet은 pretty print와 structuredContent 중복 없이 한 번만 전송한다. */
+function compactReply(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+}
+
 function query(params: Record<string, string | number | boolean | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -118,6 +123,7 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
 무엇을 물어보면 어느 tool이 답하는가:
 
   · 이 프로젝트에 무엇이 있는가 (개요)           -> get_project_semantic_memory
+  · full assembly의 전체 참조 후보를 처음 받을 때  -> get_assembly_context (첫 조회 정확히 1회)
   · 이 개념은 무엇이고 어디에 근거하는가          -> get_concept_context
   · 어떤 주장들이 있는가                         -> search_claims
   · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence
@@ -140,6 +146,9 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
    Core가 검증한 뒤 id를 발급하며, 발급받은 id에만 grounding할 수 있다.
 3. 사용자에게 보이는 label은 파일명·함수명이 아니라 프로젝트의 도메인 용어로 쓴다.
    기술 세부는 Trace View에서만 노출한다.
+4. full assembly는 get_assembly_context를 첫 자료 조회로 정확히 1회 호출한다. 개별 semantic,
+   system fact, impact, scenario, evidence 조회는 packet 누락 또는 validator diagnostics를
+   확인할 때만 fallback으로 사용한다.
 
 tool이 error: "memory_unavailable" 을 돌려주면 아직 분석하지 않은 프로젝트다.
 next_step 필드를 사용자에게 그대로 전달하라.`;
@@ -166,6 +175,19 @@ server.registerTool(
     },
   },
   async ({ detail }) => reply(await callBridge(`/internal/memory${query({ detail })}`)),
+);
+
+server.registerTool(
+  "get_assembly_context",
+  {
+    title: "Full Assembly compact context",
+    description:
+      "full assembly의 첫 자료 조회에서 정확히 1회 호출한다. Concept·Claim·CanonicalScenario와 " +
+      "현재 사용 가능한 System Entity/Link 참조 후보 전체를 compact packet으로 돌려준다. " +
+      "개별 read tool은 packet 누락 또는 validator diagnostics를 확인할 때만 fallback으로 쓴다.",
+    inputSchema: {},
+  },
+  async () => compactReply(await callBridge("/internal/assembly-context")),
 );
 
 server.registerTool(

@@ -58,6 +58,7 @@ export type AgentId = "codex" | "claude";
 export type TaskMode = "analyze" | "view" | "chat" | "assembly";
 
 export type McpToolName =
+  | "get_assembly_context"
   | "get_project_semantic_memory"
   | "get_concept_context"
   | "search_claims"
@@ -113,8 +114,9 @@ export type StageSessionRecord = {
 };
 
 /**
- * 한 provider turn의 사용량. provider가 보고하지 않은 필드는 생략한다. 0으로 채우면
- * "사용하지 않음"과 "알 수 없음"을 구분할 수 없기 때문이다.
+ * 한 provider turn의 정규화된 사용량. `inputTokens`는 cache read를 제외한 입력이며,
+ * `totalTokens`는 input/output/cache read/cache write의 합이다. provider가 보고하지 않은
+ * 필드는 생략한다. 0으로 채우면 "사용하지 않음"과 "알 수 없음"을 구분할 수 없기 때문이다.
  */
 export type StageUsage = {
   stage: AnalysisStage;
@@ -196,7 +198,7 @@ export type TaskState = {
   mcpCalls: McpCallRecord[];
   /** native 도구(shell/Read)로 직접 읽은 파일 경로 (중복 없음). §7.3 index-only arm이 "탐색했는가"를 여기서 잰다 */
   exploredFiles: string[];
-  /** 호환용 task 합계. StageUsage 중 provider가 보고한 total만 합산한다. */
+  /** 호환용 task 합계. 정규화된 StageUsage total을 합산한다. */
   tokenUsage?: number;
   /** V3: Semantic/Assembly/View turn을 덮어쓰지 않고 별도로 보존한다. */
   stageUsages?: StageUsage[];

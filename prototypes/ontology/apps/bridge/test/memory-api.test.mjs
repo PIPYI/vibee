@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { impactContext } from "../dist/memory-api.js";
+import { assemblyContext, impactContext } from "../dist/memory-api.js";
 
 function symbolEntity(id, name) {
   return {
@@ -151,4 +151,104 @@ test("존재하지 않는 symbol을 가리키면 found:false다 (아무것도 �
 test("응답에 authored reachability임을 밝히는 note가 있다 — impact/인과를 주장하지 않는다", () => {
   const result = impactContext(stateOf(), { anchor: "src/x.ts#a", direction: "downstream" });
   assert.match(result.note, /authored reachability/);
+});
+
+test("assemblyContext는 참조 후보를 보존하고 lifecycle 중복 필드를 제거한다", () => {
+  const base = stateOf();
+  const result = assemblyContext({
+    ...base,
+    generation: 7,
+    project: {
+      ...base.project,
+      analysisVersion: 5,
+      semanticVersion: 4,
+      semanticReconciledAnalysisVersion: 5,
+    },
+    memory: {
+      semanticVersion: 4,
+      concepts: [
+        {
+          id: "concept-1", name: "승인", description: "승인 처리", aliases: ["허가"],
+          evidenceRefs: ["ev-concept"], confidence: 0.9, status: "active",
+          createdAtVersion: 1, updatedAtVersion: 4,
+        },
+        {
+          id: "concept-old", name: "이전 승인", evidenceRefs: ["ev-old"], status: "deprecated",
+          createdAtVersion: 1, updatedAtVersion: 2,
+        },
+      ],
+      claims: [{
+        id: "claim-1", subjectConceptId: "concept-1", predicate: "저장한다",
+        object: { conceptId: "concept-old" }, evidenceRefs: ["ev-claim"], status: "active",
+        createdAtVersion: 2, updatedAtVersion: 4,
+      }],
+      canonicalScenarios: [{
+        id: "scenario-1", name: "승인 완료", type: "user", goal: "승인을 저장한다",
+        anchorConceptIds: ["concept-1"], status: "active", createdAtVersion: 2, updatedAtVersion: 4,
+      }],
+    },
+    grounding: {
+      conceptGroundings: [{ conceptId: "concept-1", evidenceRefs: ["ev-concept-grounding"], confidence: 0.9 }],
+      claimGroundings: [{ claimId: "claim-1", evidenceRefs: ["ev-claim-grounding"], confidence: 0.8 }],
+    },
+    systemFacts: {
+      schemaVersion: 4,
+      analysisVersion: 5,
+      entities: [{
+        id: "symbol:src/a.ts#save", ref: { kind: "symbol", symbolId: "src/a.ts#save" }, kind: "symbol",
+        origin: "engine", certainty: "confirmed", evidenceRefs: ["ev-entity"],
+        dependsOnEvidenceRefs: ["ev-entity", "ev-dependency"], status: "valid",
+        firstSeenVersion: 1, lastValidatedVersion: 5,
+      }],
+      links: [
+        {
+          id: "link-valid", from: { kind: "symbol", symbolId: "src/a.ts#save" },
+          to: { kind: "resource", namespace: "storage", key: "approvals" }, kind: "writes",
+          mechanism: "writeFile", origin: "engine", certainty: "confirmed", evidenceRefs: ["ev-link"],
+          dependsOnEvidenceRefs: ["ev-link", "ev-dependency"], status: "relocated",
+          firstSeenVersion: 1, lastValidatedVersion: 5,
+        },
+        {
+          id: "link-stale", from: { kind: "symbol", symbolId: "src/a.ts#save" },
+          to: { kind: "resource", namespace: "storage", key: "old" }, kind: "writes",
+          origin: "engine", certainty: "confirmed", evidenceRefs: ["ev-stale"],
+          dependsOnEvidenceRefs: ["ev-stale"], status: "stale",
+          firstSeenVersion: 1, lastValidatedVersion: 4,
+        },
+        {
+          id: "link-missing", from: { kind: "symbol", symbolId: "src/a.ts#save" },
+          to: { kind: "resource", namespace: "storage", key: "gone" }, kind: "writes",
+          origin: "engine", certainty: "confirmed", evidenceRefs: ["ev-missing"],
+          dependsOnEvidenceRefs: ["ev-missing"], status: "missing",
+          firstSeenVersion: 1, lastValidatedVersion: 4,
+        },
+      ],
+      diagnostics: [{ code: "not-for-assembly", severity: "warning", message: "omit" }],
+    },
+  });
+
+  assert.equal(result.generation, 7);
+  assert.deepEqual(result.semantic.counts.concepts, { total: 2, eligible: 1 });
+  assert.deepEqual(result.semantic.concepts.map((item) => item.id), ["concept-1", "concept-old"]);
+  assert.deepEqual(result.semantic.concepts[0].aliases, ["허가"]);
+  assert.deepEqual(result.semantic.concepts[0].evidenceRefs, ["ev-concept-grounding"]);
+  assert.equal(result.semantic.concepts[0].groundingConfidence, 0.9);
+  assert.deepEqual(result.semantic.claims[0].object, { conceptId: "concept-old" });
+  assert.deepEqual(result.semantic.claims[0].evidenceRefs, ["ev-claim-grounding"]);
+  assert.equal(result.semantic.claims[0].groundingConfidence, 0.8);
+  assert.deepEqual(result.semantic.canonicalScenarios[0].anchorConceptIds, ["concept-1"]);
+  assert.deepEqual(result.systemFacts.counts.links, { total: 3, eligible: 1 });
+  assert.deepEqual(result.systemFacts.entities[0], {
+    id: "symbol:src/a.ts#save", kind: "symbol", certainty: "confirmed",
+    evidenceRefs: ["ev-entity"], status: "valid",
+  });
+  assert.deepEqual(result.systemFacts.links, [{
+    id: "link-valid", from: "symbol:src/a.ts#save", to: "resource:storage:approvals",
+    kind: "writes", mechanism: "writeFile", certainty: "confirmed",
+    evidenceRefs: ["ev-link"], status: "relocated",
+  }]);
+
+  const serialized = JSON.stringify(result);
+  assert.doesNotMatch(serialized, /createdAtVersion|updatedAtVersion|firstSeenVersion|lastValidatedVersion/);
+  assert.doesNotMatch(serialized, /dependsOnEvidenceRefs|diagnostics|"origin"|"ref"|"endpoint"/);
 });

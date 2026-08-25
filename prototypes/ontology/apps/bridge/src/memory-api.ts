@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { SemanticStore, conceptCandidates, describeCandidate, projectReachability, type LoadedState } from "@onto/core";
-import type { Evidence, SemanticMemory, ViewAnchor } from "@onto/protocol";
+import { entityKey, type Evidence, type SemanticMemory, type ViewAnchor } from "@onto/protocol";
 
 export type Unavailable = { error: "memory_unavailable"; reason: string; next_step: string };
 
@@ -91,6 +91,116 @@ export function memoryDigest(state: LoadedState): Record<string, unknown> {
       name: scenario.name,
       type: scenario.type,
     })),
+  };
+}
+
+/**
+ * Full Assembly가 첫 조회 한 번으로 참조 후보 전체를 받는 compact packet.
+ *
+ * 저장 형식의 version/lifecycle metadata와 중복 grounding object는 제외하되, Assembly가
+ * 실제로 인용하는 ID·관계·근거·상태는 자르지 않는다. System Fact는 validator가 지도에
+ * 허용하는 현재 상태(valid|relocated)만 싣는다.
+ */
+export function assemblyContext(state: LoadedState): Record<string, unknown> {
+  const usableFactStatus = new Set(["valid", "relocated"]);
+  const conceptGrounding = new Map(
+    state.grounding.conceptGroundings.map((item) => [item.conceptId, item] as const),
+  );
+  const claimGrounding = new Map(
+    state.grounding.claimGroundings.map((item) => [item.claimId, item] as const),
+  );
+  const concepts = state.memory.concepts.map((concept) => {
+    const grounding = conceptGrounding.get(concept.id);
+    return {
+      id: concept.id,
+      name: concept.name,
+      ...(concept.description ? { description: concept.description } : {}),
+      ...(concept.aliases && concept.aliases.length > 0 ? { aliases: concept.aliases } : {}),
+      evidenceRefs: grounding?.evidenceRefs ?? concept.evidenceRefs,
+      ...(grounding?.confidence !== undefined ? { groundingConfidence: grounding.confidence } : {}),
+      status: concept.status,
+    };
+  });
+  const claims = state.memory.claims.map((claim) => {
+    const grounding = claimGrounding.get(claim.id);
+    return {
+      id: claim.id,
+      subjectConceptId: claim.subjectConceptId,
+      predicate: claim.predicate,
+      object: claim.object,
+      ...(claim.description ? { description: claim.description } : {}),
+      evidenceRefs: grounding?.evidenceRefs ?? claim.evidenceRefs,
+      ...(grounding?.confidence !== undefined ? { groundingConfidence: grounding.confidence } : {}),
+      status: claim.status,
+    };
+  });
+  const canonicalScenarios = state.memory.canonicalScenarios.map((scenario) => ({
+    id: scenario.id,
+    name: scenario.name,
+    type: scenario.type,
+    ...(scenario.goal ? { goal: scenario.goal } : {}),
+    anchorConceptIds: scenario.anchorConceptIds,
+    status: scenario.status,
+  }));
+  const entities = state.systemFacts.entities
+    .filter((entity) => usableFactStatus.has(entity.status))
+    .map((entity) => ({
+      id: entity.id,
+      kind: entity.kind,
+      certainty: entity.certainty,
+      evidenceRefs: entity.evidenceRefs,
+      status: entity.status,
+    }));
+  const links = state.systemFacts.links
+    .filter((link) => usableFactStatus.has(link.status))
+    .map((link) => ({
+      id: link.id,
+      from: entityKey(link.from),
+      to: entityKey(link.to),
+      kind: link.kind,
+      ...(link.mechanism ? { mechanism: link.mechanism } : {}),
+      certainty: link.certainty,
+      evidenceRefs: link.evidenceRefs,
+      status: link.status,
+    }));
+
+  return {
+    generation: state.generation,
+    versions: {
+      analysis: state.project.analysisVersion,
+      semantic: state.project.semanticVersion,
+      semanticReconciledAnalysis: state.project.semanticReconciledAnalysisVersion,
+      systemFactsAnalysis: state.systemFacts.analysisVersion,
+    },
+    semantic: {
+      counts: {
+        concepts: {
+          total: concepts.length,
+          eligible: state.memory.concepts.filter((item) => item.status === "active" || item.status === "uncertain").length,
+        },
+        claims: {
+          total: claims.length,
+          eligible: state.memory.claims.filter((item) => item.status === "active" || item.status === "uncertain").length,
+        },
+        canonicalScenarios: {
+          total: canonicalScenarios.length,
+          eligible: state.memory.canonicalScenarios.filter((item) => item.status === "active").length,
+        },
+      },
+      concepts,
+      claims,
+      canonicalScenarios,
+    },
+    systemFacts: {
+      schemaVersion: state.systemFacts.schemaVersion,
+      analysisVersion: state.systemFacts.analysisVersion,
+      counts: {
+        entities: { total: state.systemFacts.entities.length, eligible: entities.length },
+        links: { total: state.systemFacts.links.length, eligible: links.length },
+      },
+      entities,
+      links,
+    },
   };
 }
 

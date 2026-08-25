@@ -22,6 +22,7 @@ import { MCP_SERVER_NAME } from "@onto/protocol";
 import { probeAgentVersion } from "../../platform.js";
 import { describeSession } from "../../prompt.js";
 import type { AgentAdapter, StartTaskInput, TaskOutcome } from "../types.js";
+import { normalizeStageUsage } from "../usage.js";
 import { AppServerClient, type Notification, type ServerRequest } from "./appServerClient.js";
 
 /** "MCP 승인만 우리에게 보내라"를 직접 표현한다. 포괄적 값의 의미 변화에 영향받지 않는다. */
@@ -383,10 +384,11 @@ export class CodexAdapter implements AgentAdapter {
           taskId,
           stage: handle?.mode === "analyze" ? "semantic" : handle?.mode ?? "chat",
           ...(turnId ? { turnId } : {}),
-          ...(typeof total.inputTokens === "number" ? { inputTokens: total.inputTokens } : {}),
-          ...(typeof total.outputTokens === "number" ? { outputTokens: total.outputTokens } : {}),
-          ...(typeof total.cachedInputTokens === "number" ? { cacheReadTokens: total.cachedInputTokens } : {}),
-          totalTokens: total.totalTokens,
+          ...normalizeStageUsage({
+            inputTokens: total.inputTokens,
+            outputTokens: total.outputTokens,
+            cacheReadTokens: total.cachedInputTokens,
+          }, { inputIncludesCacheRead: true }),
           ...(handle?.model ? { model: handle.model } : {}),
         });
       }
