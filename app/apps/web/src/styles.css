@@ -1,0 +1,252 @@
+:root {
+  color-scheme: light;
+  --rail-width: 80px;
+  --panel-width: 340px;
+  --topbar-height: 64px;
+  --border: #e2e2e7;
+  --bg-rail: #16171d;
+  --bg-panel: #fafafa;
+  --bg-main: #ffffff;
+  --accent: #2563eb;
+  --text: #1a1a1f;
+  --text-muted: #6b7280;
+  --danger: #dc2626;
+  --success: #16a34a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Pretendard, sans-serif;
+  color: var(--text);
+}
+
+#root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  grid-template-rows: var(--topbar-height) 1fr;
+  height: 100%;
+}
+
+.rail {
+  grid-row: 1 / span 2;
+  background: var(--bg-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+}
+
+.rail-item {
+  width: 52px;
+  height: 52px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.rail-item .icon {
+  font-size: 18px;
+}
+
+.rail-item.active {
+  background: rgba(37, 99, 235, 0.25);
+  color: #ffffff;
+}
+
+.rail-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.topbar {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--bg-main);
+}
+
+.breadcrumb {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.status-badges {
+  display: flex;
+  gap: 8px;
+}
+
+.badge {
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot.error {
+  background: var(--danger);
+}
+
+.dot.running {
+  background: var(--accent);
+}
+
+.dot.completed {
+  background: var(--success);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: var(--panel-width) 1fr;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.main {
+  background: var(--bg-main);
+  padding: 24px 32px;
+  overflow-y: auto;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input[type="text"],
+select,
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.question-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 16px;
+  background: white;
+}
+
+.question-card .why {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 4px 0 8px;
+}
+
+.exchange-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+
+.exchange-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.exchange-list .q {
+  color: var(--text-muted);
+}
+
+.error-banner {
+  background: #fef2f2;
+  color: var(--danger);
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.gap-list {
+  color: #92400e;
+  font-size: 13px;
+}
+
+.narrative {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.empty-state {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 40px;
+  text-align: center;
+}
