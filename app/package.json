@@ -1,0 +1,15 @@
+{
+  "name": "vibe-coding-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "build": "npm run build -w @vci/protocol && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge && npm run build -w @vci/web",
+    "build:server": "npm run build -w @vci/protocol && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge",
+    "typecheck": "npm run typecheck -w @vci/protocol && npm run typecheck -w @vci/mcp-server && npm run typecheck -w @vci/bridge && npm run typecheck -w @vci/web",
+    "bridge": "npm run start -w @vci/bridge",
+    "web": "npm run dev -w @vci/web"
+  }
+}
