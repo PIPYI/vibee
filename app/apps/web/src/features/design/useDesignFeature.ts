@@ -11,7 +11,7 @@ import {
   subscribeEvents,
   type AgentId,
   type AgentReadiness,
-  type DesignDoc,
+  type AppContext,
   type ModelOption,
   type TaskState,
 } from "../../api.js";
@@ -33,8 +33,17 @@ export function useDesignFeature() {
   const [projectPath, setProjectPath] = useState("");
   const [answer, setAnswer] = useState("");
   const [tasks, setTasks] = useState<TaskState[]>([]);
-  const [design, setDesign] = useState<DesignDoc | null>(null);
-  const [pending, setPending] = useState<{ question: string; why?: string; hints?: string[] } | null>(null);
+  const [contextProjectPath, setContextProjectPath] = useState("");
+  // `/api/state`는 매 poll마다 전체 설계 문서를 보내지 않는다 (appContext.design은
+  // `?design=full`을 줘야만 채워진다) — 그래서 존재 여부·제목은 항상 실려 오는
+  // designDigest로 판단하고, 실제 본문(narrative)은 /api/design/narrative로 따로 받는다.
+  const [design, setDesign] = useState<AppContext["designDigest"]>(null);
+  const [pending, setPending] = useState<{
+    question: string;
+    why?: string;
+    hints?: string[];
+    progress?: { step: number; total: number };
+  } | null>(null);
   const [exchanges, setExchanges] = useState<Array<{ question: string; answer: string }>>([]);
   const [narrative, setNarrative] = useState<string | null>(null);
   const [gaps, setGaps] = useState<string[]>([]);
@@ -45,12 +54,13 @@ export function useDesignFeature() {
   const refreshState = useCallback(async () => {
     const state = await getState();
     setTasks(state.tasks);
-    setDesign(state.appContext.design ?? null);
+    setContextProjectPath(state.appContext.interview.projectPath ?? "");
+    setDesign(state.appContext.designDigest);
     setPending(state.appContext.interview.pending);
     setExchanges(
       state.appContext.interview.exchanges.map((exchange) => ({ question: exchange.question, answer: exchange.answer })),
     );
-    if (state.appContext.design) {
+    if (state.appContext.designDigest) {
       const result = await getNarrative();
       setNarrative(result.markdown);
       setGaps(result.gaps);
@@ -109,6 +119,15 @@ export function useDesignFeature() {
   }, [refreshState]);
 
   const running = tasks.some((task) => task.status === "running" || task.status === "starting");
+
+  // `tasks`는 bridge가 지금까지 실행한 모든 task의 전역 목록이라 다른 프로젝트의 완료 기록도
+  // 섞여 있다. "이 프로젝트 경로의 인터뷰가 시작됐는가"는 그 목록 크기가 아니라
+  // `interview.projectPath`(이 인터뷰 전용 필드)가 입력창의 경로와 일치하고 실제 인터뷰
+  // 흔적(진행 중/대기 질문/대화 기록/설계)이 있는지로 판단해야 한다. `appContext.projectPath`는
+  // Drift/Architecture/Wiki도 액션마다 같이 덮어쓰는 공유 필드라 이 판단에 쓰면 안 된다 —
+  // 다른 기능을 쓰는 사이 값이 바뀌어 여기 있는 대화가 사라진 것처럼 보이게 된다.
+  const started =
+    running || (contextProjectPath !== "" && contextProjectPath === projectPath && (design !== null || pending !== null || exchanges.length > 0));
 
   const onStart = useCallback(async () => {
     setError(null);
@@ -174,6 +193,7 @@ export function useDesignFeature() {
     error,
     busy,
     running,
+    started,
     onStart,
     onSendAnswer,
     onExport,

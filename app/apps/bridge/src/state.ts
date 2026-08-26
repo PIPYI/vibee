@@ -13,6 +13,7 @@ import type {
   PendingQuestion,
   SelectedItem,
   TaskState,
+  DriftVerifyContext,
   ReportDriftInput,
   ReviewContext,
   TranscriptMessage,
@@ -69,9 +70,11 @@ export class BridgeState {
   private pendingQuestion: PendingQuestion | null = null;
   private readonly exchanges: InterviewExchange[] = [];
   private questionSeq = 0;
+  private interviewProjectPath: string | null = null;
 
   private reviewContext: ReviewContext | null = null;
   private driftReport: ReportDriftInput | null = null;
+  private driftVerifyContext: DriftVerifyContext | null = null;
 
   private architectureReport: ArchitectureDebtReport | null = null;
   private architectureContext: ArchitectureContext | null = null;
@@ -95,7 +98,12 @@ export class BridgeState {
   // ---------- 인터뷰 ----------
 
   getInterview(): InterviewState {
-    return { pending: this.pendingQuestion, exchanges: [...this.exchanges] };
+    return { pending: this.pendingQuestion, exchanges: [...this.exchanges], projectPath: this.interviewProjectPath };
+  }
+
+  /** 새 인터뷰를 시작하는 프로젝트 경로를 기록한다. `/api/interview`에서만 호출한다. */
+  setInterviewProject(projectPath: string): void {
+    this.interviewProjectPath = projectPath;
   }
 
   /** agent가 `ask_user`로 던진 질문을 등록한다. 이미 대기 중인 질문은 덮어쓴다. */
@@ -130,6 +138,7 @@ export class BridgeState {
     this.exchanges.length = 0;
     this.questionSeq = 0;
     this.design = null;
+    this.interviewProjectPath = null;
   }
 
   // ---------- 드리프트 리뷰 ----------
@@ -149,6 +158,18 @@ export class BridgeState {
 
   getDriftReport(): ReportDriftInput | null {
     return this.driftReport;
+  }
+
+  /**
+   * finding 하나를 "피드백 받기"로 다시 확인하는 turn이 볼 context. 진행 중인 리뷰 전체
+   * (`reviewContext`)와는 별개다 — 이건 커밋 하나, 기준 하나만 본다.
+   */
+  startDriftVerify(context: DriftVerifyContext): void {
+    this.driftVerifyContext = context;
+  }
+
+  getDriftVerifyContext(): DriftVerifyContext | null {
+    return this.driftVerifyContext;
   }
 
   // ---------- 아키텍처·기술부채 ----------

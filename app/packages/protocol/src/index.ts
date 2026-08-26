@@ -111,6 +111,8 @@ export type DesignEntity = {
   relations: string[];
   states: string[];
   source: DesignSource;
+  /** 이게 무엇을 위한 것인지 한 줄. narrative가 ENTITY를 사람에게 보여줄 때 쓴다. */
+  note?: string;
 };
 
 /**
@@ -209,7 +211,7 @@ export type ReviewCommit = {
 export type ReviewStart =
   /** 마지막으로 리뷰한 커밋 다음부터. */
   | "last-review"
-  /** `.project-intel/design.json`이 들어온 커밋부터 — 설계보다 앞선 커밋은 판정 대상이 아니다. */
+  /** `design.json`이 들어온 커밋부터 — 설계보다 앞선 커밋은 판정 대상이 아니다. */
   | "design"
   /** 설계가 아직 커밋되지 않은 경우의 안전판. */
   | "recent"
@@ -242,7 +244,7 @@ export type DriftFinding = {
    * (§3.3 표의 "해소 프롬프트" 행, LLM 없음).
    *
    * 판단과 실행 둘 다 이 프롬프트를 받는 **사용자의 옆 agent**가 한다 — 코드가 잘못됐으면
-   * 코드를, 결정이 낡았으면 `.project-intel/design.json`의 그 항목만 고친다. 우리 앱은
+   * 코드를, 결정이 낡았으면 `design.json`의 그 항목만 고친다. 우리 앱은
    * 어느 쪽이 맞는지 정하지 않는다.
    */
   resolutionPrompt?: string;
@@ -257,6 +259,53 @@ export type ReportDriftInput = {
   findings: DriftFinding[];
   /** 무엇을 근거로 그렇게 판단했는지 한 문단. */
   summary: string;
+};
+
+/**
+ * finding 하나를 고친 뒤 "됐는지" 다시 확인하는 요청. **이 커밋 하나만 본다** — 지난
+ * 리뷰 이후 전체를 다시 훑는 것이 아니라, 옆에 띄운 agent가 이 finding을 고치려고 막
+ * 만든 커밋 하나가 실제로 그 기준을 지키는지만 본다.
+ */
+export type VerifyDriftFixRequest = {
+  agent: AgentId;
+  projectPath: string;
+  /** 원래 finding이 걸렸던 커밋. 지금 HEAD가 이것과 같으면 아직 새 커밋이 없다는 뜻이다. */
+  commit: string;
+  criterionId: string;
+  files: string[];
+  /** 원래 finding의 detail. 이번 turn이 "무엇이 고쳐져야 하는지"를 다시 알 필요가 있다. */
+  detail: string;
+  model?: string;
+  effort?: string;
+};
+
+/** 검증 turn이 `get_drift_verify_context`로 받는 전부. */
+export type DriftVerifyContext = {
+  originalCommit: string;
+  criterionId: string;
+  criterionText: string;
+  criterionWhy?: string;
+  originalDetail: string;
+  files: string[];
+  /** 원래 finding 이후 실제로 확인하는 커밋. HEAD다. */
+  checkedCommit: string;
+  checkedCommitSubject: string;
+  diff: string;
+  truncated: boolean;
+  /**
+   * 원래 지목됐던 파일들의 **지금(checkedCommit 시점) 실제 내용**. 이 turn에는 Read
+   * 도구가 없고 diff는 checkedCommit 하나의 변경분만 보여준다 — 그 diff가 이 파일을
+   * 건드리지 않았다면 agent는 "지금도 그대로 있는지"를 diff만으로는 알 수 없다.
+   * 파일이 없으면(지워졌으면) `content`가 null이다.
+   */
+  currentFiles: Array<{ path: string; content: string | null; truncated: boolean }>;
+};
+
+/** agent가 `verify_drift_fix`로 되돌려 보내는 판정. */
+export type VerifyDriftFixInput = {
+  resolved: boolean;
+  /** 한 문장. 한국어로 — 화면에 그대로 뜬다. */
+  detail: string;
 };
 
 // ---------- 아키텍처·기술부채 ----------
@@ -407,6 +456,14 @@ export type WikiPageInput = {
 
 export type WikiPage = WikiPageInput & { createdAt: string };
 
+/**
+ * '내 위키' — 사용자가 후보 중에서 명시적으로 고른 페이지만 모은 것. 프로젝트 디렉터리당
+ * 하나만 존재한다 (`.wiki/wiki.json`). 후보를 눌러 미리보기를 만드는 것과는 별개다 —
+ * 미리보기는 자동으로 캐시(`wiki/<slug>.json`)에만 쌓이고, "내 위키로 추가"를 눌러야 여기 들어간다.
+ */
+export type MyWikiAddRequest = { projectPath: string; term: string };
+export type MyWikiResponse = { pages: WikiPage[] };
+
 /** 위키 turn이 받는 것. 그 말이 실제로 오간 대목과 설계를 함께 준다. */
 export type WikiContext = {
   term: string;
@@ -422,6 +479,8 @@ export type McpToolName =
   | "save_design"
   | "get_review_context"
   | "report_drift"
+  | "get_drift_verify_context"
+  | "verify_drift_fix"
   | "get_architecture_context"
   | "report_architecture"
   | "get_wiki_transcript"
@@ -475,6 +534,13 @@ export type InterviewMessageRequest = {
 export type InterviewState = {
   pending: PendingQuestion | null;
   exchanges: InterviewExchange[];
+  /**
+   * 이 인터뷰가 어느 프로젝트 경로에서 시작됐는지. `AppContext.projectPath`는 Design 말고도
+   * Drift/Architecture/Wiki가 액션마다 같이 덮어쓰는 공유 필드라, "지금 화면에 입력된 경로와
+   * 이 인터뷰가 같은 프로젝트인가"를 그걸로 판단하면 다른 기능을 쓰는 사이 값이 바뀌어
+   * 대화가 있는데도 없는 것처럼 보일 수 있다. 그래서 인터뷰 전용으로 따로 둔다.
+   */
+  projectPath: string | null;
 };
 
 /**
@@ -495,8 +561,26 @@ export type AgentEvent =
   | { type: "mcp.tool.called"; taskId: string; tool: McpToolName | string; source: "agent-stream" | "bridge-endpoint" }
   | { type: "app.result"; taskId: string; result: ShowResultInput }
   | { type: "app.design"; taskId: string; design: DesignDoc }
-  /** 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다. */
-  | { type: "app.drift"; taskId: string; report: ReportDriftInput }
+  /**
+   * 리뷰 turn의 결론. **findings가 비어 있어도 온다** — 그것이 "확인했고 문제 없다"이다.
+   * `openFindings`는 이번 run의 findings와는 별개로, 지금까지 해결 확인이 안 된 전체
+   * 목록이다 — 화면은 `report.findings`가 아니라 이걸 기준으로 그린다.
+   */
+  | { type: "app.drift"; taskId: string; report: ReportDriftInput; openFindings: DriftFinding[] }
+  /** finding 하나를 "피드백 받기"로 다시 확인한 결과. `originalCommit`+`criterionId`로 어느
+   *  finding에 대한 것인지 화면에서 찾아 붙인다. */
+  | {
+      type: "app.drift.verify";
+      taskId: string;
+      originalCommit: string;
+      criterionId: string;
+      checkedCommit: string;
+      result: VerifyDriftFixInput;
+      /** 아직 위반일 때만 있다 — 이번 실패를 반영해 다시 만든 resolutionPrompt. */
+      nextPrompt?: string;
+      /** 해결됐으면 그 finding이 빠진, 갱신된 열린 목록. */
+      openFindings: DriftFinding[];
+    }
   | { type: "app.architecture"; taskId: string; report: ArchitectureDebtReport }
   | { type: "app.wiki"; taskId: string; page: WikiPage }
   /** 위키 후보 키워드가 정해졌다. 사용자가 여기서 하나를 고른다. */
@@ -677,7 +761,7 @@ export type StartReviewRequest = {
 };
 
 export type StartReviewResponse = {
-  taskId: string;
+  taskId: string | null;
   /** 이번에 볼 커밋들. 오래된 것부터. */
   commits: Array<{ sha: string; subject: string }>;
   /** 어디부터 볼지를 무엇이 정했는지. */
@@ -686,6 +770,13 @@ export type StartReviewResponse = {
   skipped: number;
   /** 기준이 하나도 없으면 리뷰가 성립하지 않는다. 그 사실을 조용히 넘기지 않는다. */
   criteriaCount: number;
+  /**
+   * 지금까지 나온 finding 중 아직 "피드백 받기"로 해결 확인이 안 된 것들. 이번 리뷰가
+   * 새로 뭘 찾았는지와 무관하게 항상 이 목록을 기준으로 화면을 그린다 — 그래야 안 고쳐진
+   * 옛날 finding이 새 리뷰를 돌릴 때마다 사라지지 않는다. turn이 끝나기 전에 즉시 알 수
+   * 있도록 이 응답에도 싣는다.
+   */
+  openFindings: DriftFinding[];
 };
 
 /** 기존 코드베이스 전체의 아키텍처와 기술부채 분석을 시작한다. */
@@ -701,7 +792,7 @@ export type StartArchitectureResponse = {
 };
 
 /**
- * `.project-intel/reviews.json`. **어디까지 봤는지**가 남는 곳이다.
+ * `reviews.json`. **어디까지 봤는지**가 남는 곳이다.
  *
  * 이것이 없으면 켤 때마다 처음부터 다시 본다. 커밋은 변하지 않으므로 한 번 본 것을
  * 다시 볼 이유가 없고, 다시 보면 비용만 커밋 수만큼 곱해진다.
@@ -710,6 +801,12 @@ export type ReviewLog = {
   /** 마지막으로 리뷰가 끝난 커밋. 다음 리뷰는 이 다음부터 본다. */
   lastReviewedSha: string | null;
   runs: ReviewRun[];
+  /**
+   * "피드백 받기"가 해결됐다고 확인한 것들. 여기 없는, 과거 run에 남아 있는 finding은
+   * 전부 아직 열려 있다고 본다 — 새 리뷰가 그 finding을 다시 언급하지 않아도(자기 diff만
+   * 보므로 당연히 그렇다) 조용히 화면에서 사라지면 안 되기 때문이다.
+   */
+  resolutions: DriftResolution[];
 };
 
 export type ReviewRun = {
@@ -719,6 +816,15 @@ export type ReviewRun = {
   commits: string[];
   findings: DriftFinding[];
   summary: string;
+};
+
+/** "피드백 받기"가 어떤 finding을 해결됐다고 확인했다는 기록. */
+export type DriftResolution = {
+  originalCommit: string;
+  criterionId: string;
+  resolvedAt: string;
+  /** 그 finding을 해결했다고 확인된 실제 커밋. */
+  checkedCommit: string;
 };
 
 /**

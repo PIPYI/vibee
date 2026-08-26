@@ -1,7 +1,7 @@
 import type { DesignFeatureState } from "./useDesignFeature.js";
 
 export function DesignPanel(state: DesignFeatureState) {
-  const started = state.tasks.length > 0;
+  const { started } = state;
 
   return (
     <div>
@@ -61,39 +61,6 @@ export function DesignPanel(state: DesignFeatureState) {
       )}
 
       {state.error && <div className="error-banner">{state.error}</div>}
-
-      <h2 style={{ marginTop: 24 }}>대화</h2>
-      <ul className="exchange-list">
-        {state.exchanges.map((exchange, index) => (
-          <li key={index}>
-            {exchange.question && <div className="q">Q. {exchange.question}</div>}
-            <div>{exchange.answer}</div>
-          </li>
-        ))}
-      </ul>
-
-      {state.pending && (
-        <div className="question-card">
-          <strong>{state.pending.question}</strong>
-          {state.pending.why && <p className="why">{state.pending.why}</p>}
-          <textarea
-            rows={3}
-            placeholder="답변을 입력하세요"
-            value={state.answer}
-            onChange={(event) => state.setAnswer(event.target.value)}
-            disabled={state.running}
-          />
-          <button
-            className="primary"
-            disabled={state.busy || state.running || !state.answer.trim()}
-            onClick={() => void state.onSendAnswer()}
-          >
-            보내기
-          </button>
-        </div>
-      )}
-
-      {started && !state.pending && state.running && <p className="empty-state">agent가 응답하는 중…</p>}
     </div>
   );
 }

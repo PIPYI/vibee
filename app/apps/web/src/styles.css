@@ -223,6 +223,143 @@ button.secondary {
   color: var(--text-muted);
 }
 
+.toc-box {
+  max-width: 320px;
+  margin: 16px 0 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.toc-box-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.toc-box-arrow {
+  color: var(--text-muted);
+}
+
+.toc-box ol {
+  margin: 0;
+  padding: 10px 16px 14px 34px;
+  font-size: 13px;
+}
+
+.toc-box li {
+  padding: 3px 0;
+}
+
+.toc-box a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.toc-box a:hover {
+  color: var(--accent);
+}
+
+.toc-fab {
+  position: fixed;
+  top: 96px;
+  right: 24px;
+  z-index: 10;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.toc-fab::-webkit-scrollbar {
+  display: none;
+}
+
+.toc-fab ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.toc-fab a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.toc-fab .toc-label {
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  padding: 3px 0;
+  transition: max-width 0.15s ease, opacity 0.15s ease;
+}
+
+.toc-fab:hover .toc-label,
+.toc-fab:focus-within .toc-label {
+  max-width: 220px;
+  opacity: 1;
+  padding: 3px 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.toc-fab .toc-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.toc-fab a:hover .toc-dot {
+  background: var(--accent);
+}
+
+.scroll-fabs {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+.scroll-fabs button {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-main);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.scroll-fabs button:hover {
+  background: var(--bg-panel);
+}
+
 .error-banner {
   background: #fef2f2;
   color: var(--danger);
@@ -238,10 +375,51 @@ button.secondary {
   font-size: 13px;
 }
 
+.muted {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .narrative {
   white-space: pre-wrap;
   line-height: 1.6;
   font-size: 14px;
+}
+
+.markdown {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.markdown h2 {
+  margin: 4px 0 8px;
+}
+
+.markdown h3 {
+  margin: 20px 0 6px;
+  font-size: 1rem;
+}
+
+.markdown h4 {
+  margin: 14px 0 4px;
+  font-size: 0.94rem;
+  color: var(--text-muted);
+}
+
+.markdown p {
+  margin: 6px 0;
+}
+
+.markdown ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.markdown blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
 }
 
 .empty-state {

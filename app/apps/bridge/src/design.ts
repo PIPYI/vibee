@@ -127,6 +127,18 @@ export function renderNarrative(design: DesignDoc): string {
     out.push("");
   }
 
+  if (design.entities.length > 0) {
+    // "저장되는 것들 사이의 관계가 없다"는 gap 경고가 여기를 근거로 든다 — 그런데 ENTITY
+    // 자체를 사람에게 한 번도 보여준 적이 없으면 그 경고를 보고도 고칠 방법이 없다.
+    out.push("## 무엇을 저장하나요", "");
+    for (const entity of design.entities) {
+      out.push(`- **${entity.name}**${entity.note ? ` — ${entity.note}` : ""}${aiMark(entity.source)}`);
+      for (const relation of entity.relations) out.push(`  - ${relation}`);
+      if (entity.states.length > 0) out.push(`  - 상태: ${entity.states.join(" → ")}`);
+    }
+    out.push("");
+  }
+
   const userDecisions = design.decisions.filter((d) => d.source === "user");
   const aiDecisions = design.decisions.filter((d) => d.source === "ai");
 
@@ -185,6 +197,7 @@ export function renderAppDesign(design: DesignDoc): string {
   out.push("", "## ENTITY — 무엇이 저장되는가", "");
   for (const entity of design.entities) {
     out.push(`- \`${entity.id}\` **${entity.name}**`);
+    if (entity.note) out.push(`  - ${entity.note}`);
     for (const relation of entity.relations) out.push(`  - 관계: ${relation}`);
     if (entity.states.length > 0) out.push(`  - 상태: ${entity.states.join(" → ")}`);
   }
@@ -214,7 +227,7 @@ export function renderAppDesign(design: DesignDoc): string {
 
   // 출처를 남기는 유일한 절이다. 다른 단위와 달리 DEC은 출처에 따라 **구속력이 다르다** —
   // 사용자가 말한 결정은 조용히 뒤집으면 안 되고, AI 기본값은 막혔을 때 되물을 수 있다.
-  // 나머지 단위의 출처는 `.project-intel/design.json`에 그대로 남는다 (§7).
+  // 나머지 단위의 출처는 `design.json`에 그대로 남는다 (§7).
   out.push(
     "",
     "## DEC — 왜 그렇게 정했는가",

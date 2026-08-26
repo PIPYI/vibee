@@ -28,6 +28,8 @@ import {
   type ShowResultInput,
   type ReviewContext,
   type ReportDriftInput,
+  type DriftVerifyContext,
+  type VerifyDriftFixInput,
   type WikiContext,
   type WikiPageInput,
   type WikiTranscript,
@@ -261,6 +263,7 @@ server.registerTool(
               .describe('Relations to other entities in plain words, e.g. "belongs to E2"'),
             states: z.array(z.string()).describe("States this can be in"),
             source: sourceSchema,
+            note: z.string().optional().describe("One line on what this is for, for a non-programmer reader"),
           }),
         )
         .describe("What gets stored"),
@@ -403,6 +406,62 @@ server.registerTool(
           text:
             `Drift report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
             (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  "get_drift_verify_context",
+  {
+    title: "Get context for verifying one drift fix",
+    description:
+      "Get the one commit made since a single previously-reported drift finding, plus that " +
+      "finding's criterion, original detail, and the CURRENT content of every file the " +
+      "finding named (currentFiles). Call this before verify_drift_fix. This is NOT a fresh " +
+      "review -- check only whether THIS ONE commit resolves THIS ONE finding, and judge from " +
+      "currentFiles (not just the diff) since the diff alone cannot show whether a file the " +
+      "latest commit did not touch still violates the criterion.",
+    inputSchema: {},
+  },
+  async () => {
+    const context = await bridgeFetch<DriftVerifyContext>("/internal/drift-verify-context");
+    log(
+      "get_drift_verify_context ->",
+      context.criterionId,
+      `checked commit ${context.checkedCommit.slice(0, 7)}`,
+      context.truncated ? "(diff 잘림)" : "",
+    );
+    return { content: [{ type: "text", text: JSON.stringify(context, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  "verify_drift_fix",
+  {
+    title: "Report whether a drift finding is resolved",
+    description:
+      "Judge whether the checked commit from get_drift_verify_context actually resolves that " +
+      "finding's criterion -- a commit touching unrelated code does not resolve it. Call this " +
+      "EXACTLY ONCE with your verdict, then end your turn. Do not modify any file.",
+    inputSchema: {
+      resolved: z.boolean().describe("true if the criterion is no longer violated"),
+      detail: z.string().describe("One sentence explaining the verdict, in Korean (한국어)"),
+    },
+  },
+  async (input) => {
+    const result = input as VerifyDriftFixInput;
+    const ack = await bridgeFetch<{ taskId: string | null }>("/internal/drift-verify", {
+      method: "POST",
+      body: JSON.stringify(result),
+    });
+    log("verify_drift_fix ->", result.resolved ? "resolved" : "still violated", `(task ${ack.taskId ?? "none"})`);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Verdict delivered to the Vibe Coding Project Intelligence UI (${result.resolved ? "resolved" : "still violated"}).`,
         },
       ],
     };
