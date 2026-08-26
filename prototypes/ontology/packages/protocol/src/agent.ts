@@ -24,8 +24,8 @@ export const DEFAULT_BRIDGE_PORT = 43220;
  * hot reload하지만 Bridge 프로세스는 재시작 전까지 이전 모듈을 계속 들고 있을 수 있다.
  * 프로토콜 모양이 바뀌는 릴리스에서 이 값을 함께 올리면 그 조합을 분석 시작 전에 막는다.
  */
-export const ONTO_PROTOCOL_VERSION = "4.0";
-export const ONTO_BUILD_ID = "v4-system-intelligence-final-1";
+export const ONTO_PROTOCOL_VERSION = "4.1";
+export const ONTO_BUILD_ID = "v8-structure-map-and-analysis-console-1";
 
 export type RuntimeIdentity = {
   protocolVersion: string;
@@ -120,18 +120,32 @@ export type StageSessionRecord = {
 };
 
 /**
- * 한 provider turn의 정규화된 사용량. `inputTokens`는 cache read를 제외한 입력이며,
- * `totalTokens`는 input/output/cache read/cache write의 합이다. provider가 보고하지 않은
- * 필드는 생략한다. 0으로 채우면 "사용하지 않음"과 "알 수 없음"을 구분할 수 없기 때문이다.
+ * 한 provider turn의 정규화된 사용량.
+ *
+ * `billableTokens`는 cache를 제외한 `inputTokens + outputTokens`라 provider 사이에서
+ * 비교·합산하는 대표값이다. `totalTokens`는 cache read/write까지 포함한 알려진 처리량이고,
+ * `providerTotalTokens`는 provider가 별도로 보고한 raw total(있을 때만)이다. 후자의 정의는
+ * provider마다 다르므로 비용/작업량의 대표값으로 쓰지 않는다.
+ *
+ * provider가 보고하지 않은 필드는 생략한다. 0으로 채우면 "사용하지 않음"과 "알 수 없음"을
+ * 구분할 수 없기 때문이다.
  */
 export type StageUsage = {
   stage: AnalysisStage;
   turnId?: string;
+  /** cache read를 제외한 입력. */
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** input + output; cache 제외, cross-provider 대표값. */
+  billableTokens?: number;
+  /** input + output + cache read + cache write의 알려진 합. */
   totalTokens?: number;
+  /** provider 원문 total. Codex의 `total.totalTokens` 같은 교차 검증용 값. */
+  providerTotalTokens?: number;
+  /** provider total과 raw input+output 재조합이 다를 때만 true. */
+  providerTotalMismatch?: true;
   model?: string;
 };
 
@@ -206,7 +220,7 @@ export type TaskState = {
   mcpCalls: McpCallRecord[];
   /** native 도구(shell/Read)로 직접 읽은 파일 경로 (중복 없음). §7.3 index-only arm이 "탐색했는가"를 여기서 잰다 */
   exploredFiles: string[];
-  /** 호환용 task 합계. 정규화된 StageUsage total을 합산한다. */
+  /** 호환용 task 합계. cache 제외 billable token을 합산한다(구 저장값은 total fallback). */
   tokenUsage?: number;
   /** V3: Semantic/Assembly/View turn을 덮어쓰지 않고 별도로 보존한다. */
   stageUsages?: StageUsage[];

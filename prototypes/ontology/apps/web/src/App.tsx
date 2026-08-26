@@ -18,6 +18,7 @@ import type {
   AnalysisPipelineStage,
   AnalysisStageState,
   ArchitectureComponent,
+  ArchitectureViewDocument,
   IncrementalAnalysisPlan,
   ModelOption,
   SequenceIR,
@@ -28,7 +29,7 @@ import type {
 import { entityKey, ONTO_BUILD_ID, ONTO_PROTOCOL_VERSION } from "@onto/protocol";
 
 import * as api from "./api.js";
-import { DiagnosticsDrawer, PhaseStepper, StageLedger, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
+import { AnalysisRunHeader, DiagnosticsDrawer, LiveActivity, StageLedger, type LogLine, type PipelinePhase } from "./components/AnalyzingConsole.js";
 import { Passport, type PassportRelationship, type PassportSubject } from "./components/Passport.js";
 import { SequenceView } from "./components/SequenceView.js";
 import { UnifiedMapView } from "./components/UnifiedMapView.js";
@@ -38,6 +39,7 @@ import { useAgentEvents } from "./ws.js";
 
 type Screen = "no-project" | "indexing" | "ready" | "analyzing" | "analyzed";
 type PassportTarget = { id: string };
+type ArchitectureAuthoringStatus = "idle" | "authoring" | "ready" | "failed";
 
 function short(id: string): string {
   return id.slice(0, 8);
@@ -87,6 +89,41 @@ function preferredEffort(model: ModelOption): string {
     : "";
 }
 
+/** BridgeState와 같은 규칙 — turnId 없이 먼저 온 Codex usage를 나중 named turn으로 승격한다. */
+function mergeStageUsages(previous: StageUsage[], usage: StageUsage): StageUsage[] {
+  const next = [...previous];
+  const exactIndex = next.findIndex((item) =>
+    item.stage === usage.stage && (usage.turnId ? item.turnId === usage.turnId : item.turnId === undefined),
+  );
+  if (exactIndex >= 0) {
+    next[exactIndex] = usage;
+    return next;
+  }
+  if (usage.turnId) {
+    const anonymousIndex = next.findIndex((item) => item.stage === usage.stage && item.turnId === undefined);
+    if (anonymousIndex >= 0) next[anonymousIndex] = usage;
+    else next.push(usage);
+    return next;
+  }
+  const namedIndexes = next
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.stage === usage.stage && item.turnId !== undefined)
+    .map(({ index }) => index);
+  if (namedIndexes.length === 1) {
+    const index = namedIndexes[0]!;
+    const turnId = next[index]!.turnId;
+    if (turnId) next[index] = { ...usage, turnId };
+    else next.push(usage);
+  } else {
+    next.push(usage);
+  }
+  return next;
+}
+
+function billableUsage(usage: StageUsage): number | undefined {
+  return usage.billableTokens ?? usage.totalTokens;
+}
+
 export function App(): React.JSX.Element {
   const [agents, setAgents] = useState<api.AgentReadiness[]>([]);
   const [agent, setAgent] = useState<AgentId>("codex");
@@ -114,9 +151,16 @@ export function App(): React.JSX.Element {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [stageStates, setStageStates] = useState<AnalysisStageState[]>([]);
   const [heartbeat, setHeartbeat] = useState<{ stage: AnalysisPipelineStage; elapsedSeconds: number; idleSeconds: number } | null>(null);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [modelOutput, setModelOutput] = useState("");
+  const modelOutputBufferRef = useRef("");
+  const modelOutputTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [bundle, setBundle] = useState<AnalysisBundle | null>(null);
   const [architectureSvg, setArchitectureSvg] = useState<string | null>(null);
+  const [architectureDocument, setArchitectureDocument] = useState<ArchitectureViewDocument | null>(null);
+  const [architectureStatus, setArchitectureStatus] = useState<ArchitectureAuthoringStatus>("idle");
+  const [architectureError, setArchitectureError] = useState<string | null>(null);
   /** 배경에서 도는 Architecture 뷰 저작 turn의 taskId. 메인 분석 로그/화면 전환과 분리해 다룬다. */
   const architectureTaskIdRef = useRef<string | null>(null);
   const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
@@ -125,6 +169,33 @@ export function App(): React.JSX.Element {
   const [systemFacts, setSystemFacts] = useState<SystemFactStore | null>(null);
   const [incrementalPlan, setIncrementalPlan] = useState<IncrementalAnalysisPlan | null>(null);
   const [rolloutReport, setRolloutReport] = useState<V4RolloutReport | null>(null);
+
+  const resetModelOutput = useCallback(() => {
+    if (modelOutputTimerRef.current) clearTimeout(modelOutputTimerRef.current);
+    modelOutputTimerRef.current = undefined;
+    modelOutputBufferRef.current = "";
+    setModelOutput("");
+  }, []);
+
+  const appendModelOutput = useCallback((text: string) => {
+    modelOutputBufferRef.current = `${modelOutputBufferRef.current}${text}`.slice(-12_000);
+    if (modelOutputTimerRef.current) return;
+    modelOutputTimerRef.current = setTimeout(() => {
+      modelOutputTimerRef.current = undefined;
+      setModelOutput(modelOutputBufferRef.current);
+    }, 120);
+  }, []);
+
+  useEffect(() => () => {
+    if (modelOutputTimerRef.current) clearTimeout(modelOutputTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (screen !== "analyzing") return;
+    setClockNow(Date.now());
+    const timer = setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [screen]);
 
   useEffect(() => {
     void api.health().then((h) => {
@@ -156,13 +227,21 @@ export function App(): React.JSX.Element {
           setAgent(active.agent);
           setModel(active.model ?? "");
           setEffort(active.effort ?? "");
-          setTaskId(active.taskId);
-          setStageUsages(active.stageUsages ?? []);
-          setStageStates(active.stageStates ?? []);
-          setPipelinePhase(phaseFromStages(active.stageStates ?? []));
-          setScreen("analyzing");
-          void api.incrementalPlan(active.taskId).then((result) => { if (!("error" in result)) setIncrementalPlan(result); });
-          return;
+          if (active.mode === "architecture") {
+            // 구조 지도 저작은 메인 분석과 별도 turn이다. 새로고침 뒤에도 분석 콘솔로
+            // 잘못 복원하지 않고, 기존 bundle/결정론적 지도를 계속 보여 준다.
+            architectureTaskIdRef.current = active.taskId;
+            setArchitectureStatus("authoring");
+            setArchitectureError(null);
+          } else {
+            setTaskId(active.taskId);
+            setStageUsages(active.stageUsages ?? []);
+            setStageStates(active.stageStates ?? []);
+            setPipelinePhase(phaseFromStages(active.stageStates ?? []));
+            setScreen("analyzing");
+            void api.incrementalPlan(active.taskId).then((result) => { if (!("error" in result)) setIncrementalPlan(result); });
+            return;
+          }
         }
         setScreen("indexing");
         void api.fetchAnalysisBundle(s.projectPath).then((result) => {
@@ -175,7 +254,11 @@ export function App(): React.JSX.Element {
           setScreen("analyzed");
           void api.systemFacts().then((facts) => { if (!api.isUnavailable(facts)) setSystemFacts(facts); });
           void api.rolloutReport(s.projectPath!).then((report) => { if (!("error" in report)) setRolloutReport(report.latest); });
-          void api.fetchArchitectureView(s.projectPath!).then((view) => setArchitectureSvg("error" in view ? null : view.svg));
+          void api.fetchArchitectureView(s.projectPath!).then((view) => {
+            setArchitectureSvg("error" in view ? null : view.svg);
+            setArchitectureDocument("error" in view ? null : view.document);
+            if (!("error" in view)) setArchitectureStatus("ready");
+          });
         });
       }
     });
@@ -246,9 +329,14 @@ export function App(): React.JSX.Element {
   }, []);
 
   /** 이미 저작된 적 있으면 읽기만 한다 — turn을 새로 열지 않는다. */
-  const loadArchitectureView = useCallback(async (path: string): Promise<void> => {
+  const loadArchitectureView = useCallback(async (path: string): Promise<boolean> => {
     const result = await api.fetchArchitectureView(path);
-    setArchitectureSvg("error" in result ? null : result.svg);
+    if ("error" in result) return false;
+    setArchitectureSvg(result.svg);
+    setArchitectureDocument(result.document);
+    setArchitectureStatus("ready");
+    setArchitectureError(null);
+    return true;
   }, []);
 
   /**
@@ -258,19 +346,65 @@ export function App(): React.JSX.Element {
    */
   const runArchitectureView = useCallback(async (path: string): Promise<void> => {
     const extra = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    // 새 저작물은 기존 deterministic 지도 위에 얹히므로, 실패/진행 중에는 명시적으로
+    // fallback을 유지한다. 이전 저작 SVG가 최신 분석 결과인 것처럼 보이면 안 된다.
+    setArchitectureSvg(null);
+    setArchitectureDocument(null);
+    setArchitectureStatus("authoring");
+    setArchitectureError(null);
     const result = await api.startArchitectureView(agent, path, extra);
-    if ("error" in result) return;
+    if ("error" in result) {
+      setArchitectureStatus("failed");
+      setArchitectureError(result.error);
+      return;
+    }
     architectureTaskIdRef.current = result.taskId;
   }, [agent, model, effort]);
+
+  const resyncTaskState = useCallback((snapshot: api.StateResponse) => {
+    const active = snapshot.activeTaskId ? snapshot.tasks.find((task) => task.taskId === snapshot.activeTaskId) : undefined;
+    if (!active || (active.status !== "starting" && active.status !== "running")) return;
+    setProjectPath(active.projectPath);
+    if (active.mode === "architecture") {
+      architectureTaskIdRef.current = active.taskId;
+      setArchitectureStatus("authoring");
+      setArchitectureError(null);
+      return;
+    }
+    if (active.mode === "analyze" || active.mode === "assembly") {
+      setTaskId(active.taskId);
+      setStageStates(active.stageStates ?? []);
+      setStageUsages(active.stageUsages ?? []);
+      setScreen("analyzing");
+    }
+  }, []);
 
   const stream = useAgentEvents((event, envelope) => {
     if (event.taskId === architectureTaskIdRef.current) {
       // 배경 Architecture 뷰 turn — 메인 분석 로그/단계 UI와 완전히 분리해서 다룬다.
-      if (event.type === "task.completed") {
+      if (event.type === "architecture-view.ready") {
+        if (projectPath) {
+          void loadArchitectureView(projectPath).then((loaded) => {
+            if (!loaded) {
+              setArchitectureStatus("failed");
+              setArchitectureError("저작 완료 이벤트는 받았지만 구조 지도 파일을 읽지 못했습니다.");
+            }
+          });
+        }
+      } else if (event.type === "task.completed") {
         architectureTaskIdRef.current = null;
-        if (projectPath) void loadArchitectureView(projectPath);
+        if (projectPath) {
+          void loadArchitectureView(projectPath).then((loaded) => {
+            if (!loaded) {
+              setArchitectureStatus("failed");
+              setArchitectureError("저작 turn이 끝났지만 저장된 구조 지도를 찾지 못했습니다.");
+            }
+          });
+        }
       } else if (event.type === "task.interrupted" || event.type === "task.error") {
         architectureTaskIdRef.current = null;
+        setArchitectureStatus("failed");
+        setArchitectureError(event.type === "task.error" ? event.message : "시스템 구조 지도 저작이 중단되었습니다.");
       }
       return;
     }
@@ -297,10 +431,16 @@ export function App(): React.JSX.Element {
         setHeartbeat({ stage: event.stage, elapsedSeconds: event.elapsedSeconds, idleSeconds: event.idleSeconds });
         break;
       case "agent.action.started":
-        if (!event.name.startsWith("mcp__") && !event.name.startsWith("mcp:")) push(envelope.seq, `▶ ${event.name}`);
+        if (!event.name.startsWith("mcp__") && !event.name.startsWith("mcp:")) push(envelope.seq, `▶ ${event.name}`, "activity");
         break;
       case "mcp.tool.called":
-        if (event.source === "bridge-endpoint") push(envelope.seq, `${event.tool} 조회 완료`, "mcp");
+        push(envelope.seq, `${event.tool} ${event.source === "bridge-endpoint" ? "실행" : "요청"}`, "mcp");
+        break;
+      case "agent.file.explored":
+        push(envelope.seq, `파일 탐색 · ${event.path}`, "activity");
+        break;
+      case "agent.message.delta":
+        appendModelOutput(event.text);
         break;
       case "agent.usage":
         setStageUsages((previous) => {
@@ -311,11 +451,13 @@ export function App(): React.JSX.Element {
             ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
             ...(event.cacheReadTokens !== undefined ? { cacheReadTokens: event.cacheReadTokens } : {}),
             ...(event.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.cacheWriteTokens } : {}),
+            ...(event.billableTokens !== undefined ? { billableTokens: event.billableTokens } : {}),
             ...(event.totalTokens !== undefined ? { totalTokens: event.totalTokens } : {}),
+            ...(event.providerTotalTokens !== undefined ? { providerTotalTokens: event.providerTotalTokens } : {}),
+            ...(event.providerTotalMismatch ? { providerTotalMismatch: true as const } : {}),
             ...(event.model ? { model: event.model } : {}),
           };
-          const index = previous.findIndex((item) => item.stage === usage.stage && item.turnId === usage.turnId);
-          return index < 0 ? [...previous, usage] : previous.map((item, itemIndex) => itemIndex === index ? usage : item);
+          return mergeStageUsages(previous, usage);
         });
         break;
       case "memory.patched":
@@ -365,7 +507,7 @@ export function App(): React.JSX.Element {
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  });
+  }, resyncTaskState);
 
   const selectProject = useCallback(async () => {
     setProjectError(null);
@@ -378,6 +520,10 @@ export function App(): React.JSX.Element {
     setProjectPath(selected.projectPath);
     setBundle(null);
     setArchitectureSvg(null);
+    setArchitectureDocument(null);
+    setArchitectureStatus("idle");
+    setArchitectureError(null);
+    resetModelOutput();
     architectureTaskIdRef.current = null;
     setSystemFacts(null);
     setIncrementalPlan(null);
@@ -397,7 +543,7 @@ export function App(): React.JSX.Element {
     const hasBundle = await loadBundle(selected.projectPath);
     setScreen(hasBundle ? "analyzed" : "ready");
     if (hasBundle) void loadArchitectureView(selected.projectPath);
-  }, [projectPathInput, loadBundle, loadArchitectureView]);
+  }, [projectPathInput, loadBundle, loadArchitectureView, resetModelOutput]);
 
   const runAnalyze = useCallback(async () => {
     if (!projectPath || runtimeError) return;
@@ -408,6 +554,7 @@ export function App(): React.JSX.Element {
     setStageUsages([]);
     setStageStates([]);
     setHeartbeat(null);
+    resetModelOutput();
     setDiagnosticsOpen(false);
     setTaskId(null);
     setIncrementalPlan(null);
@@ -425,13 +572,17 @@ export function App(): React.JSX.Element {
     setTaskId(result.taskId);
     setIncrementalPlan(result.incrementalPlan);
     setScreen("analyzing");
-  }, [agent, bundle, effort, model, projectPath, runtimeError]);
+  }, [agent, bundle, effort, model, projectPath, resetModelOutput, runtimeError]);
 
   const selectedModel = models.find((item) => item.id === model);
   const selectedEffort = selectedModel?.efforts.find((item) => item.id === effort);
   const selectedAgentReady = agents.find((item) => item.agent === agent)?.installed === true;
   const settingsDisabled = screen === "analyzing";
   const analysisDisabled = Boolean(runtimeError) || modelsLoading || Boolean(modelsError) || !selectedAgentReady || !selectedModel;
+  const usageGroups = [...new Map(
+    stageUsages.map((usage) => [usage.stage, stageUsages.filter((item) => item.stage === usage.stage)] as const),
+  ).entries()];
+  const knownUsageTotal = stageUsages.map(billableUsage).filter((value): value is number => value !== undefined);
 
   const componentById = new Map<string, ArchitectureComponent>((bundle?.architecture.components ?? []).map((c) => [c.id, c]));
 
@@ -543,11 +694,6 @@ export function App(): React.JSX.Element {
             {screen === "analyzed" ? "다시 분석" : "분석 시작"}
           </button>
         )}
-        {screen === "analyzing" && taskId && (
-          <button type="button" onClick={() => void api.stopTask(taskId)}>
-            중지
-          </button>
-        )}
       </div>
 
       {projectError && <p className="error-banner">{projectError}</p>}
@@ -588,17 +734,36 @@ export function App(): React.JSX.Element {
 
         {screen === "analyzing" && (
           <section className="view-pane analyzing-pane">
-            <PhaseStepper phase={pipelinePhase} failed={pipelineFailed} />
+            <AnalysisRunHeader
+              projectPath={projectPath}
+              provider={AGENT_LABEL[agent]}
+              model={selectedModel?.label ?? (model || undefined)}
+              states={stageStates}
+              now={clockNow}
+              onStop={taskId ? () => { void api.stopTask(taskId); } : undefined}
+            />
             <V4AnalysisSummary plan={incrementalPlan} report={rolloutReport} analyzing />
-            <StageLedger states={stageStates} heartbeat={heartbeat} />
+            <div className="analysis-workspace">
+              <StageLedger states={stageStates} heartbeat={heartbeat} now={clockNow} />
+              <LiveActivity lines={lines} modelOutput={modelOutput} />
+            </div>
             <div className="analysis-usage" aria-label="분석 토큰 사용량">
-              <strong>분석 사용량</strong>
-              {(["semantic", "assembly"] as const).map((stage) => {
-                const usages = stageUsages.filter((usage) => usage.stage === stage);
-                const known = usages.map((usage) => usage.totalTokens).filter((value): value is number => value !== undefined);
-                return <span key={stage}>{STAGE_USAGE_LABEL[stage]} <b>{compactTokens(known.length ? known.reduce((sum, value) => sum + value, 0) : undefined)}</b></span>;
+              <strong>청구 기준 사용량 <small>입력 + 출력 · 캐시 제외</small></strong>
+              {usageGroups.length === 0 && <span className="analysis-usage-waiting">집계 대기</span>}
+              {usageGroups.map(([stage, usages]) => {
+                const known = usages.map(billableUsage).filter((value): value is number => value !== undefined);
+                const cacheRead = usages.reduce((sum, usage) => sum + (usage.cacheReadTokens ?? 0), 0);
+                const cacheWrite = usages.reduce((sum, usage) => sum + (usage.cacheWriteTokens ?? 0), 0);
+                const mismatch = usages.some((usage) => usage.providerTotalMismatch);
+                return (
+                  <span key={stage} className={mismatch ? "analysis-usage-warning" : undefined}>
+                    {STAGE_USAGE_LABEL[stage]} <b>{compactTokens(known.length ? known.reduce((sum, value) => sum + value, 0) : undefined)}</b>
+                    {(cacheRead > 0 || cacheWrite > 0) && <small>캐시 {compactTokens(cacheRead + cacheWrite)}</small>}
+                    {mismatch && <small title="제공자 원문 total과 재조합 값이 다릅니다.">검증 차이</small>}
+                  </span>
+                );
               })}
-              <span>총 <b>{compactTokens(stageUsages.some((usage) => usage.totalTokens !== undefined) ? stageUsages.reduce((sum, usage) => sum + (usage.totalTokens ?? 0), 0) : undefined)}</b></span>
+              <span className="analysis-usage-total">총 <b>{compactTokens(knownUsageTotal.length ? knownUsageTotal.reduce((sum, value) => sum + value, 0) : undefined)}</b></span>
             </div>
             <DiagnosticsDrawer open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((v) => !v)} lines={lines} />
           </section>
@@ -617,6 +782,10 @@ export function App(): React.JSX.Element {
                 bundle={bundle}
                 systemFacts={systemFacts}
                 architectureSvg={architectureSvg}
+                architectureDocument={architectureDocument}
+                architectureStatus={architectureStatus}
+                architectureError={architectureError}
+                onRetryArchitecture={projectPath ? () => { void runArchitectureView(projectPath); } : undefined}
                 onSelectComponent={(id) => { setSequenceView(null); setPassportTarget({ id }); }}
                 onOpenSequence={(sequence) => { setPassportTarget(null); setSequenceView(sequence); }}
               />

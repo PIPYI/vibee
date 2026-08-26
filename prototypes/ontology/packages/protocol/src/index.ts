@@ -339,7 +339,16 @@ export type V4RolloutReport = {
  */
 export type EvidenceGraphRole =
   | { role: "entity"; entity: EntityRef; label: string }
-  | { role: "link"; from: EntityRef; to: EntityRef; linkKind: string };
+  | {
+      role: "link";
+      from: EntityRef;
+      to: EntityRef;
+      linkKind: string;
+      /** System Link identity와 사람이 읽는 설명에 남길 전송 방식. */
+      mechanism?: string;
+      /** 엔진이 매칭 강도를 알고 있을 때만 명시한다. 없으면 confirmed engine fact다. */
+      certainty?: "grounded" | "inferred";
+    };
 
 /**
  * extent를 정규화하는 방식 (T1).

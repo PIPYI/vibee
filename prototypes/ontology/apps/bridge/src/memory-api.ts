@@ -106,6 +106,61 @@ export function resolveAssemblyContextLimit(value: unknown): number {
     : DEFAULT_ASSEMBLY_CONTEXT_LIMIT;
 }
 
+type KindCapCounts = Record<string, { total: number; included: number; truncated: boolean }>;
+
+/**
+ * System Fact packet의 전체 상한은 유지하면서, call/symbol 물량이 희소한
+ * http_call/uses/resource를 밀어내지 못하게 한다. 작은 kind부터 한 항목씩 돌며 가져오므로
+ * 예산이 kind 수보다 크면 모든 kind가 최소 한 항목을 받는다. 반환 순서는 원래 fact 순서를
+ * 보존해 agent가 system fact identity를 예측 가능하게 읽는다.
+ */
+function capByKind<T>(
+  items: readonly T[],
+  kindOf: (item: T) => string,
+  limit: number,
+): { items: T[]; truncated: boolean; byKind: KindCapCounts } {
+  const groups = new Map<string, { indexes: number[]; cursor: number }>();
+  for (const [index, item] of items.entries()) {
+    const kind = kindOf(item);
+    const group = groups.get(kind) ?? { indexes: [], cursor: 0 };
+    group.indexes.push(index);
+    groups.set(kind, group);
+  }
+
+  const orderedGroups = [...groups.entries()].sort(([leftKind, left], [rightKind, right]) =>
+    left.indexes.length - right.indexes.length || leftKind.localeCompare(rightKind),
+  );
+  const selected = new Set<number>();
+  let remaining = Math.min(limit, items.length);
+  while (remaining > 0) {
+    let selectedThisRound = false;
+    for (const [, group] of orderedGroups) {
+      const index = group.indexes[group.cursor];
+      if (index === undefined) continue;
+      selected.add(index);
+      group.cursor += 1;
+      remaining -= 1;
+      selectedThisRound = true;
+      if (remaining === 0) break;
+    }
+    if (!selectedThisRound) break;
+  }
+
+  const byKind: KindCapCounts = {};
+  for (const [kind, group] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    byKind[kind] = {
+      total: group.indexes.length,
+      included: group.cursor,
+      truncated: group.cursor < group.indexes.length,
+    };
+  }
+  return {
+    items: items.filter((_, index) => selected.has(index)),
+    truncated: selected.size < items.length,
+    byKind,
+  };
+}
+
 /**
  * Full Assembly가 첫 조회 한 번으로 참조 후보 전체를 받는 compact packet.
  *
@@ -113,9 +168,11 @@ export function resolveAssemblyContextLimit(value: unknown): number {
  * 실제로 인용하는 ID·관계·근거·상태는 자르지 않는다. System Fact는 validator가 지도에
  * 허용하는 현재 상태(valid|relocated)만 싣는다.
  *
- * `limit`은 목록마다 독립적으로 적용된다(entities 500개 초과 + concepts 10개인 저장소에서
- * concepts까지 자르지 않기 위함). 잘렸다면 `counts.*.truncated: true`로 드러낸다 — 조용히
- * 자르면 Assembly가 빠진 항목이 있는지 모른 채 지도를 완성한다.
+ * `limit`은 semantic 목록마다 독립적으로 적용된다(entities 500개 초과 + concepts 10개인
+ * 저장소에서 concepts까지 자르지 않기 위함). System Fact는 한 kind가 packet 전체를 독식하지
+ * 않도록 kind별 round-robin으로 같은 전체 예산을 나눈다. 잘렸다면 전체와 kind별
+ * `counts.*.truncated`로 드러낸다 — 조용히 자르면 Assembly가 빠진 항목이 있는지 모른 채
+ * 지도를 완성한다.
  */
 export function assemblyContext(
   state: LoadedState,
@@ -188,8 +245,8 @@ export function assemblyContext(
   const conceptsCapped = cap(concepts);
   const claimsCapped = cap(claims);
   const canonicalScenariosCapped = cap(canonicalScenarios);
-  const entitiesCapped = cap(entities);
-  const linksCapped = cap(links);
+  const entitiesCapped = capByKind(entities, (entity) => entity.kind, boundedLimit);
+  const linksCapped = capByKind(links, (link) => link.kind, boundedLimit);
 
   return {
     generation: state.generation,
@@ -225,8 +282,18 @@ export function assemblyContext(
       schemaVersion: state.systemFacts.schemaVersion,
       analysisVersion: state.systemFacts.analysisVersion,
       counts: {
-        entities: { total: state.systemFacts.entities.length, eligible: entities.length, truncated: entitiesCapped.truncated },
-        links: { total: state.systemFacts.links.length, eligible: links.length, truncated: linksCapped.truncated },
+        entities: {
+          total: state.systemFacts.entities.length,
+          eligible: entities.length,
+          truncated: entitiesCapped.truncated,
+          byKind: entitiesCapped.byKind,
+        },
+        links: {
+          total: state.systemFacts.links.length,
+          eligible: links.length,
+          truncated: linksCapped.truncated,
+          byKind: linksCapped.byKind,
+        },
       },
       entities: entitiesCapped.items,
       links: linksCapped.items,

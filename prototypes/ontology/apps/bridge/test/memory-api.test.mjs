@@ -243,7 +243,18 @@ test("assemblyContext는 참조 후보를 보존하고 lifecycle 중복 필드�
   assert.deepEqual(result.semantic.claims[0].evidenceRefs, ["ev-claim-grounding"]);
   assert.equal(result.semantic.claims[0].groundingConfidence, 0.8);
   assert.deepEqual(result.semantic.canonicalScenarios[0].anchorConceptIds, ["concept-1"]);
-  assert.deepEqual(result.systemFacts.counts.links, { total: 3, eligible: 1, truncated: false });
+  assert.deepEqual(result.systemFacts.counts.entities, {
+    total: 1,
+    eligible: 1,
+    truncated: false,
+    byKind: { symbol: { total: 1, included: 1, truncated: false } },
+  });
+  assert.deepEqual(result.systemFacts.counts.links, {
+    total: 3,
+    eligible: 1,
+    truncated: false,
+    byKind: { writes: { total: 1, included: 1, truncated: false } },
+  });
   assert.deepEqual(result.systemFacts.entities[0], {
     id: "symbol:src/a.ts#save", kind: "symbol", certainty: "confirmed",
     evidenceRefs: ["ev-entity"], status: "valid",
@@ -280,4 +291,78 @@ test("assemblyContext는 대형 저장소에서 목록마다 독립적으로 lim
   );
   assert.equal(resolveAssemblyContextLimit("999999"), MAX_ASSEMBLY_CONTEXT_LIMIT, "상한 2000을 넘지 않는다");
   assert.equal(resolveAssemblyContextLimit("not-a-number"), DEFAULT_ASSEMBLY_CONTEXT_LIMIT);
+});
+
+test("assemblyContext는 System Fact를 kind별로 나눠 희소한 외부 관계를 보존한다", () => {
+  const base = stateOf();
+  const entities = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      id: `symbol:src/service.ts#${index}`,
+      ref: { kind: "symbol", symbolId: `src/service.ts#${index}` },
+      kind: "symbol",
+      origin: "engine",
+      certainty: "confirmed",
+      evidenceRefs: [],
+      dependsOnEvidenceRefs: [],
+      status: "valid",
+      firstSeenVersion: 1,
+      lastValidatedVersion: 1,
+    })),
+    {
+      id: "resource:npm:openai",
+      ref: { kind: "resource", namespace: "npm", key: "openai" },
+      kind: "external_library",
+      origin: "vibee",
+      certainty: "grounded",
+      evidenceRefs: ["ev-openai"],
+      dependsOnEvidenceRefs: ["ev-openai"],
+      status: "valid",
+      firstSeenVersion: 1,
+      lastValidatedVersion: 1,
+    },
+  ];
+  const links = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      id: `call-${index}`,
+      from: { kind: "symbol", symbolId: `src/service.ts#${index}` },
+      to: { kind: "symbol", symbolId: "src/service.ts#0" },
+      kind: "call",
+      origin: "engine",
+      certainty: "confirmed",
+      evidenceRefs: [],
+      dependsOnEvidenceRefs: [],
+      status: "valid",
+      firstSeenVersion: 1,
+      lastValidatedVersion: 1,
+    })),
+    {
+      id: "uses-openai",
+      from: { kind: "symbol", symbolId: "src/service.ts#0" },
+      to: { kind: "resource", namespace: "npm", key: "openai" },
+      kind: "uses",
+      origin: "vibee",
+      certainty: "grounded",
+      evidenceRefs: ["ev-openai"],
+      dependsOnEvidenceRefs: ["ev-openai"],
+      status: "valid",
+      firstSeenVersion: 1,
+      lastValidatedVersion: 1,
+    },
+  ];
+
+  const result = assemblyContext(
+    { ...base, systemFacts: { schemaVersion: 4, analysisVersion: 1, entities, links, diagnostics: [] } },
+    2,
+  );
+
+  assert.deepEqual(result.systemFacts.entities.map((item) => item.id), ["symbol:src/service.ts#0", "resource:npm:openai"]);
+  assert.deepEqual(result.systemFacts.links.map((item) => item.id), ["call-0", "uses-openai"]);
+  assert.deepEqual(result.systemFacts.counts.entities.byKind, {
+    external_library: { total: 1, included: 1, truncated: false },
+    symbol: { total: 5, included: 1, truncated: true },
+  });
+  assert.deepEqual(result.systemFacts.counts.links.byKind, {
+    call: { total: 5, included: 1, truncated: true },
+    uses: { total: 1, included: 1, truncated: false },
+  });
 });

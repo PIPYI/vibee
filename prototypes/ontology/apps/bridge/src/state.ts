@@ -21,6 +21,7 @@ import type {
   RepositoryTopology,
   ScenarioIR,
   StageUsage,
+  SystemFactStore,
   TaskState,
 } from "@onto/protocol";
 
@@ -69,10 +70,14 @@ export class BridgeState {
   private readonly incrementalPlans = new Map<string, IncrementalAnalysisPlan>();
   /**
    * v7 — architecture turn 시작 시 서버가 미리 계산해 둔 저장소 토폴로지(completeness 체크
-   * 전용, AI에게 노출하지 않는다)와 이번 turn에서 validate_architecture_view를 부른 횟수
-   * (무한 왕복을 막는 하드 캡, v7/README.md §5.2 — 프롬프트 규율만 믿지 않는다).
+   * 전용, AI에게 노출하지 않는다)와 이번 turn에서 validate/submit을 합쳐 부른 횟수
+   * (무한 왕복을 막는 하드 캡 — 프롬프트 규율만 믿지 않는다).
    */
-  private readonly architectureViewSessions = new Map<string, { topology: RepositoryTopology; validateCount: number }>();
+  private readonly architectureViewSessions = new Map<string, {
+    topology: RepositoryTopology;
+    systemFacts?: SystemFactStore;
+    validateCount: number;
+  }>();
 
   /**
    * 가장 최근 재인덱싱의 EvidenceDiff (evidenceId → diff). **재인덱싱마다 통째로 갈아 끼운다**
@@ -211,13 +216,35 @@ export class BridgeState {
     const task = this.tasks.get(target);
     if (!task) return;
     const usages = task.stageUsages ?? [];
-    const index = usages.findIndex((item) =>
+    const exactIndex = usages.findIndex((item) =>
       item.stage === usage.stage && (usage.turnId ? item.turnId === usage.turnId : item.turnId === undefined),
     );
-    if (index >= 0) usages[index] = usage;
-    else usages.push(usage);
+    if (exactIndex >= 0) {
+      usages[exactIndex] = usage;
+    } else if (usage.turnId) {
+      // Codex는 turn/start 응답을 받기 전 usage update를 먼저 보낼 수 있다. 이름 없는
+      // 임시 항목을 named turn으로 승격해야 같은 비용이 두 행으로 합산되지 않는다.
+      const anonymousIndex = usages.findIndex((item) => item.stage === usage.stage && item.turnId === undefined);
+      if (anonymousIndex >= 0) usages[anonymousIndex] = usage;
+      else usages.push(usage);
+    } else {
+      const namedIndexes = usages
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => item.stage === usage.stage && item.turnId !== undefined)
+        .map(({ index }) => index);
+      if (namedIndexes.length === 1) {
+        const index = namedIndexes[0]!;
+        const turnId = usages[index]!.turnId;
+        if (turnId) usages[index] = { ...usage, turnId };
+        else usages.push(usage);
+      } else {
+        usages.push(usage);
+      }
+    }
     task.stageUsages = usages;
-    const totals = usages.map((item) => item.totalTokens).filter((value): value is number => typeof value === "number");
+    const totals = usages
+      .map((item) => item.billableTokens ?? item.totalTokens)
+      .filter((value): value is number => typeof value === "number");
     if (totals.length > 0) task.tokenUsage = totals.reduce((sum, value) => sum + value, 0);
     else delete task.tokenUsage;
     this.touchStage(target);
@@ -256,16 +283,20 @@ export class BridgeState {
     this.bundleDrafts.delete(taskId);
   }
 
-  startArchitectureViewSession(taskId: string, topology: RepositoryTopology): void {
-    this.architectureViewSessions.set(taskId, { topology, validateCount: 0 });
+  startArchitectureViewSession(taskId: string, topology: RepositoryTopology, systemFacts?: SystemFactStore): void {
+    this.architectureViewSessions.set(taskId, { topology, ...(systemFacts ? { systemFacts } : {}), validateCount: 0 });
   }
 
   getArchitectureViewTopology(taskId: string): RepositoryTopology | undefined {
     return this.architectureViewSessions.get(taskId)?.topology;
   }
 
-  /** 검증 시도 횟수를 올리고 허용 여부를 함께 돌려준다 — `recordValidationAttempt`와 같은 모양. */
-  recordArchitectureViewValidateAttempt(taskId: string, maxAttempts: number): { attempt: number; allowed: boolean } {
+  getArchitectureViewSystemFacts(taskId: string): SystemFactStore | undefined {
+    return this.architectureViewSessions.get(taskId)?.systemFacts;
+  }
+
+  /** validate와 submit이 같은 bounded repair 예산을 소비한다. */
+  recordArchitectureViewAttempt(taskId: string, maxAttempts: number): { attempt: number; allowed: boolean } {
     const session = this.architectureViewSessions.get(taskId);
     if (!session) return { attempt: 0, allowed: false };
     session.validateCount += 1;

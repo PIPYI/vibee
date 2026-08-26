@@ -31,6 +31,24 @@ test("renderArchitectureViewSvg — 라벨의 XML 특수문자를 이스케이�
   assert.ok(svg.includes("A &amp; B &lt;script&gt;&quot;x&quot;&lt;/script&gt;"));
 });
 
+test("V8 renderer — 하나의 defs·경계 포트 경로·상호작용 hook을 사용한다", () => {
+  const doc = loadExample();
+  const svg = renderArchitectureViewSvg(doc);
+  assert.equal((svg.match(/<defs>/gu) ?? []).length, 1);
+  for (const variant of ["default", "emphasis", "security", "dashed"]) {
+    assert.ok(svg.includes(`id="av-arrow-${variant}"`));
+  }
+  assert.match(svg, /fill="url\(#av-grid\)"/);
+  assert.match(svg, /data-node-id="web-client"/);
+  assert.match(svg, /data-edge-from="web-client" data-edge-to="api-server"/);
+  assert.match(svg, /data-sources="\[\{&quot;/);
+  assert.match(svg, / Q /, "dogleg은 roundedPath의 Q corner를 쓴다");
+  const boundary = svg.indexOf("data-boundary-id");
+  const connection = svg.indexOf("data-edge-from");
+  const component = svg.indexOf("data-component-id");
+  assert.ok(boundary >= 0 && boundary < connection && connection < component, "z-order는 boundary → connection → component다");
+});
+
 test("renderArchitectureViewStandaloneHtml — 완전한 문서를 만들고 SVG를 포함한다", () => {
   const doc = loadExample();
   const html = renderArchitectureViewStandaloneHtml(doc);

@@ -36,7 +36,7 @@ export function V4AnalysisSummary({
         {facts && <span><b>{restored}</b><small>코드 근거로 복원</small></span>}
         {(facts || report) && <span className={review > 0 || (report?.reviewFacts ?? 0) > 0 ? "v4-metric-warn" : undefined}><b>{report?.reviewFacts ?? review}</b><small>확인 필요</small></span>}
         {report && <span><b>{report.providerTurns}</b><small>provider turn</small></span>}
-        {report?.tokenUsage !== undefined && <span><b>{report.tokenUsage >= 1_000 ? `${(report.tokenUsage / 1_000).toFixed(1)}k` : report.tokenUsage}</b><small>총 token</small></span>}
+        {report?.tokenUsage !== undefined && <span><b>{report.tokenUsage >= 1_000 ? `${(report.tokenUsage / 1_000).toFixed(1)}k` : report.tokenUsage}</b><small>청구 기준 token</small></span>}
       </div>
       {plan?.fullDiscovery && <p className="v4-full-reason"><strong>전체 탐색 선택:</strong> {plan.impact.reasons.join(" · ") || plan.reason}</p>}
       {plan?.fullAssembly && <p className="v4-full-reason"><strong>전체 지도 조립 선택:</strong> {plan.impact.reasons.join(" · ") || plan.reason}</p>}

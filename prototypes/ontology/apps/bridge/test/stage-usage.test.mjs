@@ -5,7 +5,7 @@ import { ClaudeAdapter } from "../dist/agents/claude/adapter.js";
 import { CodexAdapter } from "../dist/agents/codex/adapter.js";
 import { normalizeStageUsage } from "../dist/agents/usage.js";
 
-test("Claude usage는 cache read/write를 포함한 전체 처리량으로 기록한다", () => {
+test("Claude usage는 cache 제외 billable과 cache 포함 처리량을 분리해 기록한다", () => {
   assert.deepEqual(
     normalizeStageUsage({
       inputTokens: 20,
@@ -18,12 +18,13 @@ test("Claude usage는 cache read/write를 포함한 전체 처리량으로 기�
       outputTokens: 34_243,
       cacheReadTokens: 444_338,
       cacheWriteTokens: 91_421,
+      billableTokens: 34_263,
       totalTokens: 570_022,
     },
   );
 });
 
-test("Codex usage는 cached input을 inputTokens에서 빼고 전체 처리량은 보존한다", () => {
+test("Codex usage는 cached input을 inputTokens에서 빼고 billable과 provider total을 함께 보존한다", () => {
   assert.deepEqual(
     normalizeStageUsage({
       inputTokens: 363_843,
@@ -34,6 +35,7 @@ test("Codex usage는 cached input을 inputTokens에서 빼고 전체 처리량�
       inputTokens: 49_731,
       outputTokens: 8_735,
       cacheReadTokens: 314_112,
+      billableTokens: 58_466,
       totalTokens: 372_578,
     },
   );
@@ -42,7 +44,21 @@ test("Codex usage는 cached input을 inputTokens에서 빼고 전체 처리량�
 test("Codex cache read가 raw input보다 커도 음수 입력을 기록하지 않는다", () => {
   assert.deepEqual(
     normalizeStageUsage({ inputTokens: 3, cacheReadTokens: 5 }, { inputIncludesCacheRead: true }),
-    { inputTokens: 0, cacheReadTokens: 5, totalTokens: 5 },
+    { inputTokens: 0, cacheReadTokens: 5, billableTokens: 0, totalTokens: 5 },
+  );
+});
+
+test("provider raw total이 raw input+output과 다르면 교차 검증 경고를 보존한다", () => {
+  assert.deepEqual(
+    normalizeStageUsage({ inputTokens: 30, outputTokens: 10, providerTotalTokens: 99 }, { inputIncludesCacheRead: true }),
+    {
+      inputTokens: 30,
+      outputTokens: 10,
+      billableTokens: 40,
+      totalTokens: 40,
+      providerTotalTokens: 99,
+      providerTotalMismatch: true,
+    },
   );
 });
 
@@ -71,6 +87,7 @@ test("Claude adapter는 정규화한 usage event를 내보낸다", async () => {
     outputTokens: 34_243,
     cacheReadTokens: 444_338,
     cacheWriteTokens: 91_421,
+    billableTokens: 34_263,
     totalTokens: 570_022,
   });
 });
@@ -98,6 +115,8 @@ test("Codex adapter는 cache 포함 raw input을 정규화해 usage event를 내
     inputTokens: 49_731,
     outputTokens: 8_735,
     cacheReadTokens: 314_112,
+    billableTokens: 58_466,
     totalTokens: 372_578,
+    providerTotalTokens: 372_578,
   }]);
 });

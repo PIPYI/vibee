@@ -9,7 +9,7 @@
  * 스키마 검사에서 실패하면 geometry 등 나머지 층은 건너뛴다 — 모양이 안 맞는 문서에 좌표
  * 산수를 적용하면 의미 없는 진단만 늘어난다.
  */
-import type { ArchitectureViewDocument, RepositoryTopology } from "@onto/protocol";
+import type { ArchitectureViewDocument, RepositoryTopology, SystemFactStore } from "@onto/protocol";
 
 import { checkCitations } from "./citation.js";
 import { checkCompleteness } from "./completeness.js";
@@ -20,6 +20,8 @@ import { checkSchema } from "./schema.js";
 export type ArchitectureViewValidationContext = {
   projectPath: string;
   repositoryTopology?: RepositoryTopology;
+  /** Architecture 저작 turn 시작 시 만든 현재 fact. completeness warning 전용이다. */
+  systemFacts?: SystemFactStore;
   gitRevision?: string;
 };
 
@@ -34,7 +36,7 @@ export function validateArchitectureView(doc: unknown, ctx: ArchitectureViewVali
   const document = doc as ArchitectureViewDocument;
   const diagnostics: Diagnostic[] = [...checkGeometry(document)];
 
-  if (ctx.repositoryTopology) diagnostics.push(...checkCompleteness(document, ctx.repositoryTopology));
+  if (ctx.repositoryTopology) diagnostics.push(...checkCompleteness(document, ctx.repositoryTopology, ctx.systemFacts));
   if (hasAnySource(document)) {
     diagnostics.push(
       ...checkCitations(document, { projectPath: ctx.projectPath, ...(ctx.gitRevision ? { revision: ctx.gitRevision } : {}) }),

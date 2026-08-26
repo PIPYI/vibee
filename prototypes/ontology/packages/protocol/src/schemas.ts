@@ -438,6 +438,8 @@ export const EVIDENCE_PROPOSAL_SCHEMA = {
             from: entityRef,
             to: entityRef,
             linkKind: nonEmptyString,
+            mechanism: { type: "string" },
+            certainty: { enum: ["grounded", "inferred"] },
           },
         },
       ],
@@ -801,6 +803,7 @@ export function analysisContractDigest(): string {
     "architecture.connections[].systemLinkRefs: 현재 generation의 confirmed|grounded + valid|relocated System Link ID",
     `workflow.lanes[].kind: ${values(workflowLane.properties.kind.enum)}`,
     `workflow.edges[].role: ${values(workflowEdge.properties.role.enum)}`,
+    `sequences[].messages[].kind: ${values(sequenceMessage.properties.kind.enum)}`,
     `userMap.journeys[].transitions[] 허용 필드: ${Object.keys(scenarioTransition.properties).join(", ")} (id·label 금지)`,
     "workflow.mainPath의 모든 인접 node 쌍에는 실제 workflow.edges 항목이 필요함",
   ].join("\n");

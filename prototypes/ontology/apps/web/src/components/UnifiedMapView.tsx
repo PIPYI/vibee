@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { AnalysisBundle, ArchitectureComponent, ScenarioIR, ScenarioStep, SequenceIR, SystemFactStore } from "@onto/protocol";
+import type { AnalysisBundle, ArchitectureComponent, ArchitectureViewDocument, ScenarioIR, ScenarioStep, SequenceIR, SystemFactStore } from "@onto/protocol";
 
+import { isUnavailable, queryEvidence } from "../api.js";
 import { componentReferenceSet, journeyReferenceSet, relatedComponentIds, stepReferenceSet } from "../layout/unifiedMap.js";
 import { ArchitectureRelationshipMap } from "./ArchitectureRelationshipMap.js";
 import { SystemStructureMap } from "./SystemStructureMap.js";
@@ -13,6 +14,10 @@ export function UnifiedMapView({
   onOpenSequence,
   systemFacts,
   architectureSvg,
+  architectureDocument,
+  architectureStatus = "idle",
+  architectureError,
+  onRetryArchitecture,
 }: {
   bundle: AnalysisBundle;
   onSelectComponent: (componentId: string) => void;
@@ -20,9 +25,14 @@ export function UnifiedMapView({
   systemFacts?: SystemFactStore | null;
   /** 저작된 시스템 구조 지도(SVG). 있으면 결정론적 관계 지도 대신 이것을 그린다. */
   architectureSvg?: string | null;
+  architectureDocument?: ArchitectureViewDocument | null;
+  architectureStatus?: "idle" | "authoring" | "ready" | "failed";
+  architectureError?: string | null;
+  onRetryArchitecture?: () => void;
 }): React.JSX.Element {
   const [focusRefs, setFocusRefs] = useState<Set<string>>(new Set());
   const [focusSource, setFocusSource] = useState<"system" | "journey" | null>(null);
+  const [journeySourcePaths, setJourneySourcePaths] = useState<Set<string>>(new Set());
   const highlightedComponentIds = useMemo(
     () => relatedComponentIds(bundle.architecture.components, focusRefs),
     [bundle.architecture.components, focusRefs],
@@ -55,6 +65,24 @@ export function UnifiedMapView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [focusRefs.size]);
 
+  // 기존 결정론적 지도는 evidence/entity ref를 직접 비교할 수 있다. 저작 지도는 sources
+  // 주소만 가지므로, 선택된 여정의 evidence ID를 파일 경로로 한 번 해석해 같은 파일을
+  // 인용한 component/connection을 강조한다. 개념 ref는 queryEvidence에서 자연스럽게 빠진다.
+  useEffect(() => {
+    if (focusSource !== "journey" || focusRefs.size === 0) {
+      setJourneySourcePaths(new Set());
+      return;
+    }
+    let cancelled = false;
+    void queryEvidence({ ids: [...focusRefs], limit: Math.min(200, focusRefs.size) }).then((result) => {
+      if (cancelled || isUnavailable(result)) return;
+      setJourneySourcePaths(new Set(result.evidence.flatMap((item) => item.filePath ? [item.filePath] : [])));
+    }).catch(() => {
+      if (!cancelled) setJourneySourcePaths(new Set());
+    });
+    return () => { cancelled = true; };
+  }, [focusRefs, focusSource]);
+
   return (
     <div className="unified-map">
       <header className="unified-map-title">
@@ -64,10 +92,24 @@ export function UnifiedMapView({
       <section id="system-map" className="unified-section" aria-labelledby="system-map-title">
         <div className="unified-section-heading">
           <div><p className="detail-eyebrow">시스템 구조</p><h3 id="system-map-title">코드가 나뉘고 연결되는 방식</h3></div>
-          <p>카드를 누르면 근거를 확인하고, 아래 여정에서 같은 근거를 쓰는 단계를 함께 찾습니다.</p>
+          <div className="architecture-authoring-status">
+            {architectureStatus === "authoring" && <span className="architecture-status architecture-status-running">저작 중…</span>}
+            {architectureStatus === "ready" && <span className="architecture-status architecture-status-ready">저작 지도</span>}
+            {architectureStatus === "failed" && (
+              <span className="architecture-status architecture-status-failed" title={architectureError ?? undefined}>
+                저작 실패 · 기본 지도 표시
+                {onRetryArchitecture && <button type="button" onClick={onRetryArchitecture}>다시 시도</button>}
+              </span>
+            )}
+            <p>카드를 누르면 근거를 확인하고, 아래 여정에서 같은 근거를 쓰는 단계를 함께 찾습니다.</p>
+          </div>
         </div>
         {architectureSvg ? (
-          <SystemStructureMap svg={architectureSvg} />
+          <SystemStructureMap
+            svg={architectureSvg}
+            document={architectureDocument}
+            highlightedSourcePaths={focusSource === "journey" ? journeySourcePaths : new Set()}
+          />
         ) : (
           <ArchitectureRelationshipMap
             ir={bundle.architecture}

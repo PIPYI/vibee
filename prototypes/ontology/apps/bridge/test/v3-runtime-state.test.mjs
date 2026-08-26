@@ -31,6 +31,19 @@ test("V3 사용량은 같은 turn을 대체하고 Semantic/Assembly를 합산한
   assert.deepEqual(task.stageUsages.map((usage) => usage.stage), ["semantic", "assembly"]);
 });
 
+test("turnId 없이 먼저 온 usage는 같은 stage의 named turn이 오면 승격되어 중복 합산되지 않는다", () => {
+  const state = new BridgeState();
+  state.createTask(runningTask());
+
+  state.recordStageUsage("task-v3", { stage: "semantic", billableTokens: 12, totalTokens: 120 });
+  state.recordStageUsage("task-v3", { stage: "semantic", turnId: "turn-semantic", billableTokens: 20, totalTokens: 220 });
+
+  const task = state.getTask("task-v3");
+  assert.equal(task.stageUsages.length, 1);
+  assert.deepEqual(task.stageUsages[0], { stage: "semantic", turnId: "turn-semantic", billableTokens: 20, totalTokens: 220 });
+  assert.equal(task.tokenUsage, 20, "대표 합계는 cache 제외 billable token이다");
+});
+
 test("V3 Bundle 검증 재시도와 최종 커밋을 task에 함께 남긴다", () => {
   const state = new BridgeState();
   state.createTask(runningTask());

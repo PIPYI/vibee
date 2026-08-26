@@ -388,6 +388,7 @@ export class CodexAdapter implements AgentAdapter {
             inputTokens: total.inputTokens,
             outputTokens: total.outputTokens,
             cacheReadTokens: total.cachedInputTokens,
+            providerTotalTokens: total.totalTokens,
           }, { inputIncludesCacheRead: true }),
           ...(handle?.model ? { model: handle.model } : {}),
         });

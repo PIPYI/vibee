@@ -31,6 +31,7 @@ import {
   type LinkIdCandidate,
 } from "./ids.js";
 import { parseGenericRoutePatterns } from "./generic-patterns.js";
+import { normalizeHttpPath, parseHttpCallPatterns, type HttpCall } from "./http-calls.js";
 import {
   collectAllRepositoryFiles,
   collectSourceFiles,
@@ -103,6 +104,82 @@ function resolveImportedDataPath(fromPath: string, specifier: string, indexed: S
   return candidate;
 }
 
+type RouteTarget = {
+  entity: Extract<EntityRef, { kind: "route" }>;
+  method: string;
+  path: string;
+};
+
+type HttpRouteMatch = {
+  target: RouteTarget;
+  certainty: "grounded" | "inferred";
+};
+
+function routeTarget(routeKey: string): RouteTarget | undefined {
+  const separator = routeKey.indexOf(" ");
+  if (separator < 1) return undefined;
+  const method = routeKey.slice(0, separator).toUpperCase();
+  const path = normalizeHttpPath(routeKey.slice(separator + 1));
+  if (!path) return undefined;
+  return { entity: { kind: "route", routeKey }, method, path };
+}
+
+function pathsHaveSuffixRelation(left: string, right: string): boolean {
+  if (left === "/" || right === "/") return false;
+  return left.endsWith(right) || right.endsWith(left);
+}
+
+/** 같은 method/path는 grounded, route prefix가 빠진 부분 일치는 inferred로만 남긴다. */
+function matchHttpCallToRoutes(call: HttpCall, targets: readonly RouteTarget[]): HttpRouteMatch[] {
+  const exact: HttpRouteMatch[] = [];
+  const partial: HttpRouteMatch[] = [];
+  for (const target of targets) {
+    const methodCompatible = call.method === target.method || call.method === "ANY" || target.method === "ANY";
+    if (!methodCompatible) continue;
+    if (call.path === target.path) {
+      exact.push({
+        target,
+        // 호출 method를 모른 채 특정 handler에 연결한 경우는 exact path여도 추정이다.
+        certainty: call.method === "ANY" && target.method !== "ANY" ? "inferred" : "grounded",
+      });
+    } else if (pathsHaveSuffixRelation(call.path, target.path)) {
+      partial.push({ target, certainty: "inferred" });
+    }
+  }
+  return exact.length > 0 ? exact : partial;
+}
+
+function sourceEntityForHttpCall(
+  relPath: string,
+  call: HttpCall,
+  sourceFile: ts.SourceFile | undefined,
+  sites: readonly SymbolSite[],
+  pythonSymbols: readonly PythonSymbol[] | undefined,
+): EntityRef {
+  if (sourceFile) {
+    const owner = sites
+      .filter((site) => {
+        const start = sourceFile.getLineAndCharacterOfPosition(site.node.getStart(sourceFile)).line + 1;
+        const end = sourceFile.getLineAndCharacterOfPosition(site.node.getEnd()).line + 1;
+        return call.line >= start && call.line <= end;
+      })
+      .sort((left, right) => {
+        const leftSpan = left.node.getEnd() - left.node.getStart(sourceFile);
+        const rightSpan = right.node.getEnd() - right.node.getStart(sourceFile);
+        return leftSpan - rightSpan || left.symbolId.localeCompare(right.symbolId);
+      })[0];
+    if (owner) return { kind: "symbol", symbolId: owner.symbolId };
+  }
+
+  const pythonOwner = pythonSymbols
+    ?.filter((symbol) => call.line >= symbol.startLine && call.line <= symbol.endLine)
+    .sort((left, right) =>
+      left.endLine - left.startLine - (right.endLine - right.startLine) || left.symbolId.localeCompare(right.symbolId),
+    )[0];
+  if (pythonOwner) return { kind: "symbol", symbolId: pythonOwner.symbolId };
+  return { kind: "file", filePath: relPath };
+}
+
 export function indexProject(projectRoot: string, options: IndexOptions): EvidenceIndex {
   const report: AdapterReportEntry[] = [];
   const version = options.analysisVersion;
@@ -165,6 +242,11 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   const genericRoutesByFile = new Map(
     genericPatternPaths.map((relPath) => [relPath, parseGenericRoutePatterns(sources.get(relPath)!)]),
   );
+  const httpCallsByFile = new Map(
+    indexed
+      .filter((relPath) => sourcePaths.includes(relPath))
+      .map((relPath) => [relPath, parseHttpCallPatterns(sources.get(relPath)!)]),
+  );
 
   const queueLink = (spec: PendingLinkSpec): void => {
     const localFingerprint = fingerprintOf(spec.extentText, "code");
@@ -181,7 +263,14 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
         normalizedFingerprint: localFingerprint,
         normalizationProfile: "code",
         excerpt: firstLine(spec.extentText),
-        graph: { role: "link", from: spec.from, to: spec.to, linkKind: spec.linkKind },
+        graph: {
+          role: "link",
+          from: spec.from,
+          to: spec.to,
+          linkKind: spec.linkKind,
+          ...(spec.mechanism ? { mechanism: spec.mechanism } : {}),
+          ...(spec.certainty ? { certainty: spec.certainty } : {}),
+        },
         summary: spec.summary,
         fileContentHash: spec.fileContentHash,
         observedAtVersion: version,
@@ -498,6 +587,49 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
 
     evidence.push(...output.entities);
     for (const link of output.links) queueLink(link);
+  }
+
+  // ---- P2.5: cross-runtime HTTP call → route ----------------------------
+
+  // route entity는 Python/generic pattern/P2 adapter 어느 경로에서든 올 수 있으므로, 모든
+  // adapter가 끝난 뒤에만 호출을 매칭한다. URL 리터럴이 있어도 local route가 없으면 evidence를
+  // 지어내지 않는다 — 외부 서비스 호출은 기존 integration discovery가 맡는다.
+  const routeTargets: RouteTarget[] = [];
+  for (const item of evidence) {
+    const graph = item.graph;
+    if (item.status !== "present" || item.kind !== "route" || graph?.role !== "entity") continue;
+    if (graph.entity.kind !== "route") continue;
+    const target = routeTarget(graph.entity.routeKey);
+    if (target) routeTargets.push(target);
+  }
+  routeTargets.sort((left, right) => left.entity.routeKey.localeCompare(right.entity.routeKey));
+
+  for (const [relPath, calls] of httpCallsByFile) {
+    if (calls.length === 0 || routeTargets.length === 0) continue;
+    const sourceFile = parsed.includes(relPath) ? program.getSourceFile(`${projectRoot}/${relPath}`) : undefined;
+    const sites = sitesByFile.get(relPath) ?? [];
+    const pythonSymbols = pythonByFile.get(relPath)?.symbols;
+    const fileHash = fileHashes[relPath]!;
+
+    for (const call of calls) {
+      const from = sourceEntityForHttpCall(relPath, call, sourceFile, sites, pythonSymbols);
+      const sourceLabel = from.kind === "symbol" ? from.symbolId : relPath;
+      for (const match of matchHttpCallToRoutes(call, routeTargets)) {
+        queueLink({
+          linkKind: "http_call",
+          from,
+          to: match.target.entity,
+          mechanism: `HTTP ${call.method} ${call.path}`,
+          certainty: match.certainty,
+          extentText: call.extentText,
+          location: { startLine: call.line, endLine: call.line },
+          startColumn: call.column,
+          filePath: relPath,
+          fileContentHash: fileHash,
+          summary: `${sourceLabel} 이 HTTP ${call.method} ${call.path} 로 ${match.target.entity.routeKey} 를 호출한다`,
+        });
+      }
+    }
   }
 
   // ---- P3: git_change ----------------------------------------------------

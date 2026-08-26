@@ -398,7 +398,14 @@ const entityRefSchema = z.union([
 
 const graphRoleSchema = z.union([
   z.object({ role: z.literal("entity"), entity: entityRefSchema, label: z.string() }),
-  z.object({ role: z.literal("link"), from: entityRefSchema, to: entityRefSchema, linkKind: z.string() }),
+  z.object({
+    role: z.literal("link"),
+    from: entityRefSchema,
+    to: entityRefSchema,
+    linkKind: z.string(),
+    mechanism: z.string().optional(),
+    certainty: z.enum(["grounded", "inferred"]).optional(),
+  }),
 ]);
 
 server.registerTool(
@@ -621,7 +628,7 @@ server.registerTool(
       "stateChanges?, phases?, entryStepId, outcomeStepIds } 형태다. 서로 다른 목적을 한 journey에 " +
       "합치지 않는다.\n\n" +
       "sequences: [{ id, title, triggeredByEdgeId, participants, messages: [{ id, " +
-      "fromParticipantId, toParticipantId, order, label, kind, evidenceRefs }], activations?, " +
+      "fromParticipantId, toParticipantId, order, label, kind(\"call\" | \"return\" | \"event\"), evidenceRefs }], activations?, " +
       "phases?, evidenceRefs }].\n\n" +
       "**규칙**: entityRefs는 실재하는 System Entity ID만, evidenceRefs는 실재하고 " +
       "present인 evidence id만 가리켜야 한다(빈 배열 금지, I9). connections.systemLinkRefs는 " +
@@ -665,11 +672,12 @@ server.registerTool(
     title: "Architecture 뷰 문서 검증",
     description:
       "저작한 ArchitectureViewDocument를 제출하지 않고 검증만 한다. schema(스키마 미준수) → " +
-      "geometry(viewBox 이탈·겹침·끊어진 참조·edge-crossing) → completeness(탐지된 런타임/데이터" +
+      "geometry(viewBox 이탈·24px 통로 미달·끊어진 참조·실제 route의 edge-crosses-component·label collision) → completeness(탐지된 런타임/데이터" +
       "저장소/라우트를 인용하는 component가 있는지, warning일 뿐 hard reject 아님) → citation" +
       "(sources[]의 경로·줄 범위가 실재하는지, 인용이 있을 때만 동작) 순으로 돈다. schema 오류가 " +
       "있으면 나머지 층은 건너뛰고 schema 오류만 돌아온다. diagnostics가 비어 있으면 " +
-      "submit_architecture_view로 제출한다. severity:\"error\"가 하나라도 있으면 제출이 거절된다.",
+      "submit_architecture_view로 제출한다. schema가 맞으면 응답의 layout에 실제 box/route points도 들어 있다. " +
+      "validate_architecture_view와 submit_architecture_view는 합쳐 최대 6회다. severity:\"error\"가 하나라도 있으면 제출이 거절된다.",
     inputSchema: architectureViewDocumentShape,
   },
   async (document) =>

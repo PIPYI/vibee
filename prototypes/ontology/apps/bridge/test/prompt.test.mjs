@@ -10,6 +10,7 @@ import { test } from "node:test";
 
 import {
   buildArchitectureViewPrompt,
+  buildArchitectureRepositoryBriefing,
   buildAssemblyPrompt,
   buildEvidenceBundle,
   buildFullAnalyzePrompt,
@@ -211,6 +212,12 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   assert.match(prompt, /userMap\.journeys/);
   assert.match(prompt, /Canonical Scenario마다 하나씩/);
   assert.match(prompt, /workflow\.mainPath의 모든 인접 node 쌍/);
+  assert.match(prompt, /sequences\[\]\.messages\[\]\.kind: `call` \| `return` \| `event`/);
+  assert.match(prompt, /kind: "return"/);
+  assert.match(prompt, /kind: "event"/);
+  assert.match(prompt, /같은 call evidenceRefs를 인용해도 된다/);
+  assert.match(prompt, /ui_event evidence/);
+  assert.match(prompt, /call\(사용자→UI\) → call\(UI→API\) → return\(API→UI\) → event\(UI→사용자\)/);
   assert.match(prompt, /첫 자료 조회로 get_assembly_context를 정확히 1회 호출한다/);
   assert.match(prompt, /packet 누락 또는 validator diagnostics/);
   assert.match(prompt, /개별 read tool[\s\S]*fallback/);
@@ -267,7 +274,7 @@ test("EVIDENCE_RULES는 get_evidence를 여러 id 한 번에 불러오라고 지
 });
 
 /**
- * `buildArchitectureViewPrompt` — v7. grounding 파이프라인과 완전히 분리된 archify 패턴
+ * `buildArchitectureViewPrompt` — V8 구조 지도 저작 turn. grounding 파이프라인과 분리하되
  * 저작 turn이다. get_assembly_context류 grounding tool을 지시하지 않고, 좌표를 AI가 직접
  * 쓰게 하며, validate/submit MCP tool 두 개만 언급해야 한다.
  */
@@ -281,9 +288,37 @@ test("Architecture 뷰 프롬프트는 grounding tool을 지시하지 않고 스
   assert.match(prompt, /"schemaVersion": 1/);
   assert.match(prompt, /좌표\(pos\)는 이 turn에서만 AI가 직접 쓴다/);
   assert.match(prompt, /6~12개/);
+  assert.match(prompt, /1200×760/);
+  assert.match(prompt, /프론트엔드가 백엔드를[\s\S]*HTTP로 호출하면 반드시 하나의 connection/);
+  assert.match(prompt, /cards는 핵심 결론 3장/);
+});
+
+test("V8 구조 지도 브리핑은 runtime·생성 산출물·외부 서비스·HTTP 매칭을 구분한다", () => {
+  const briefing = buildArchitectureRepositoryBriefing(
+    {
+      runtimes: [{ id: "runtime:web", label: "web", rootPath: "web", kind: "web-app", entrypointRefs: ["file:web/src/main.tsx"], evidenceRefs: [], origin: "manifest" }],
+      dataStores: [{ id: "store:sample", label: "샘플 출력", rootPath: "data", format: "json", origin: "generated-artifact", entityRefs: [], evidenceRefs: [] }],
+      routeSurfaces: [{ id: "route:api", filePath: "api/app.py", routeKeys: ["GET /health"], entityRefs: [], evidenceRefs: [] }],
+      coverage: { detectedRuntimeCount: 1, representedRuntimeCount: 0, detectedDataStoreCount: 1, representedDataStoreCount: 0, detectedRouteSurfaceCount: 1, representedRouteSurfaceCount: 0, missingRuntimeIds: [], missingDataStoreIds: [], missingRouteSurfaceIds: [], sharedBoundaryRuntimeIds: [] },
+    },
+    {
+      schemaVersion: 4,
+      analysisVersion: 1,
+      entities: [{ id: "resource:mail", ref: { kind: "resource", namespace: "npm", key: "mailer" }, kind: "resource", origin: "engine", certainty: "confirmed", evidenceRefs: [], dependsOnEvidenceRefs: [], status: "valid", firstSeenVersion: 1, lastValidatedVersion: 1 }],
+      links: [{ id: "http:health", from: { kind: "file", filePath: "web/src/client.ts" }, to: { kind: "route", routeKey: "GET /health" }, kind: "http_call", mechanism: "HTTP GET /health", origin: "engine", certainty: "grounded", evidenceRefs: [], dependsOnEvidenceRefs: [], status: "valid", firstSeenVersion: 1, lastValidatedVersion: 1 }],
+      diagnostics: [],
+    },
+  );
+  assert.match(briefing, /root=web/);
+  assert.match(briefing, /생성 산출물 — 샘플\/실행 출력이므로 독립 component로 만들지 말 것/);
+  assert.match(briefing, /npm:mailer/);
+  assert.match(briefing, /HTTP GET \/health · grounded/);
+  const prompt = buildArchitectureViewPrompt("/tmp/proj", briefing);
+  assert.match(prompt, /서버가 확인한 저장소 브리핑/);
+  assert.match(prompt, /HTTP 호출 ↔ 라우트 매칭/);
 });
 
 test("describeSession은 Architecture 뷰 프롬프트를 식별한다", () => {
   const prompt = buildArchitectureViewPrompt("/tmp/proj");
-  assert.equal(describeSession(prompt), "Architecture 뷰 저작 (archify 패턴)");
+  assert.equal(describeSession(prompt), "시스템 구조 지도 저작");
 });

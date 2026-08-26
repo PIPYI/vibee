@@ -56,6 +56,7 @@ export {
 export { collectSymbolSites, type SymbolSite } from "./sites.js";
 export { parsePythonSource, type PythonCall, type PythonRoute, type PythonSymbol } from "./python.js";
 export { parseGenericRoutePatterns, type GenericRoute } from "./generic-patterns.js";
+export { normalizeHttpPath, parseHttpCallPatterns, type HttpCall } from "./http-calls.js";
 export {
   DEGRADED_SIMILARITY_THRESHOLD,
   carryAgentEvidence,

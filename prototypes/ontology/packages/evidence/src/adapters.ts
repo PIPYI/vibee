@@ -29,6 +29,10 @@ export type PendingLinkSpec = {
   linkKind: string;
   from: EntityRef;
   to: EntityRef;
+  /** System Link identity와 표시용 전송 방식. */
+  mechanism?: string;
+  /** 경로 매칭처럼 엔진이 강도를 직접 판정한 link에만 붙인다. */
+  certainty?: "grounded" | "inferred";
   /** `localNormalizedFingerprint`를 계산할 extent 원문 */
   extentText: string;
   location: SourceRange;

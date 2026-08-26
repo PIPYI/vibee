@@ -11,9 +11,12 @@ import { architectureViewExampleText, architectureViewSchemaText } from "@onto/a
 import type { EvidenceGraph } from "@onto/core";
 import {
   analysisContractDigest,
+  type EntityRef,
   type EvidenceIndex,
   type IncrementalAnalysisPlan,
+  type RepositoryTopology,
   type SemanticWorkSet,
+  type SystemFactStore,
   type ViewRequest,
 } from "@onto/protocol";
 
@@ -349,6 +352,10 @@ function assemblyRules(packetEnabled: boolean): string {
   "8. 해석 가치가 있는 workflow.edges 에만 SequenceIR 을 만든다 — 모든 edge 에 만들 필요는",
   "   없다. edge.sequenceRef 와 그 SequenceIR.triggeredByEdgeId 는 반드시 서로를 가리켜야",
   "   한다(1엣지-1시퀀스, schema3 §3.4) — 어긋나면 거절된다.",
+  "   동기 호출이 의미 있는 결과를 돌려주면 반대 방향의 kind: \"return\" 메시지를 그 call과",
+  "   짝으로 넣고, return은 그 호출을 만든 같은 call evidenceRefs를 인용해도 된다.",
+  "   비동기 발행/구독·웹훅·UI 이벤트는 kind: \"event\"이며 ui_event evidence를 인용한다.",
+  "   예: call(사용자→UI) → call(UI→API) → return(API→UI) → event(UI→사용자).",
   "9. userMap.journeys 는 active Canonical Scenario마다 하나씩 만든다. 서로 다른 사용자 목적과",
   "   시스템 목적을 한 journey에 합치지 않는다. journey.id는 Canonical Scenario id를 그대로",
   "   쓰고 goal·entryStepId·outcomeStepIds·branch/loop를 보존한다. 모든 step은 근거가 있어야 한다.",
@@ -426,6 +433,9 @@ export function buildAssemblyPrompt(
     "   labelTerms 에는 그 용어들을 배열로도 넣는다.",
     "7. 해석 가치가 있는 workflow.edges 마다 그 구간을 SequenceIR 로 펼쳐 sequences 에",
     "   추가하고, edge.sequenceRef 와 SequenceIR.triggeredByEdgeId 를 서로 맞춘다.",
+    "   동기 call의 의미 있는 결과는 반대 방향 kind: \"return\"으로 짝을 이루게 하고 같은 call",
+    "   evidenceRefs를 인용해도 된다. 비동기 발행/구독·웹훅·UI 이벤트는 kind: \"event\"로",
+    "   만들고 ui_event evidence를 인용한다. 예: call → call → return → event.",
     "8. 각 active Canonical Scenario를 하나의 ScenarioIR로 펼쳐 userMap.journeys에 넣는다.",
     "   사용자 목적과 시스템 목적을 섞지 말고, participants·phases·branches·stateChanges 중",
     "   코드 근거가 있는 것만 쓴다. entry에서 모든 step이 도달 가능해야 한다.",
@@ -472,6 +482,82 @@ export function buildIncrementalAssemblyPrompt(
   ].join("\n");
 }
 
+function referenceLabel(ref: EntityRef): string {
+  switch (ref.kind) {
+    case "file": return ref.filePath;
+    case "symbol": return ref.symbolId;
+    case "route": return ref.routeKey;
+    case "model": return ref.modelKey;
+    case "resource": return `${ref.namespace}:${ref.key}`;
+  }
+}
+
+function currentSystemFact(status: SystemFactStore["entities"][number]["status"]): boolean {
+  return status === "valid" || status === "relocated";
+}
+
+function limitLines(items: readonly string[], max: number = 8): string[] {
+  if (items.length <= max) return [...items];
+  return [...items.slice(0, max), `- … 외 ${items.length - max}개`];
+}
+
+/**
+ * Architecture 저작 turn에만 넣는 결정론적 저장소 브리핑. 이것은 grounding gate가 아니라
+ * agent가 먼저 살펴볼 후보를 정확히 알려 주는 orientation 자료다.
+ */
+export function buildArchitectureRepositoryBriefing(
+  topology: RepositoryTopology,
+  systemFacts?: SystemFactStore,
+): string {
+  const runtimeLines = topology.runtimes.map((runtime) => {
+    const entrypoints = runtime.entrypointRefs.length > 0 ? runtime.entrypointRefs.join(", ") : "(탐지 없음)";
+    return `- ${runtime.label} · ${runtime.kind} · root=${runtime.rootPath || "."} · entrypoint=${entrypoints} · origin=${runtime.origin}`;
+  });
+  const routeLines = topology.routeSurfaces.map((surface) => {
+    const keys = surface.routeKeys.slice(0, 6).join(", ");
+    const more = surface.routeKeys.length > 6 ? ` 외 ${surface.routeKeys.length - 6}개` : "";
+    return `- ${surface.filePath}: ${keys || "(route key 없음)"}${more}`;
+  });
+  const storeLines = topology.dataStores.map((store) => {
+    const origin = store.origin === "generated-artifact"
+      ? "생성 산출물 — 샘플/실행 출력이므로 독립 component로 만들지 말 것"
+      : `선언된 ${store.format.toUpperCase()} 저장소`;
+    return `- ${store.label} · root=${store.rootPath} · ${origin}`;
+  });
+
+  const currentEntities = (systemFacts?.entities ?? []).filter((item) => currentSystemFact(item.status));
+  const currentLinks = (systemFacts?.links ?? []).filter((item) => currentSystemFact(item.status));
+  const externalLines = currentEntities
+    .filter((item) => item.ref.kind === "resource")
+    .map((item) => `- ${referenceLabel(item.ref)} (${item.certainty})`)
+    .sort();
+  const usesLines = currentLinks
+    .filter((item) => item.kind === "uses" && (item.from.kind === "resource" || item.to.kind === "resource"))
+    .map((item) => `- ${referenceLabel(item.from)} → ${referenceLabel(item.to)}${item.mechanism ? ` · ${item.mechanism}` : ""}`)
+    .sort();
+  const httpLines = currentLinks
+    .filter((item) => item.kind === "http_call")
+    .map((item) => `- ${referenceLabel(item.from)} → ${referenceLabel(item.to)} · ${item.mechanism ?? "HTTP"} · ${item.certainty}`)
+    .sort();
+
+  return [
+    "## 서버가 확인한 저장소 브리핑 (후보이며 hard gate가 아님)",
+    "### 독립 런타임",
+    ...(runtimeLines.length > 0 ? limitLines(runtimeLines) : ["- (탐지 없음)"]),
+    "### 라우트 표면",
+    ...(routeLines.length > 0 ? limitLines(routeLines) : ["- (탐지 없음)"]),
+    "### 로컬 데이터",
+    ...(storeLines.length > 0 ? limitLines(storeLines) : ["- (탐지 없음)"]),
+    "### 외부 라이브러리·서비스 (System Fact)",
+    ...(externalLines.length > 0 ? limitLines(externalLines) : ["- (현재 fact 없음 — 코드에서 직접 확인)"]),
+    ...(usesLines.length > 0 ? ["### 외부 사용 관계", ...limitLines(usesLines)] : []),
+    "### HTTP 호출 ↔ 라우트 매칭",
+    ...(httpLines.length > 0 ? limitLines(httpLines, 12) : ["- (확인된 매칭 없음)"]),
+    "이 목록은 존재가 확인된 후보를 요약한 것이다. 전부를 component로 그리라는 뜻은 아니지만,",
+    "프론트엔드↔백엔드 HTTP와 외부 서비스 관계는 구조 지도에서 반드시 검토한다.",
+  ].join("\n");
+}
+
 /**
  * 세션 미리보기를 사람이 읽을 이름으로 바꾼다.
  *
@@ -488,7 +574,7 @@ export function describeSession(preview: string): string {
   if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
   if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/User Map/Sequence 조립";
   if (text.startsWith("기존 AnalysisBundle 전체를 다시 만들지 말고")) return "증분 Architecture/User Map/Sequence 보정";
-  if (text.startsWith("이 프로젝트의 Architecture 다이어그램을 archify 패턴으로")) return "Architecture 뷰 저작 (archify 패턴)";
+  if (text.startsWith("이 프로젝트의 시스템 구조 지도를 직접 저작한다.")) return "시스템 구조 지도 저작";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 
@@ -517,7 +603,7 @@ export function buildVerifyPrompt(projectPath: string): string {
 }
 
 /**
- * v7 — Architecture 뷰 전용 archify 패턴 저작 turn (v7/README.md §5.1).
+ * V8 — 시스템 구조 지도 저작 turn.
  *
  * `buildAssemblyPrompt`와 근본적으로 다르다: `get_assembly_context`/`get_evidence`/
  * `get_system_facts` 등 grounding MCP tool을 전혀 지시하지 않는다. 대신 archify SKILL.md의
@@ -525,19 +611,20 @@ export function buildVerifyPrompt(projectPath: string): string {
  * 반복 수정, 두 라운드 연속 무개선이면 중단하고 보고)를 그대로 프롬프트 텍스트로 옮긴다.
  *
  * 저장소 탐색은 이 turn의 native Read/Grep/Glob(모든 TaskMode에 이미 부여됨)로 한다 — 새
- * evidence 도구를 만들지 않는다. 완전성 체크(Core 토폴로지)는 제출 뒤에만 warning으로
- * 돌아온다 — 저작을 막는 사전 게이트가 아니다(§4b). 그래서 여기서 토폴로지를 미리 보여주지
- * 않는다.
+ * evidence 도구를 만들지 않는다. 서버가 미리 계산한 저장소 브리핑은 탐색 우선순위를 주되
+ * grounding gate가 아니다 — agent가 코드로 대표 여부를 판단한다.
  */
-export function buildArchitectureViewPrompt(projectPath: string): string {
+export function buildArchitectureViewPrompt(projectPath: string, repositoryBriefing?: string): string {
   const maxRounds = 6;
   return [
-    "이 프로젝트의 Architecture 다이어그램을 archify 패턴으로 직접 저작한다.",
+    "이 프로젝트의 시스템 구조 지도를 직접 저작한다.",
     `프로젝트 경로: ${projectPath}`,
     "",
     "이것은 기존 core+ai 분석(semantic memory/System Fact grounding)과 완전히 다른 경로다.",
     "get_project_semantic_memory·get_system_facts·get_evidence 같은 grounding tool을 부르지",
     "마라 — 이 turn에는 없다. 대신 네가 가진 Read/Grep/Glob으로 저장소를 직접 읽는다.",
+    "",
+    repositoryBriefing ?? "## 서버가 확인한 저장소 브리핑\n(브리핑을 만들 수 없었다. 코드에서 직접 구조를 확인한다.)",
     "",
     "## 산출물 스키마 (JSON Schema, draft 2020-12)",
     "```json",
@@ -555,18 +642,23 @@ export function buildArchitectureViewPrompt(projectPath: string): string {
     "   드러내는 지점(entrypoint, 라우트 선언, 설정, 주요 클라이언트 호출)만 본다.",
     "2. 위 스키마를 만족하는 ArchitectureViewDocument를 저작한다.",
     "   - components는 6~12개의 거시 단위로 묶는다 — 파일/함수 단위로 늘어놓지 않는다.",
-    "   - 모든 component에 pos/size를 직접 정한다(viewBox 안, 서로 겹치지 않게). 렌더러는",
-    "     이 좌표를 그대로 그린다 — 자동 배치를 하지 않는다.",
+    "   - 기본 viewBox는 1200×760이다. 사용자 → 프론트엔드 → API → 서비스 → 저장소/외부의",
+    "     좌→우 계층 밴드를 우선하고, component는 대체로 145~200×70~80, 열 간 통로는 60px 이상,",
+    "     행 간 통로는 24px 이상 남긴다. 모든 component에 pos/size를 직접 정한다.",
+    "   - 독립 런타임과 외부 서비스는 boundary로 감싼다. variant는 emphasis=주 경로,",
+    "     security=인증/비밀 경유, dashed=비동기·추정 관계다. cards는 핵심 결론 3장으로 쓴다.",
     "   - 근거가 있는 component에는 sources[]에 { path, line?, endLine? }로 실제 파일 위치를",
     "     적는다. 지어내지 마라 — 존재하지 않는 경로/줄 범위는 제출 후 error로 거절된다.",
-    "   - connections는 실제로 코드에서 확인한 호출/의존 관계만 넣는다.",
+    "   - connections는 실제로 코드에서 확인한 호출/의존 관계만 넣는다. 프론트엔드가 백엔드를",
+    "     HTTP로 호출하면 반드시 하나의 connection으로 그리고, 외부 SaaS/LLM/스토리지는",
+    "     external/cloud component 후보로 반드시 검토한다.",
     "3. validate_architecture_view로 문서를 검증한다. diagnostics의 severity:\"error\"는",
     "   반드시 고친다. severity:\"warning\"(예: 탐지된 런타임/데이터 저장소/라우트를 인용하는",
     "   component가 없다는 completeness 경고)은 근거가 있으면 반영하고, 근거가 없거나 정말",
     "   대표할 component가 없으면 남겨도 된다 — 저작을 막지 않는다.",
     `4. error가 남아 있으면 고쳐서 다시 validate한다. 단, 같은 이유로 연속 2라운드 동안`,
     "   error 개수가 줄지 않으면 멈추고 남은 diagnostics를 그대로 보고한다 — 무한히 왕복하지",
-    `   마라(최대 ${maxRounds}회 validate 호출).`,
+    `   마라(validate와 submit 합산 최대 ${maxRounds}회).`,
     "5. error가 없으면(또는 4번 조건으로 멈췄으면) submit_architecture_view로 제출한다.",
     "",
     "규칙:",
@@ -577,6 +669,6 @@ export function buildArchitectureViewPrompt(projectPath: string): string {
     "3. label은 파일명이 아니라 사용자가 이해할 수 있는 이름을 쓴다. sublabel에는 구체적",
     "   기술(예: \"PostgreSQL\", \"Redis\")이나 배포 형태를 적을 수 있다.",
     "4. 전체 지도가 아니라 이 프로젝트를 처음 보는 사람이 5분 안에 이해할 수 있는 지도를",
-    "   만든다는 것이 목표다 — archify처럼 6~12개 노드를 벗어나지 않는다.",
+    "   만든다는 것이 목표다 — 6~12개 노드를 벗어나지 않는다.",
   ].join("\n");
 }

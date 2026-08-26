@@ -8,6 +8,7 @@ import type {
   AgentId,
   AgentReadiness,
   AnalysisBundle,
+  ArchitectureViewDocument,
   CachedView,
   HealthResponse,
   ModelOption,
@@ -205,7 +206,7 @@ export function fetchAnalysisBundle(projectPath?: string): Promise<AnalysisBundl
 // Architecture 뷰 — 시스템 구조 지도의 별도 저작 경로. AnalysisBundle을 대체하지 않는다.
 // ---------------------------------------------------------------------------
 
-export type ArchitectureViewResponse = { document: unknown; svg: string } | { error: string };
+export type ArchitectureViewResponse = { document: ArchitectureViewDocument; svg: string } | { error: string };
 
 export function startArchitectureView(
   agent: AgentId,

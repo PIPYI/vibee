@@ -16,12 +16,13 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { renderArchitectureViewSvg, validateArchitectureView } from "@onto/architecture-view";
+import { calculateArchitectureLayout, renderArchitectureViewSvg, validateArchitectureView } from "@onto/architecture-view";
 import {
   AnalyzeSession,
   SemanticStore,
   applyAnalysisBundlePatch,
   buildIncrementalAnalysisPlan,
+  buildEngineSystemFactStore,
   buildV4RolloutReport,
   buildSystemImpactSet,
   buildEvidenceGraph,
@@ -65,6 +66,7 @@ import type {
   ScenarioIR,
   SemanticPatch,
   SemanticWorkSet,
+  SystemFactStore,
   IncrementalAnalysisPlan,
   SystemIntelligenceV4Mode,
   SystemFactProposal,
@@ -103,6 +105,7 @@ import {
 import { onShutdown } from "./platform.js";
 import { modelSelectionError } from "./model-selection.js";
 import {
+  buildArchitectureRepositoryBriefing,
   buildArchitectureViewPrompt,
   buildAssemblyPrompt,
   buildIncrementalAssemblyPrompt,
@@ -142,6 +145,8 @@ const RUNTIME_CAPABILITIES = [
   "system-intelligence-v4",
   "v4-shadow-rollout-report",
   "generation-copy-forward-rollback",
+  "architecture-view-v8",
+  "analysis-console-v8",
 ] as const;
 
 const state = new BridgeState();
@@ -632,12 +637,12 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
     mcpCalls: [],
     exploredFiles: [],
     stageStates: [
-      { stage: "indexing", status: "running", startedAt, lastActivityAt: startedAt, message: "프로젝트 근거를 인덱싱하는 중" },
-      { stage: "semantic", status: "pending", message: "인덱싱 뒤 시작" },
-      { stage: "retrieval", status: "pending", message: "의미 이해 뒤 시작" },
-      { stage: "assembly", status: "pending", message: "근거 준비 뒤 시작" },
-      { stage: "validation", status: "pending", message: "지도 초안 제출 뒤 시작" },
-      { stage: "commit", status: "pending", message: "검증 통과 뒤 시작" },
+      { stage: "indexing", status: "running", startedAt, lastActivityAt: startedAt, completedUnits: 0, totalUnits: 1, message: "프로젝트 근거를 인덱싱하는 중" },
+      { stage: "semantic", status: "pending", completedUnits: 0, totalUnits: 1, message: "인덱싱 뒤 시작" },
+      { stage: "retrieval", status: "pending", completedUnits: 0, totalUnits: 1, message: "의미 이해 뒤 시작" },
+      { stage: "assembly", status: "pending", completedUnits: 0, totalUnits: 1, message: "근거 준비 뒤 시작" },
+      { stage: "validation", status: "pending", completedUnits: 0, totalUnits: 1, message: "지도 초안 제출 뒤 시작" },
+      { stage: "commit", status: "pending", completedUnits: 0, totalUnits: 1, message: "검증 통과 뒤 시작" },
     ],
   });
   state.emit({
@@ -911,6 +916,7 @@ function recordStage(
     ...(!previous?.startedAt && status !== "pending" ? { startedAt: now } : {}),
     ...(status === "completed" || status === "failed" ? { endedAt: now } : {}),
     ...(status === "running" || status === "correcting" ? { lastActivityAt: now } : {}),
+    ...(status === "completed" ? { completedUnits: previous?.totalUnits ?? 1, totalUnits: previous?.totalUnits ?? 1 } : {}),
     message,
     ...extra,
   });
@@ -1172,29 +1178,34 @@ async function runAnalyzePipeline(
   });
 
   recordStage(taskId, "retrieval", "running", "최신 의미 메모리와 저장소 경계를 준비하는 중");
+  const stopRetrievalHeartbeat = startStageHeartbeat(taskId, "retrieval");
 
   // Stage 2가 방금 커밋한 semantic memory를 반영한 최신 상태에서 골격을 다시 만든다.
-  const head = new SemanticStore(projectPath).load();
-  const skeleton = buildEvidenceGraph(head.evidence);
-  const topology = detectRepositoryTopology(projectPath, head.evidence);
   let stage3Prompt: string;
-  if (!assemblyPlan.fullAssembly && head.analysisBundle) {
-    const draftId = randomUUID();
-    state.setBundleDraft(taskId, draftId, structuredClone(head.analysisBundle));
-    stage3Prompt = buildIncrementalAssemblyPrompt(
-      projectPath,
-      draftId,
-      assemblyPlan,
-      buildSkeletonSummary(skeleton),
-      config.assemblyContextMode !== "off",
-    );
-  } else {
-    stage3Prompt = buildAssemblyPrompt(
-      projectPath,
-      buildSkeletonSummary(skeleton),
-      describeRepositoryTopology(topology),
-      config.assemblyContextMode !== "off",
-    );
+  try {
+    const head = new SemanticStore(projectPath).load();
+    const skeleton = buildEvidenceGraph(head.evidence);
+    const topology = detectRepositoryTopology(projectPath, head.evidence);
+    if (!assemblyPlan.fullAssembly && head.analysisBundle) {
+      const draftId = randomUUID();
+      state.setBundleDraft(taskId, draftId, structuredClone(head.analysisBundle));
+      stage3Prompt = buildIncrementalAssemblyPrompt(
+        projectPath,
+        draftId,
+        assemblyPlan,
+        buildSkeletonSummary(skeleton),
+        config.assemblyContextMode !== "off",
+      );
+    } else {
+      stage3Prompt = buildAssemblyPrompt(
+        projectPath,
+        buildSkeletonSummary(skeleton),
+        describeRepositoryTopology(topology),
+        config.assemblyContextMode !== "off",
+      );
+    }
+  } finally {
+    stopRetrievalHeartbeat();
   }
   recordStage(taskId, "retrieval", "completed", "지도 조립에 필요한 Core 근거 준비 완료");
 
@@ -1325,15 +1336,24 @@ app.post("/api/architecture-view", async (req: Request, res: Response) => {
 
   state.setProjectPath(projectPath);
   const taskId = randomUUID();
-  const prompt = buildArchitectureViewPrompt(projectPath);
 
-  // AI 턴 전에 서버가 조용히 토폴로지를 계산해 둔다 — AI에게 evidence 도구로 노출하지
-  // 않고(§4b), completeness 체크의 입력으로만 쓴다.
+  // AI 턴 전에 서버가 토폴로지와 System Fact를 결정론적으로 만들고, prompt에는 읽기 순서를
+  // 돕는 briefing으로만 넣는다. 이 값은 grounding gate가 아니며 agent는 여전히 코드를 읽는다.
+  const index = indexProject(projectPath, { analysisVersion: 0, includeTests: false });
   const topology = detectRepositoryTopology(
     projectPath,
-    indexProject(projectPath, { analysisVersion: 0, includeTests: false }),
+    index,
   );
-  state.startArchitectureViewSession(taskId, topology);
+  let previousSystemFacts: SystemFactStore | undefined;
+  try {
+    const store = new SemanticStore(projectPath);
+    if (store.isInitialized()) previousSystemFacts = store.load().systemFacts;
+  } catch {
+    // 현재 프로젝트 상태가 깨져 있어도 구조 지도 저작 자체를 막지 않는다 — 새 index fact만 쓴다.
+  }
+  const systemFacts = buildEngineSystemFactStore(index, previousSystemFacts);
+  const prompt = buildArchitectureViewPrompt(projectPath, buildArchitectureRepositoryBriefing(topology, systemFacts));
+  state.startArchitectureViewSession(taskId, topology, systemFacts);
 
   state.createTask({
     taskId,
@@ -2170,8 +2190,14 @@ async function validateBundleCandidate(
 
   recordStage(taskId, "assembly", "completed", "지도 초안 조립 완료");
   recordStage(taskId, "validation", "running", `지도 계약 검증 중 (${attempt}/${maxAttempts})`);
-  const store = new SemanticStore(projectPath);
-  const outcome = await commitAnalysisBundle(store, bundle);
+  const stopValidationHeartbeat = startStageHeartbeat(taskId, "validation");
+  let outcome: Awaited<ReturnType<typeof commitAnalysisBundle>>;
+  try {
+    const store = new SemanticStore(projectPath);
+    outcome = await commitAnalysisBundle(store, bundle);
+  } finally {
+    stopValidationHeartbeat();
+  }
 
   if (!outcome.ok) {
     const existingDraft = state.getBundleDraft(taskId);
@@ -2217,9 +2243,11 @@ async function validateBundleCandidate(
 
   recordStage(taskId, "validation", "completed", `지도 계약 검증 통과 (${attempt}/${maxAttempts})`);
   recordStage(taskId, "commit", "running", "검증된 지도를 generation에 커밋하는 중");
+  const stopCommitHeartbeat = startStageHeartbeat(taskId, "commit");
   state.recordBundleCommit(taskId, outcome.value.generation);
   state.clearBundleDraft(taskId);
   recordStage(taskId, "commit", "completed", `generation ${outcome.value.generation} 커밋 완료`);
+  stopCommitHeartbeat();
   const correctedAttempts = Math.max(0, attempt - 1);
   state.emit({
     type: "bundle.ready",
@@ -2312,7 +2340,7 @@ app.post("/internal/validate-architecture-view", requireToken, (req: Request, re
     res.json({ error: "no_active_transaction", next_step: "architecture turn 중에만 validate_architecture_view를 쓸 수 있습니다." });
     return;
   }
-  const attempt = state.recordArchitectureViewValidateAttempt(active.taskId, MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS);
+  const attempt = state.recordArchitectureViewAttempt(active.taskId, MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS);
   if (!attempt.allowed) {
     // 프롬프트 규율("두 라운드 연속 무개선 시 중단")만 믿지 않는다 — 하드 캡이다
     // (v7/README.md §5.2, archify SKILL.md의 bounded repair loop를 서버에서 강제한다).
@@ -2323,7 +2351,7 @@ app.post("/internal/validate-architecture-view", requireToken, (req: Request, re
         {
           code: "architecture-view/validate-limit",
           severity: "error",
-          message: `validate_architecture_view를 ${MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS}회 넘게 불렀습니다. 더 반복하지 말고 남은 diagnostics를 그대로 보고하세요.`,
+          message: `validate_architecture_view와 submit_architecture_view를 합쳐 ${MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS}회 넘게 불렀습니다. 더 반복하지 말고 남은 diagnostics를 그대로 보고하세요.`,
           subject: {},
           evidence: { attempt: attempt.attempt, max: MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS },
           supportedFixes: [],
@@ -2333,11 +2361,18 @@ app.post("/internal/validate-architecture-view", requireToken, (req: Request, re
     return;
   }
   const topology = state.getArchitectureViewTopology(active.taskId);
+  const systemFacts = state.getArchitectureViewSystemFacts(active.taskId);
   const diagnostics = validateArchitectureView(req.body, {
     projectPath: active.projectPath,
     ...(topology ? { repositoryTopology: topology } : {}),
+    ...(systemFacts ? { systemFacts } : {}),
   });
-  res.json({ ok: !hasError(diagnostics), diagnostics });
+  const schemaInvalid = diagnostics.some((item) => item.code === "architecture-view/schema");
+  res.json({
+    ok: !hasError(diagnostics),
+    diagnostics,
+    ...(schemaInvalid ? {} : { layout: calculateArchitectureLayout(req.body as ArchitectureViewDocument) }),
+  });
 });
 
 app.post("/internal/submit-architecture-view", requireToken, async (req: Request, res: Response) => {
@@ -2347,11 +2382,31 @@ app.post("/internal/submit-architecture-view", requireToken, async (req: Request
     res.json({ error: "no_active_transaction", next_step: "architecture turn 중에만 submit_architecture_view를 쓸 수 있습니다." });
     return;
   }
+  const attempt = state.recordArchitectureViewAttempt(active.taskId, MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS);
+  if (!attempt.allowed) {
+    res.json({
+      ok: false,
+      retryable: false,
+      diagnostics: [
+        {
+          code: "architecture-view/validate-limit",
+          severity: "error",
+          message: `validate_architecture_view와 submit_architecture_view를 합쳐 ${MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS}회 넘게 불렀습니다. 더 반복하지 말고 남은 diagnostics를 그대로 보고하세요.`,
+          subject: {},
+          evidence: { attempt: attempt.attempt, max: MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS },
+          supportedFixes: [],
+        },
+      ],
+    });
+    return;
+  }
   // 클라이언트가 이미 검증했다고 보고해도 서버가 다시 검증한다(defense in depth, §6).
   const topology = state.getArchitectureViewTopology(active.taskId);
+  const systemFacts = state.getArchitectureViewSystemFacts(active.taskId);
   const diagnostics = validateArchitectureView(req.body, {
     projectPath: active.projectPath,
     ...(topology ? { repositoryTopology: topology } : {}),
+    ...(systemFacts ? { systemFacts } : {}),
   });
   if (hasError(diagnostics)) {
     state.emit({ type: "validation.failed", taskId: active.taskId, tool: "submit_architecture_view", diagnostics });

@@ -117,7 +117,14 @@ export function buildEngineSystemFactStore(
 
   const linkGroups = new Map<
     string,
-    { from: EntityRef; to: EntityRef; kind: string; evidenceRefs: string[] }
+    {
+      from: EntityRef;
+      to: EntityRef;
+      kind: string;
+      mechanism?: string;
+      certainty: SystemLink["certainty"];
+      evidenceRefs: string[];
+    }
   >();
   for (const evidence of index.evidence) {
     if (evidence.origin !== "engine" || evidence.status !== "present" || evidence.graph?.role !== "link") continue;
@@ -128,10 +135,29 @@ export function buildEngineSystemFactStore(
       ? canonicalResourceRef(evidence.graph.to)
       : evidence.graph.to;
     if (!evidenceByEntity.has(systemEntityId(from)) || !evidenceByEntity.has(systemEntityId(to))) continue;
-    const id = systemLinkId({ kind: evidence.graph.linkKind, from, to });
+    const mechanism = evidence.graph.mechanism;
+    const certainty = evidence.graph.certainty ?? "confirmed";
+    const id = systemLinkId({
+      kind: evidence.graph.linkKind,
+      from,
+      to,
+      ...(mechanism ? { mechanism } : {}),
+    });
     const current = linkGroups.get(id);
-    if (current) current.evidenceRefs.push(evidence.id);
-    else linkGroups.set(id, { from, to, kind: evidence.graph.linkKind, evidenceRefs: [evidence.id] });
+    if (current) {
+      current.evidenceRefs.push(evidence.id);
+      // 여러 근거가 같은 사실을 가리킬 때 약한 매칭을 숨기지 않는다.
+      if (certaintyRank(certainty) < certaintyRank(current.certainty)) current.certainty = certainty;
+    } else {
+      linkGroups.set(id, {
+        from,
+        to,
+        kind: evidence.graph.linkKind,
+        ...(mechanism ? { mechanism } : {}),
+        certainty,
+        evidenceRefs: [evidence.id],
+      });
+    }
   }
 
   const links: SystemLink[] = [...linkGroups.entries()].map(([id, item]) => {
@@ -143,8 +169,9 @@ export function buildEngineSystemFactStore(
       from: item.from,
       to: item.to,
       kind: item.kind,
+      ...(item.mechanism ? { mechanism: item.mechanism } : {}),
       origin: "engine",
-      certainty: "confirmed",
+      certainty: item.certainty,
       evidenceRefs,
       dependsOnEvidenceRefs: uniqueSorted([...evidenceRefs, ...fromEvidence, ...toEvidence]),
       status: "valid",

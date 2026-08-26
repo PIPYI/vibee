@@ -130,6 +130,8 @@ test("validate_architecture_view — 유효한 문서는 진단이 없다", asyn
     const { body } = await post("/internal/validate-architecture-view", minimalDoc());
     assert.equal(body.ok, true, JSON.stringify(body));
     assert.deepEqual(body.diagnostics, []);
+    assert.deepEqual(body.layout.components, [{ id: "svc", rect: { x: 50, y: 50, width: 200, height: 100 } }]);
+    assert.deepEqual(body.layout.routes, []);
   } finally {
     endTask(taskId);
   }
@@ -209,6 +211,25 @@ test("submit_architecture_view — 검증을 통과하면 커밋되고 GET으로
     // AnalysisBundle.architecture와 완전히 별도 경로다 — 건드리지 않는다.
     const head = seeded.store.load();
     assert.equal(head.analysisBundle, null);
+  } finally {
+    endTask(taskId);
+  }
+});
+
+test("submit_architecture_view도 validate와 같은 bounded repair 예산을 소비한다", async () => {
+  const seeded = await indexedProject();
+  const { taskId } = await openArchitectureViewTask(seeded);
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      const { body } = await post("/internal/validate-architecture-view", minimalDoc());
+      assert.equal(body.ok, true, JSON.stringify(body));
+    }
+    const sixth = await post("/internal/submit-architecture-view", minimalDoc());
+    assert.equal(sixth.body.ok, true, JSON.stringify(sixth.body));
+    const seventh = await post("/internal/submit-architecture-view", minimalDoc());
+    assert.equal(seventh.body.ok, false);
+    assert.equal(seventh.body.retryable, false);
+    assert.ok(hasErrorCode(seventh.body.diagnostics, "architecture-view/validate-limit"));
   } finally {
     endTask(taskId);
   }
