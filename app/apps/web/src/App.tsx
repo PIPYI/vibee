@@ -3,6 +3,9 @@ import { useState } from "react";
 import { Sidebar, type FeatureId } from "./components/Sidebar.js";
 import { TopBar } from "./components/TopBar.js";
 import { ComingSoon } from "./features/ComingSoon.js";
+import { ArchitectureMain } from "./features/architecture/ArchitectureMain.js";
+import { ArchitecturePanel } from "./features/architecture/ArchitecturePanel.js";
+import { useArchitectureFeature } from "./features/architecture/useArchitectureFeature.js";
 import { DesignMain } from "./features/design/DesignMain.js";
 import { DesignPanel } from "./features/design/DesignPanel.js";
 import { useDesignFeature } from "./features/design/useDesignFeature.js";
@@ -22,6 +25,7 @@ export function App() {
   const [feature, setFeature] = useState<FeatureId>("design");
   const design = useDesignFeature();
   const drift = useDriftFeature();
+  const architecture = useArchitectureFeature();
 
   return (
     <div className="shell">
@@ -32,11 +36,14 @@ export function App() {
           <h2>{FEATURE_LABELS[feature]}</h2>
           {feature === "design" && <DesignPanel {...design} />}
           {feature === "drift" && <DriftPanel {...drift} />}
-          {feature !== "design" && feature !== "drift" && <ComingSoon label={FEATURE_LABELS[feature]} />}
+          {feature === "architecture" && <ArchitecturePanel {...architecture} />}
+          {feature === "wiki" && <ComingSoon label={FEATURE_LABELS[feature]} />}
+          {feature === "analysis" && <ComingSoon label={FEATURE_LABELS[feature]} />}
         </aside>
         <main className="main">
           {feature === "design" && <DesignMain {...design} />}
           {feature === "drift" && <DriftMain {...drift} />}
+          {feature === "architecture" && <ArchitectureMain {...architecture} />}
         </main>
       </div>
     </div>

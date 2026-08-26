@@ -3,6 +3,8 @@ import type {
   AgentEventEnvelope,
   AppContext,
   AppContextPatch,
+  ArchitectureContext,
+  ArchitectureDebtReport,
   AskUserInput,
   DesignDigest,
   DesignDoc,
@@ -67,6 +69,9 @@ export class BridgeState {
 
   private reviewContext: ReviewContext | null = null;
   private driftReport: ReportDriftInput | null = null;
+
+  private architectureReport: ArchitectureDebtReport | null = null;
+  private architectureContext: ArchitectureContext | null = null;
 
   getAppContext(includeDesign = false): AppContext {
     return {
@@ -137,6 +142,25 @@ export class BridgeState {
 
   getDriftReport(): ReportDriftInput | null {
     return this.driftReport;
+  }
+
+  // ---------- 아키텍처·기술부채 ----------
+
+  startArchitecture(context: ArchitectureContext): void {
+    this.architectureReport = null;
+    this.architectureContext = context;
+  }
+
+  recordArchitecture(report: ArchitectureDebtReport): void {
+    this.architectureReport = report;
+  }
+
+  getArchitectureReport(): ArchitectureDebtReport | null {
+    return this.architectureReport;
+  }
+
+  getArchitectureContext(): ArchitectureContext | null {
+    return this.architectureContext;
   }
 
   // ---------- 설계 산출물 ----------

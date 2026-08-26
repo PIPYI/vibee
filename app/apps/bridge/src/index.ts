@@ -14,6 +14,8 @@ import { WebSocketServer } from "ws";
 import { BRIDGE_HOST, BRIDGE_TOKEN_HEADER, type AgentReadiness, type ModelOption } from "@vci/protocol";
 import type {
   AskUserInput,
+  ArchitectureContext,
+  ArchitectureDebtReport,
   DesignDoc,
   ExportDesignRequest,
   InterviewMessageRequest,
@@ -22,6 +24,7 @@ import type {
   ReviewCriterion,
   ReviewStart,
   ReportDriftInput,
+  StartArchitectureRequest,
   StartReviewRequest,
   ReviewLog,
 } from "@vci/protocol";
@@ -40,7 +43,17 @@ import {
   suggestFirstPrompt,
   validateDesign,
 } from "./design.js";
-import { buildInterviewPrompt, buildReviewPrompt, renderResolutionPrompt } from "./prompt.js";
+import {
+  collectArchitectureContext,
+  renderArchitectureMarkdown,
+  renderArchitectureResolutionPrompt,
+} from "./architecture.js";
+import {
+  buildArchitecturePrompt,
+  buildInterviewPrompt,
+  buildReviewPrompt,
+  renderResolutionPrompt,
+} from "./prompt.js";
 import { cliSpawnOptions } from "./platform.js";
 
 const log = (...args: unknown[]): void => console.log("[vci-bridge]", ...args);
@@ -450,6 +463,72 @@ app.post("/api/review", async (req: Request, res: Response) => {
   });
 });
 
+/**
+ * 기존 코드베이스 전체의 아키텍처·기술부채를 읽기 전용으로 분석한다.
+ * Wiki·Drift와 결과 상태를 공유하지 않는다.
+ */
+app.post("/api/architecture", async (req: Request, res: Response) => {
+  const body = req.body as StartArchitectureRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  // Architecture는 Drift와 달리 인터뷰를 거치지 않은 프로젝트에서도 동작한다 —
+  // design.json이 없으면 collectArchitectureContext가 빈 designRefs를 돌려주고,
+  // agent가 코드만 보고 판단한다 (docs/product_flow_decisions.md 질문 7).
+  const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
+  const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
+  let context;
+  try {
+    context = await collectArchitectureContext(projectPath, design);
+  } catch (error) {
+    res.status(400).json({ error: `구조 점검 입력을 만들지 못했습니다: ${asMessage(error)}` });
+    return;
+  }
+
+  state.startArchitecture(context);
+  // 구조 점검 한 번이 독립된 sitting 하나다. 다른 mode의 세션 참조는 건드리지 않는다.
+  adapter.resetSession(projectPath, "architecture");
+
+  const taskId = randomUUID();
+  const label = "architecture and technical debt";
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId });
+
+  void runTask(adapter, taskId, projectPath, buildArchitecturePrompt(), "architecture", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
 app.get("/internal/review-context", requireToken, (_req: Request, res: Response) => {
   noteMcpEndpointHit("get_review_context");
   const context = state.getReviewContext();
@@ -507,6 +586,109 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
     })();
   }
 
+  res.json({ taskId, warnings });
+});
+
+app.get("/internal/architecture-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_architecture_context");
+  const context = state.getArchitectureContext();
+  if (!context) {
+    res.status(409).json({ error: "No architecture structure check is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+app.post("/internal/architecture", requireToken, async (req: Request, res: Response) => {
+  const report = req.body as ArchitectureDebtReport;
+  if (
+    typeof report?.summary !== "string" ||
+    !Array.isArray(report?.findings) ||
+    !Array.isArray(report?.limitations) ||
+    report.findings.some(
+      (finding) =>
+        !["oversized-module", "duplicated-logic", "stale-temporary-workaround"].includes(finding.category) ||
+        !Array.isArray(finding.files) ||
+        !Array.isArray(finding.evidence) ||
+        !Array.isArray(finding.designIds),
+    )
+  ) {
+    res.status(400).json({ error: "summary, findings, evidence, designIds and limitations are required" });
+    return;
+  }
+
+  const projectPath = state.getAppContext().projectPath;
+  const context = state.getArchitectureContext();
+  if (!context) {
+    res.status(409).json({ error: "No architecture structure check is in progress." });
+    return;
+  }
+  const evidence = new Set(report.findings.flatMap((finding) => finding.files));
+  const knownDesignIds = new Set(context.designRefs.map((ref) => ref.id));
+  const warnings: string[] = [];
+  for (const file of evidence) {
+    if (!file || file.startsWith("/") || file.split(/[\\/]/).includes("..")) {
+      warnings.push(`Invalid project-relative evidence path: ${file || "(empty)"}`);
+      continue;
+    }
+    try {
+      await stat(join(projectPath, file));
+    } catch {
+      warnings.push(`Evidence path does not exist: ${file}`);
+    }
+  }
+  for (const finding of report.findings) {
+    for (const id of finding.designIds) {
+      if (!knownDesignIds.has(id)) warnings.push(`Unknown design id: ${id}`);
+    }
+  }
+
+  const automaticLimitations: string[] = [];
+  if (context.designRefs.length === 0) {
+    automaticLimitations.push(
+      ".project-intel/design.json이 없어, oversized-module 판정에 REQ/ENTITY 경계 대신 agent가 코드를 직접 읽은 판단만 사용했습니다.",
+    );
+  }
+  const unreadContent = context.files.filter((file) => !file.contentScanned).length;
+  if (unreadContent > 0) {
+    automaticLimitations.push(`크기 상한 때문에 본문을 읽지 않은 source 파일이 ${unreadContent}개 있습니다.`);
+  }
+  if (context.truncated.files > 0) {
+    automaticLimitations.push(`source 파일 상한으로 ${context.truncated.files}개를 목록에서 제외했습니다.`);
+  }
+  if (context.truncated.signatures > 0) {
+    automaticLimitations.push(`함수/메서드 시그니처 상한으로 ${context.truncated.signatures}개를 제외했습니다.`);
+  }
+  if (context.truncated.temporaryMarkers > 0) {
+    automaticLimitations.push(`임시 조치 마커 상한으로 ${context.truncated.temporaryMarkers}개를 제외했습니다.`);
+  }
+
+  const generatedAt = new Date().toISOString();
+  const enrichedReport: ArchitectureDebtReport = {
+    ...report,
+    limitations: [...new Set([...report.limitations, ...automaticLimitations])],
+    generatedAt,
+    commit: context.currentCommit,
+    findings: report.findings.map((finding) => ({
+      ...finding,
+      resolutionPrompt: renderArchitectureResolutionPrompt(finding),
+    })),
+  };
+
+  try {
+    await writeArchitectureReport(projectPath, enrichedReport);
+  } catch (error) {
+    res.status(500).json({ error: `아키텍처 리포트 저장 실패: ${asMessage(error)}` });
+    return;
+  }
+
+  state.recordArchitecture(enrichedReport);
+  const taskId = noteMcpEndpointHit("report_architecture");
+  if (taskId) state.emit({ type: "app.architecture", taskId, report: enrichedReport });
+  else log("report_architecture arrived with no active task; stored but not routed to the UI");
+
+  log(`report_architecture: 부채 ${report.findings.length}건 → ${DESIGN_DIR}/architecture.{json,md}`);
+  for (const warning of warnings) log(`  ! ${warning}`);
   res.json({ taskId, warnings });
 });
 
@@ -683,6 +865,14 @@ async function writeReviewLog(projectPath: string, log: ReviewLog): Promise<void
   const dir = join(projectPath, DESIGN_DIR);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+}
+
+/** 구조 점검은 이력 배열을 쌓지 않고 현재 snapshot을 덮어쓴다. 추세는 git이 남긴다. */
+async function writeArchitectureReport(projectPath: string, report: ArchitectureDebtReport): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "architecture.json"), JSON.stringify(report, null, 2), "utf8");
+  await writeFile(join(dir, "architecture.md"), renderArchitectureMarkdown(report), "utf8");
 }
 
 /** ref가 이 저장소에 실제로 있는지. */

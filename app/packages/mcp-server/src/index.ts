@@ -21,6 +21,8 @@ import { z } from "zod";
 import {
   BRIDGE_TOKEN_HEADER,
   type AppContext,
+  type ArchitectureContext,
+  type ArchitectureDebtReport,
   type AskUserInput,
   type DesignDoc,
   type ShowResultInput,
@@ -398,6 +400,78 @@ server.registerTool(
           text:
             `Drift report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
             (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  "get_architecture_context",
+  {
+    title: "Get architecture structure-check context",
+    description:
+      "Get deterministic inputs for the current structure check: file sizes with design " +
+      "mappings, function signatures, and temporary markers with git age. Read this before " +
+      "opening relevant files and calling report_architecture.",
+    inputSchema: {},
+  },
+  async () => {
+    const context = await bridgeFetch<ArchitectureContext>("/internal/architecture-context");
+    log(
+      "get_architecture_context ->",
+      `${context.scannedFiles} files, ${context.signatures.length} signatures, ` +
+        `${context.temporaryMarkers.length} temporary markers`,
+    );
+    return { content: [{ type: "text", text: JSON.stringify(context) }] };
+  },
+);
+
+/** 세 범주의 판단 결과를 구조화해 앱으로 보낸다. */
+server.registerTool(
+  "report_architecture",
+  {
+    title: "Report architecture and technical debt",
+    description:
+      "Submit evidence-backed findings from the focused structure check. Only oversized-module, " +
+      "duplicated-logic and stale-temporary-workaround are allowed. Call exactly once after " +
+      "confirming candidates in source files. An empty findings array is valid.",
+    inputSchema: {
+      summary: z.string().describe("Plain-language summary of this structure check"),
+      findings: z.array(
+        z.object({
+          category: z.enum([
+            "oversized-module",
+            "duplicated-logic",
+            "stale-temporary-workaround",
+          ]),
+          severity: z.enum(["high", "medium", "low"]),
+          title: z.string().describe("Short, concrete title"),
+          explanation: z.string().describe("What the current code structure does"),
+          impact: z.string().describe("What becomes harder to change or maintain, in plain language"),
+          files: z.array(z.string()).describe("Real project-relative paths opened as evidence"),
+          evidence: z.array(z.string()).describe("Concrete supplied-list and source-code evidence"),
+          designIds: z.array(z.string()).describe("REQ/ENTITY ids from context used as evidence, or []"),
+          suggestion: z.string().describe("One bounded next action for the user's coding agent"),
+        }),
+      ),
+      limitations: z.array(z.string()).describe("Important areas that could not be inspected or verified"),
+    },
+  },
+  async (input) => {
+    const report = input as ArchitectureDebtReport;
+    const ack = await bridgeFetch<{ taskId: string | null; warnings: string[] }>("/internal/architecture", {
+      method: "POST",
+      body: JSON.stringify(report),
+    });
+    log("report_architecture ->", `findings ${report.findings.length}`);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Architecture report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
+            (ack.warnings.length ? `\n\nEvidence warnings:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],
     };

@@ -75,8 +75,57 @@ export function describeSession(preview: string): string {
   if (!text) return "(빈 대화)";
   if (text.startsWith("You are interviewing a NON-PROGRAMMER")) return "요구사항 인터뷰";
   if (text.startsWith("You are checking a code change")) return "드리프트 리뷰";
+  if (text.startsWith("You are doing a focused structure check")) return "아키텍처·기술부채";
   // 아직 매칭할 기능별 프롬프트가 없다 — 원문이 곧 가장 좋은 설명이다.
   return text.replace(/\s+/g, " ").slice(0, 80);
+}
+
+/**
+ * 아키텍처·기술부채 구조 점검 프롬프트.
+ *
+ * 전체 코드를 문맥에 던지는 대신 코드가 준비한 세 목록을 먼저 준다. agent는 목록에서 의미를
+ * 판단하고 필요한 파일만 읽어 확인한다. 결합도·순환 의존 같은 범용 리뷰로 넓어지지 않게
+ * 확정한 세 범주만 열어 둔다 (`docs/product_flow_decisions.md` 질문 5).
+ *
+ * 이 프롬프트는 짧게 유지한다 — 예전에 규칙 하나를 8줄로 풀어 쓰자 약한 모델(Codex
+ * gpt-5.6-luna, low)이 `report_architecture`를 아예 호출하지 않고 turn을 끝내는 회귀가
+ * 실측으로 확인됐다. 프롬프트 길이 자체가 회귀 위험이다.
+ */
+export function buildArchitecturePrompt(): string {
+  return [
+    "You are doing a focused structure check of an EXISTING codebase for a NON-PROGRAMMER.",
+    "You are inside the Vibe Coding Project Intelligence app. Write the report in Korean.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_architecture_context` (server: vci-app). Code has already scanned the",
+    "   project and prepared file sizes/design mappings, function signatures and temporary",
+    "   markers with git age.",
+    "2. Judge only the three categories below. Use Read/Grep/Glob to open the relevant candidate",
+    "   files and confirm meaning before reporting a finding.",
+    "3. Call `report_architecture` (server: vci-app) exactly ONCE, then end your turn.",
+    "",
+    "The ONLY allowed categories:",
+    "- `oversized-module`: a file has accumulated multiple distinct project responsibilities.",
+    "  Size alone is NOT a finding. Cite `designIds` when `designRefs` has REQ/ENTITY entries;",
+    "  if `designRefs` is empty, judge purely from reading the file and leave `designIds` empty.",
+    "- `duplicated-logic`: functions with different text/signatures actually perform the same",
+    "  project behavior, so changing one can leave the others inconsistent.",
+    "- `stale-temporary-workaround`: a TODO/temporary workaround has remained while later commits",
+    "  built on it, making removal materially harder. A marker alone is NOT a finding.",
+    "",
+    "Rules:",
+    "- Do NOT report coupling, cohesion, dependency cycles, layer violations, style, naming,",
+    "  formatting, generic best practices or raw line-count thresholds.",
+    "- Every finding must cite real project-relative files you opened plus concrete evidence from",
+    "  the supplied lists. Use designIds only when the supplied context contains those ids.",
+    "- Explain what becomes harder for this app's user in plain language.",
+    "- An empty findings array is valid when there is no evidence of material technical debt.",
+    "- Put scan truncation, missing design data, unsupported languages or unverified candidates in",
+    "  `limitations`; do not turn uncertainty into a finding.",
+    "",
+    "Do NOT change any file. Suggestions are bounded refactoring actions for the user's connected",
+    "coding agent to perform later, not work to perform in this turn.",
+  ].join("\n");
 }
 
 /**
