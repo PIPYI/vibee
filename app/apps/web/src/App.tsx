@@ -12,6 +12,9 @@ import { useDesignFeature } from "./features/design/useDesignFeature.js";
 import { DriftMain } from "./features/drift/DriftMain.js";
 import { DriftPanel } from "./features/drift/DriftPanel.js";
 import { useDriftFeature } from "./features/drift/useDriftFeature.js";
+import { WikiMain } from "./features/wiki/WikiMain.js";
+import { WikiPanel } from "./features/wiki/WikiPanel.js";
+import { useWikiFeature } from "./features/wiki/useWikiFeature.js";
 
 const FEATURE_LABELS: Record<FeatureId, string> = {
   design: "Design",
@@ -26,6 +29,7 @@ export function App() {
   const design = useDesignFeature();
   const drift = useDriftFeature();
   const architecture = useArchitectureFeature();
+  const wiki = useWikiFeature();
 
   return (
     <div className="shell">
@@ -37,13 +41,14 @@ export function App() {
           {feature === "design" && <DesignPanel {...design} />}
           {feature === "drift" && <DriftPanel {...drift} />}
           {feature === "architecture" && <ArchitecturePanel {...architecture} />}
-          {feature === "wiki" && <ComingSoon label={FEATURE_LABELS[feature]} />}
+          {feature === "wiki" && <WikiPanel {...wiki} />}
           {feature === "analysis" && <ComingSoon label={FEATURE_LABELS[feature]} />}
         </aside>
         <main className="main">
           {feature === "design" && <DesignMain {...design} />}
           {feature === "drift" && <DriftMain {...drift} />}
           {feature === "architecture" && <ArchitectureMain {...architecture} />}
+          {feature === "wiki" && <WikiMain {...wiki} />}
         </main>
       </div>
     </div>

@@ -4,7 +4,7 @@
  */
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -27,6 +27,11 @@ import type {
   StartArchitectureRequest,
   StartReviewRequest,
   ReviewLog,
+  StartWikiKeywordsRequest,
+  StartWikiRequest,
+  WikiKeyword,
+  WikiPage,
+  WikiPageInput,
 } from "@vci/protocol";
 import { appRootFromModule, loadBridgeConfig } from "@vci/protocol/node";
 
@@ -52,8 +57,17 @@ import {
   buildArchitecturePrompt,
   buildInterviewPrompt,
   buildReviewPrompt,
+  buildWikiKeywordsPrompt,
+  buildWikiPrompt,
   renderResolutionPrompt,
 } from "./prompt.js";
+import {
+  condenseTranscript,
+  countOccurrences,
+  findAdvice,
+  findMentions,
+  renderWikiMarkdown,
+} from "./wiki.js";
 import { cliSpawnOptions } from "./platform.js";
 
 const log = (...args: unknown[]): void => console.log("[vci-bridge]", ...args);
@@ -692,6 +706,206 @@ app.post("/internal/architecture", requireToken, async (req: Request, res: Respo
   res.json({ taskId, warnings });
 });
 
+/**
+ * 위키 후보 키워드. agent가 고른다 — 빈도는 낯섦과 반대 방향이라 기준이 될 수 없다.
+ * 위키 패널을 열 때 한 번이고, 키워드마다가 아니다.
+ */
+app.post("/api/wiki/keywords", async (req: Request, res: Response) => {
+  const body = req.body as StartWikiKeywordsRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  let messages;
+  try {
+    messages = await adapter.readTranscript(projectPath);
+  } catch (error) {
+    res.status(500).json({ error: asMessage(error) });
+    return;
+  }
+
+  const existing = await listWikiTerms(projectPath);
+  const transcript = condenseTranscript(messages);
+  if (transcript.messages.length === 0) {
+    res.json({ taskId: null, messages: 0, existing });
+    return;
+  }
+
+  state.startWikiKeywords(transcript, messages);
+
+  const taskId = randomUUID();
+  state.patchAppContext({ projectPath, prompt: "wiki keywords", selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: "wiki keywords",
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, messages: transcript.messages.length, existing });
+
+  void runTask(adapter, taskId, projectPath, buildWikiKeywordsPrompt(), "wiki", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/** 키워드 하나를 골랐을 때 페이지를 만든다. 위키 turn은 읽되 쓰지 않는다. */
+app.post("/api/wiki", async (req: Request, res: Response) => {
+  const body = req.body as StartWikiRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+  if (!body?.term?.trim()) {
+    res.status(400).json({ error: "term is required" });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const term = body.term.trim();
+  const messages = await adapter.readTranscript(projectPath);
+  state.startWiki({ term, mentions: findMentions(messages, term), design: await loadDesignFromDisk(projectPath) });
+
+  const taskId = randomUUID();
+  state.patchAppContext({ projectPath, prompt: `wiki ${term}`, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: `wiki ${term}`,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, term });
+
+  void runTask(adapter, taskId, projectPath, buildWikiPrompt(term), "wiki", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+app.get("/internal/wiki-transcript", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_wiki_transcript");
+  const transcript = state.getWikiTranscript();
+  if (!transcript) {
+    res.status(409).json({ error: "No wiki keyword pass is in progress." });
+    return;
+  }
+  res.json(transcript);
+});
+
+app.post("/internal/wiki-keywords", requireToken, (req: Request, res: Response) => {
+  const input = req.body as { keywords?: Array<{ term: string; why: string; sample: string }> };
+  if (!Array.isArray(input?.keywords)) {
+    res.status(400).json({ error: "keywords (array) is required" });
+    return;
+  }
+
+  const source = state.getWikiSource();
+  const keywords: WikiKeyword[] = input.keywords
+    .filter((entry) => entry?.term?.trim())
+    .map((entry) => ({
+      term: entry.term.trim(),
+      why: entry.why?.trim() ?? "",
+      sample: entry.sample?.trim() ?? "",
+      count: countOccurrences(source, entry.term.trim()),
+    }));
+
+  const taskId = noteMcpEndpointHit("save_wiki_keywords");
+  if (taskId) state.emit({ type: "app.wiki.keywords", taskId, keywords });
+  else log("save_wiki_keywords arrived with no active task; keywords not routed to the UI");
+
+  log(`save_wiki_keywords: ${keywords.length}개`);
+  res.json({ taskId, keywords });
+});
+
+app.get("/internal/wiki-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_wiki_context");
+  const context = state.getWikiContext();
+  if (!context) {
+    res.status(409).json({ error: "No wiki page is being written." });
+    return;
+  }
+  res.json(context);
+});
+
+app.post("/internal/wiki", requireToken, (req: Request, res: Response) => {
+  const input = req.body as WikiPageInput;
+  if (!input?.term?.trim() || !input?.oneLine?.trim() || !input?.inThisProject?.trim()) {
+    res.status(400).json({ error: "term, oneLine and inThisProject are required" });
+    return;
+  }
+
+  const warnings: string[] = [];
+  if (!Array.isArray(input.where) || input.where.length === 0) {
+    warnings.push("`where` is empty — without evidence from this project the page is a generic definition.");
+  }
+  for (const advice of findAdvice(input.oneLine, input.inThisProject)) {
+    warnings.push(`This reads as a judgement, which this page must not make — ${advice}`);
+  }
+
+  const page: WikiPage = {
+    term: input.term.trim(),
+    oneLine: input.oneLine.trim(),
+    inThisProject: input.inThisProject.trim(),
+    where: input.where ?? [],
+    related: input.related ?? [],
+    createdAt: new Date().toISOString(),
+  };
+
+  const taskId = noteMcpEndpointHit("save_wiki");
+  if (taskId) state.emit({ type: "app.wiki", taskId, page });
+  else log("save_wiki arrived with no active task; page stored but not routed to the UI");
+
+  log(`save_wiki: ${page.term}`);
+  for (const warning of warnings) log(`  ! ${warning}`);
+
+  const projectPathCtx = state.getAppContext().projectPath;
+  if (projectPathCtx) void writeWikiPage(projectPathCtx, page).catch((error) => log(`위키 저장 실패: ${asMessage(error)}`));
+
+  res.json({ taskId, warnings });
+});
+
 /** 존재하는 디렉터리가 아니면 거부하고, 심볼릭 링크는 해소한다. */
 export async function canonicalizeProjectPath(input: string): Promise<string> {
   if (!input?.trim()) throw new Error("projectPath is required");
@@ -873,6 +1087,39 @@ async function writeArchitectureReport(projectPath: string, report: Architecture
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "architecture.json"), JSON.stringify(report, null, 2), "utf8");
   await writeFile(join(dir, "architecture.md"), renderArchitectureMarkdown(report), "utf8");
+}
+
+function wikiSlug(term: string): string {
+  return term.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-|-$/g, "") || "page";
+}
+
+/** JSON이 원본, 마크다운은 파생물이다 — 이미 있는 도구(Obsidian, GitHub 미리보기 등)가 그대로 동작한다. */
+async function writeWikiPage(projectPath: string, page: WikiPage): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR, "wiki");
+  await mkdir(dir, { recursive: true });
+  const slug = wikiSlug(page.term);
+  await writeFile(join(dir, `${slug}.json`), JSON.stringify(page, null, 2), "utf8");
+  await writeFile(join(dir, `${slug}.md`), renderWikiMarkdown(page), "utf8");
+}
+
+/** 이미 만들어 둔 페이지들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
+async function listWikiTerms(projectPath: string): Promise<string[]> {
+  try {
+    const dir = join(projectPath, DESIGN_DIR, "wiki");
+    const files = (await readdir(dir)).filter((name) => name.endsWith(".json"));
+    const terms = await Promise.all(
+      files.map(async (name) => {
+        try {
+          return (JSON.parse(await readFile(join(dir, name), "utf8")) as WikiPage).term;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return terms.filter((term): term is string => Boolean(term));
+  } catch {
+    return [];
+  }
 }
 
 /** ref가 이 저장소에 실제로 있는지. */

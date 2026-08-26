@@ -4,7 +4,7 @@ const FEATURES: Array<{ id: FeatureId; icon: string; label: string; available: b
   { id: "design", icon: "📝", label: "Design", available: true },
   { id: "drift", icon: "🔀", label: "Drift", available: true },
   { id: "architecture", icon: "🏗️", label: "구조", available: true },
-  { id: "wiki", icon: "📚", label: "Wiki", available: false },
+  { id: "wiki", icon: "📚", label: "Wiki", available: true },
   { id: "analysis", icon: "🗺️", label: "Analysis", available: false },
 ];
 

@@ -15,6 +15,9 @@ import type {
   TaskState,
   ReportDriftInput,
   ReviewContext,
+  TranscriptMessage,
+  WikiContext,
+  WikiTranscript,
 } from "@vci/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
@@ -72,6 +75,10 @@ export class BridgeState {
 
   private architectureReport: ArchitectureDebtReport | null = null;
   private architectureContext: ArchitectureContext | null = null;
+
+  private wikiContext: WikiContext | null = null;
+  private wikiTranscript: WikiTranscript | null = null;
+  private wikiSource: TranscriptMessage[] = [];
 
   getAppContext(includeDesign = false): AppContext {
     return {
@@ -161,6 +168,29 @@ export class BridgeState {
 
   getArchitectureContext(): ArchitectureContext | null {
     return this.architectureContext;
+  }
+
+  // ---------- 위키 ----------
+
+  startWiki(context: WikiContext): void {
+    this.wikiContext = context;
+  }
+
+  startWikiKeywords(transcript: WikiTranscript, source: TranscriptMessage[]): void {
+    this.wikiTranscript = transcript;
+    this.wikiSource = source;
+  }
+
+  getWikiTranscript(): WikiTranscript | null {
+    return this.wikiTranscript;
+  }
+
+  getWikiSource(): TranscriptMessage[] {
+    return this.wikiSource;
+  }
+
+  getWikiContext(): WikiContext | null {
+    return this.wikiContext;
   }
 
   // ---------- 설계 산출물 ----------

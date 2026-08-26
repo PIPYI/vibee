@@ -76,6 +76,8 @@ export function describeSession(preview: string): string {
   if (text.startsWith("You are interviewing a NON-PROGRAMMER")) return "요구사항 인터뷰";
   if (text.startsWith("You are checking a code change")) return "드리프트 리뷰";
   if (text.startsWith("You are doing a focused structure check")) return "아키텍처·기술부채";
+  if (text.startsWith("You are looking at the conversations")) return "위키 키워드";
+  if (text.startsWith("You are explaining one word")) return "위키";
   // 아직 매칭할 기능별 프롬프트가 없다 — 원문이 곧 가장 좋은 설명이다.
   return text.replace(/\s+/g, " ").slice(0, 80);
 }
@@ -166,6 +168,111 @@ export function buildReviewPrompt(): string {
     "agent will do the fixing, with a prompt this app hands them.",
   ].join("\n");
 }
+
+/**
+ * 위키 후보 키워드 프롬프트.
+ *
+ * **판단을 시키는 turn이다.** 빈도로 뽑으려다 실패해서 여기로 왔다 — 가장 자주 나오는 말이
+ * 가장 익숙한 말이라 정반대의 것이 뽑혔다. 그래서 기준을 "많이 나온 말"이 아니라
+ * "이 사람이 못 알아들었을 말"로 준다.
+ */
+export function buildWikiKeywordsPrompt(): string {
+  return [
+    "You are looking at the conversations a NON-PROGRAMMER had while building their app with",
+    "an AI agent. Your job is to find the words that probably went past them.",
+    "You are inside the Vibe Coding Project Intelligence app.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_wiki_transcript` (server: vci-app).",
+    "2. Pick the words worth offering to explain.",
+    "3. Call `save_wiki_keywords` (server: vci-app) once, then end your turn.",
+    "",
+    "What to pick:",
+    "- Words this person would NOT be able to define, but that matter to their app. Terms of",
+    "  art: `JWT`, `migration`, `index`, `상태관리`, `정규화`, `캐시`. Korean and English both",
+    "  — the word as it appears in their conversation.",
+    "- Prefer words the AGENT used while explaining what it did. That is where jargon enters.",
+    "- Frequency is NOT the criterion. A word said once can be the one they are stuck on, and",
+    "  the most frequent words are always the most ordinary ones.",
+    "",
+    "What NOT to pick:",
+    "- Ordinary words: `wait`, `getting`, `answer`, `file`, `code`.",
+    "- Words from the app's own subject matter that any speaker knows: if the app is about",
+    "  lending things to neighbours, `borrow` and `cash` are not jargon.",
+    "- The scaffolding of this tool itself — `App`, `turn`, `context`, `Panel`, `MCP` — unless",
+    "  the user asked about it themselves.",
+    "- Names of their own files, functions and variables. Those are locations, not concepts.",
+    "",
+    "For each one give `why` — one short line on why this person might be stuck on it, WRITTEN",
+    "IN THE LANGUAGE THEY SPEAK in the transcript, since they read it — and `sample`, a",
+    "sentence from the conversation where it appears, quoted as-is. Do not count",
+    "occurrences; the app does that. Twelve or fewer is plenty; an empty list is a fine answer",
+    "if the conversation had no jargon in it.",
+  ].join("\n");
+}
+
+/**
+ * 위키 프롬프트. **순수 학습용이다** — 평가하지 않는다. "이건 위험합니다", "X가 낫습니다"는
+ * 이 기능이 하는 일이 아니다. 그건 Drift의 몫이고, 섞이면 둘 다 못 쓰게 된다.
+ */
+export function buildWikiPrompt(term: string): string {
+  return [
+    `You are explaining one word to the NON-PROGRAMMER who is building this app: "${term}".`,
+    "You are inside the Vibe Coding Project Intelligence app.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_wiki_context` (server: vci-app). It returns where this word came up in",
+    "   their conversations, and the recorded design of the app.",
+    "2. Read the project's own code to find where this actually lives. You have Read, Grep and",
+    "   Glob. Look — do not guess from the word alone.",
+    "3. Call `save_wiki` (server: vci-app) once, then end your turn.",
+    "",
+    "What this page is for:",
+    "- The reader has been building this app by talking to an agent. This word went past them",
+    "  and they did not want to interrupt to ask. Now they are asking.",
+    "- Explain what it means IN THIS APP. A general definition they could have searched for is",
+    "  not worth writing. `inThisProject` is the whole point of the page.",
+    "- `where` must cite real evidence from this project: file paths you actually opened, or",
+    "  REQ / FLOW / DEC ids from the design. Never leave it empty. If you could not find the",
+    "  word anywhere in this project, say that plainly in `inThisProject` instead of inventing",
+    "  a location.",
+    "- `oneLine` is for someone who does not code. Do not explain jargon with more jargon.",
+    "",
+    "WRITE IN THE READER'S LANGUAGE. Look at `mentions` — whatever language they speak there is",
+    "the language of this page, every field of it. A page this reader cannot read has no reason",
+    "to exist. Keep code identifiers, file paths and established technical names as they are.",
+    "",
+    "What this page is NOT:",
+    "- NOT a review. Do not say anything is wrong, risky, outdated, temporary, insufficient, or",
+    "  could be better. Do not suggest changes or alternatives, and do not hint at them by",
+    "  saying what this is 'not meant for' or what would happen 'in a real app'. Judging the",
+    "  code is a different feature and mixing it in here makes both useless.",
+    "- NOT advice about what to do next.",
+    "- Describe what IS, and stop there. If the reader wants to know whether it is a good idea,",
+    "  that is a different question they have not asked.",
+    "",
+    "Do NOT change any file. You can only read.",
+  ].join("\n");
+}
+
+/**
+ * 세션 파일에 남은 발화에서 사람이 실제로 한 말만 꺼낸다. 우리가 보낸 프롬프트 래퍼를
+ * 벗기되, 그 가운데 `---` 사이에 든 사용자의 원문은 살린다. 우리 것이 아니면(사용자가
+ * CLI에서 직접 한 말) 원문 그대로 돌려준다.
+ */
+export function unwrapUserText(text: string): string {
+  const body = text.trimStart();
+  if (!WRAPPER_PREFIXES.some((prefix) => body.startsWith(prefix))) return text;
+  const match = body.match(/---\s*([\s\S]*?)\s*---/);
+  return match?.[1]?.trim() ?? "";
+}
+
+const WRAPPER_PREFIXES = [
+  "You are interviewing a NON-PROGRAMMER",
+  "You are checking a code change",
+  "You are doing a focused structure check",
+  "You are looking at the conversations",
+];
 
 /**
  * finding 하나를 해소할 프롬프트. **LLM을 쓰지 않는다** — criterion 원문을 그대로 채워
