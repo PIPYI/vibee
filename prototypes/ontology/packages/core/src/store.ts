@@ -36,6 +36,7 @@ import { join } from "node:path";
 
 import type {
   AnalysisBundle,
+  ArchitectureViewDocument,
   EvidenceIndex,
   GroundingStore,
   ProjectState,
@@ -77,6 +78,12 @@ export type StateSnapshot = {
   versions: SemanticVersion[];
   /** schema3 §5.4 — 아직 분석 파이프라인을 돌리지 않은 generation에서는 `null`이다. */
   analysisBundle: AnalysisBundle | null;
+  /**
+   * v7 — Architecture 뷰 전용 archify 패턴 저작 산출물. `AnalysisBundle.architecture`와 완전히
+   * 별도 경로다(analysis-bundle-commit.ts/validator를 거치지 않는다). 아직 저작하지 않은
+   * generation에서는 `null`이다.
+   */
+  architectureView: ArchitectureViewDocument | null;
 };
 
 export type LoadedState = StateSnapshot & { generation: number };
@@ -215,6 +222,7 @@ export class SemanticStore {
     const legacyOptionalFiles = new Set<string>([
       STATE_FILES.analysisBundle,
       STATE_FILES.systemFacts,
+      STATE_FILES.architectureView,
     ]);
     for (const name of MANIFEST_MEMBERS) {
       // schema3 §5.4 이전 generation에는 analysis-bundle.json이 없다 — manifest에도 안 실려
@@ -244,7 +252,14 @@ export class SemanticStore {
     }
 
     const project = JSON.parse(contents[STATE_FILES.project]!) as ProjectState;
+    if (project.discoveryBaselineVersion === undefined) {
+      // 이 필드가 생기기 전 generation이다. 이미 semantic memory가 있었다면 discovery가
+      // 최소 한 번은 끝난 것이므로 현재 analysisVersion으로 채운다 — 0으로 채우면 다음
+      // 재색인이 불필요하게 "첫 분석"으로 다시 전체 discovery를 돈다.
+      project.discoveryBaselineVersion = project.semanticVersion > 0 ? project.analysisVersion : 0;
+    }
     const analysisBundleRaw = contents[STATE_FILES.analysisBundle];
+    const architectureViewRaw = contents[STATE_FILES.architectureView];
     const systemFactsRaw = contents[STATE_FILES.systemFacts];
     const systemFacts: SystemFactStore = systemFactsRaw
       ? (JSON.parse(systemFactsRaw) as SystemFactStore)
@@ -266,14 +281,19 @@ export class SemanticStore {
             },
           ],
         };
+    const evidence = JSON.parse(contents[STATE_FILES.evidence]!) as EvidenceIndex;
+    // 이 필드가 생기기 전 generation이다. 없다고 언어 사각지대가 없다는 뜻이 아니라 아직
+    // 관측하지 않았다는 뜻이므로 빈 배열로 채운다 — 다음 재색인이 다시 채운다.
+    evidence.unindexedFiles ??= [];
     return {
       project,
-      evidence: JSON.parse(contents[STATE_FILES.evidence]!) as EvidenceIndex,
+      evidence,
       systemFacts,
       memory: JSON.parse(contents[STATE_FILES.memory]!) as SemanticMemory,
       grounding: JSON.parse(contents[STATE_FILES.grounding]!) as GroundingStore,
       versions: JSON.parse(contents[STATE_FILES.versions]!) as SemanticVersion[],
       analysisBundle: analysisBundleRaw ? (JSON.parse(analysisBundleRaw) as AnalysisBundle) : null,
+      architectureView: architectureViewRaw ? (JSON.parse(architectureViewRaw) as ArchitectureViewDocument) : null,
     };
   }
 
@@ -335,6 +355,7 @@ export class SemanticStore {
           analysisVersion: project.analysisVersion,
           fileHashes: {},
           evidence: [],
+          unindexedFiles: [],
           adapterReport: [],
         },
         systemFacts: {
@@ -353,6 +374,7 @@ export class SemanticStore {
         grounding: { conceptGroundings: [], claimGroundings: [] },
         versions: [],
         analysisBundle: null,
+        architectureView: null,
       };
       return this.writeGeneration(1, snapshot, "초기화", "init", options);
     });
@@ -391,6 +413,7 @@ export class SemanticStore {
       [STATE_FILES.grounding]: serialize(state.grounding),
       [STATE_FILES.versions]: serialize(state.versions),
       [STATE_FILES.analysisBundle]: serialize(state.analysisBundle),
+      [STATE_FILES.architectureView]: serialize(state.architectureView),
     };
 
     const files: Record<string, string> = {};
@@ -534,6 +557,7 @@ export function initialProjectState(projectId: string, name: string): ProjectSta
     name,
     analysisVersion: 0,
     semanticVersion: 0,
+    discoveryBaselineVersion: 0,
     semanticReconciledAnalysisVersion: 0,
   };
 }

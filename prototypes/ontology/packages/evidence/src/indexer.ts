@@ -32,6 +32,7 @@ import {
 } from "./ids.js";
 import { parseGenericRoutePatterns } from "./generic-patterns.js";
 import {
+  collectAllRepositoryFiles,
   collectSourceFiles,
   isGenericPatternSourceFile,
   isPythonSourceFile,
@@ -112,6 +113,16 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
   );
   const extraPaths = collectSourceFiles(projectRoot, { predicate: isExtraFile });
   const allPaths = [...new Set([...sourcePaths, ...extraPaths])].sort();
+  // isSourceFile/isExtraFile 허용목록 밖에 있어 evidence가 전혀 안 생기는 파일 — 완전히
+  // 사라지지 않고 unindexedFiles로 관측 가능해야 discovery gap으로 이어질 수 있다.
+  const allPathsSet = new Set(allPaths);
+  const unindexedFiles = collectAllRepositoryFiles(projectRoot)
+    .filter((relPath) => !allPathsSet.has(relPath))
+    .map((filePath) => {
+      const dot = filePath.lastIndexOf(".");
+      const slash = filePath.lastIndexOf("/");
+      return { filePath, extension: dot > slash ? filePath.slice(dot).toLowerCase() : "" };
+    });
 
   const fileHashes: Record<string, string> = {};
   const sources = new Map<string, string>();
@@ -558,5 +569,11 @@ export function indexProject(projectRoot: string, options: IndexOptions): Eviden
             : 0,
   );
 
-  return { analysisVersion: version, fileHashes, evidence: unique, adapterReport: report };
+  return {
+    analysisVersion: version,
+    fileHashes,
+    evidence: unique,
+    adapterReport: report,
+    unindexedFiles: unindexedFiles.sort((a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0)),
+  };
 }

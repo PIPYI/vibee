@@ -228,6 +228,51 @@ test("analysis-bundle.json이 없는 레거시 generation도 analysisBundle: nul
   assert.equal(store.load().analysisBundle, null, "HEAD를 다시 읽어도 크래시하지 않는다");
 });
 
+test("architecture-view.json이 없는(v7 이전) generation도 architectureView: null로 읽힌다", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+  const after1 = await store.commit("index", "index", (s) => {
+    s.project.analysisVersion = 1;
+    return s;
+  });
+
+  // v7 이전에는 이 파일 자체가 없었다 — 실제로 지우고 manifest에서도 항목을 뺀다.
+  const dir = generationDir(root, after1.generation);
+  const manifestPath = join(dir, STATE_FILES.manifest);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete manifest.files[STATE_FILES.architectureView];
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  rmSync(join(dir, STATE_FILES.architectureView));
+
+  const reloaded = store.readGeneration(after1.generation);
+  assert.equal(reloaded.architectureView, null);
+  assert.equal(store.load().architectureView, null, "HEAD를 다시 읽어도 크래시하지 않는다");
+});
+
+test("architectureView는 analysisBundle과 독립적으로 commit되고 generation별로 보존된다", async () => {
+  const root = scratch();
+  const store = new SemanticStore(root);
+  await store.init(initialProjectState("p1", "fixture"));
+
+  const doc = {
+    schemaVersion: 1,
+    title: "지도",
+    components: [],
+    boundaries: [],
+    connections: [],
+  };
+  const after1 = await store.commit("architecture view", "architecture-view", (s) => {
+    s.architectureView = doc;
+    return s;
+  });
+
+  assert.deepEqual(after1.architectureView, doc);
+  assert.equal(after1.analysisBundle, null, "architectureView 커밋이 analysisBundle을 건드리지 않는다");
+  assert.deepEqual(store.load().architectureView, doc);
+  assert.equal(store.readGeneration(1).architectureView, null, "이전 generation은 그대로 null이다");
+});
+
 test("system-facts.json이 없는 V3 generation은 빈 store와 명시적 migration 진단으로 읽힌다", async () => {
   const root = scratch();
   const store = new SemanticStore(root);

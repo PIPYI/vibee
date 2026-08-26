@@ -127,20 +127,24 @@ test("MCP server 가 §48 의 tool 들을 노출한다", async () => {
   assert.deepEqual(names, [
     "get_assembly_context",
     "get_concept_context",
+    "get_concept_context_batch",
     "get_evidence",
     "get_impact_context",
     "get_impact_context_batch",
     "get_incremental_analysis_context",
     "get_project_semantic_memory",
     "get_scenario_context",
+    "get_scenario_context_batch",
     "get_system_facts",
     "patch_analysis_bundle",
     "propose_evidence",
     "propose_system_facts",
     "search_claims",
     "submit_analysis_bundle",
+    "submit_architecture_view",
     "submit_semantic_patch",
     "submit_view_ir",
+    "validate_architecture_view",
   ]);
 });
 

@@ -191,6 +191,68 @@ function componentsCoverEntityRefs(architecture: ArchitectureIR, entityRefs: rea
   return architecture.components.some((component) => component.entityRefs.some((ref) => refs.has(ref)));
 }
 
+function routeEvidenceByFile(index: EvidenceIndex): Map<string, { routeKeys: Set<string>; evidenceIds: Set<string> }> {
+  const routesByFile = new Map<string, { routeKeys: Set<string>; evidenceIds: Set<string> }>();
+  for (const item of index.evidence) {
+    if (item.status !== "present" || item.kind !== "route" || item.graph?.role !== "entity" || !item.filePath) continue;
+    if (item.graph.entity.kind !== "route") continue;
+    const bucket = routesByFile.get(item.filePath) ?? { routeKeys: new Set<string>(), evidenceIds: new Set<string>() };
+    bucket.routeKeys.add(item.graph.entity.routeKey);
+    bucket.evidenceIds.add(item.id);
+    routesByFile.set(item.filePath, bucket);
+  }
+  return routesByFile;
+}
+
+function commonAncestorDir(paths: readonly string[]): string {
+  if (paths.length === 0) return "";
+  const dirLists = paths.map((path) => {
+    const dir = posix.dirname(path);
+    return dir === "." ? [] : dir.split("/");
+  });
+  let common = dirLists[0]!;
+  for (const segments of dirLists.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < segments.length && common[i] === segments[i]) i++;
+    common = common.slice(0, i);
+    if (common.length === 0) break;
+  }
+  return common.join("/");
+}
+
+/**
+ * V5 (b) — package.json 같은 manifest가 없어 기존 탐지가 못 보던 런타임(예: manifest 없는
+ * Flask/Rails/Go 서비스)을 route evidence만으로 추정한다. `isNeverSource()`(v6.1 §4)와 같은
+ * 방향의 일반화: 언어/프레임워크별 entrypoint 파일명을 하드코딩하지 않고, 이미 있는 일반화된
+ * 신호(route-surface)만 근거로 삼는다. manifest 런타임이 이미 소유한 경로는 건드리지 않는다.
+ * entrypoint를 모르므로 `origin: "route-cluster"`로 표시해 manifest 기반 탐지와 구분한다
+ * ("확정된 실행 단위"라고 과장하지 않는다).
+ */
+function detectRouteClusterRuntimes(index: EvidenceIndex, manifestRuntimes: readonly RepositoryRuntime[]): RepositoryRuntime[] {
+  const evidenceByPath = fileEvidenceByPath(index);
+  const routesByFile = routeEvidenceByFile(index);
+  const unclaimedRouteFiles = [...routesByFile.keys()]
+    .filter((filePath) => !manifestRuntimes.some((runtime) => pathInside(runtime.rootPath, filePath)))
+    .sort();
+  if (unclaimedRouteFiles.length === 0) return [];
+
+  const rootPath = commonAncestorDir(unclaimedRouteFiles);
+  const evidenceRefs = unclaimedRouteFiles
+    .map((path) => evidenceByPath.get(path)?.id)
+    .filter((id): id is string => Boolean(id));
+  return [
+    {
+      id: stableId("runtime", `route-cluster:${rootPath || "."}`),
+      label: rootPath || "(매니페스트 없음)",
+      rootPath,
+      kind: "service",
+      entrypointRefs: [],
+      evidenceRefs: [...new Set(evidenceRefs)].sort(),
+      origin: "route-cluster",
+    },
+  ];
+}
+
 export function detectRepositoryTopology(projectPath: string, index: EvidenceIndex): RepositoryTopology {
   const evidenceByPath = fileEvidenceByPath(index);
   const indexedPaths = new Set(evidenceByPath.keys());
@@ -212,8 +274,11 @@ export function detectRepositoryTopology(projectPath: string, index: EvidenceInd
       kind: runtimeKind(manifest),
       entrypointRefs: entrypoints.map((path) => `file:${path}`),
       evidenceRefs: [...new Set(evidenceRefs)].sort(),
+      origin: "manifest",
     });
   }
+
+  for (const runtime of detectRouteClusterRuntimes(index, runtimes)) runtimes.push(runtime);
 
   const filesByDataRoot = new Map<string, string[]>();
   for (const filePath of [...indexedPaths].sort()) {
@@ -266,15 +331,7 @@ export function detectRepositoryTopology(projectPath: string, index: EvidenceInd
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 
-  const routesByFile = new Map<string, { routeKeys: Set<string>; evidenceIds: Set<string> }>();
-  for (const item of index.evidence) {
-    if (item.status !== "present" || item.kind !== "route" || item.graph?.role !== "entity" || !item.filePath) continue;
-    if (item.graph.entity.kind !== "route") continue;
-    const bucket = routesByFile.get(item.filePath) ?? { routeKeys: new Set<string>(), evidenceIds: new Set<string>() };
-    bucket.routeKeys.add(item.graph.entity.routeKey);
-    bucket.evidenceIds.add(item.id);
-    routesByFile.set(item.filePath, bucket);
-  }
+  const routesByFile = routeEvidenceByFile(index);
   const routeSurfaces: RepositoryRouteSurface[] = [...routesByFile.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([filePath, bucket]) => {
@@ -399,7 +456,7 @@ export function describeRepositoryTopology(topology: RepositoryTopology): string
     `독립 실행 런타임 ${topology.runtimes.length}개:`,
     ...topology.runtimes.map((runtime) =>
       [
-        `- ${runtime.id}: ${runtime.label} (${runtime.kind}), root=${runtime.rootPath || "."}, manifest=${runtime.manifestPath}`,
+        `- ${runtime.id}: ${runtime.label} (${runtime.kind}), root=${runtime.rootPath || "."}, origin=${runtime.origin}, manifest=${runtime.manifestPath ?? "(없음)"}`,
         `  entrypoint entityRefs: ${runtime.entrypointRefs.length > 0 ? runtime.entrypointRefs.join(", ") : "(탐지 없음)"}`,
         `  evidenceRefs: ${runtime.evidenceRefs.join(", ")}`,
       ].join("\n"),

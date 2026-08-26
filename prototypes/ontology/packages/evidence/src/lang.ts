@@ -129,6 +129,56 @@ export function collectSourceFiles(
   return found.sort();
 }
 
+/**
+ * `isSourceFile`은 언어를 아는 것만 인정하는 **허용목록**이다 — 그 목록 밖 확장자(Rust·
+ * Elixir·PHP·Kotlin 등)는 evidence가 전혀 안 생겨 gap으로도 안 잡히고 완전히 사라진다.
+ * 이 상수는 반대 방향이다: "정말로 코드가 아닌 것"만 대는 **차단목록**이라, 새 언어가
+ * 추가돼도 하드코딩 없이 자동으로 잡힌다.
+ */
+const NEVER_SOURCE_EXTENSIONS = new Set([
+  // 이미지
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".avif", ".tiff", ".heic",
+  // 폰트
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  // 미디어
+  ".mp3", ".mp4", ".mov", ".avi", ".webm", ".wav", ".ogg", ".flac", ".m4a",
+  // 압축/아카이브
+  ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2",
+  // 문서/바이너리 산출물
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".class", ".jar", ".exe", ".dll", ".so", ".dylib", ".wasm", ".pyc", ".o", ".a",
+  // 생성물·잠금 파일·소스맵 — 언어를 이미 알아도 "우리가 만든 코드"가 아니다
+  ".map", ".min.js", ".min.css",
+  // 마크업/스타일/문서 — 프로그래밍 "언어"가 아니라 웹·문서 포맷이다. 특정 프레임워크가
+  // 아니라 이 범주 전체(CSS/HTML/Markdown 계열)를 배제한다 — 어떤 프런트엔드 프로젝트든
+  // 파일 수가 많아 임계치를 넘기고, "미지 프레임워크"가 아니라 이미 잘 알려진 정적 자산이다.
+  ".css", ".scss", ".sass", ".less", ".html", ".htm", ".md", ".mdx", ".markdown", ".txt", ".rst",
+]);
+const NEVER_SOURCE_FILENAMES = new Set([
+  ".ds_store", "thumbs.db",
+  "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json",
+  "cargo.lock", "poetry.lock", "pipfile.lock", "gemfile.lock", "go.sum",
+  "composer.lock", "mix.lock",
+]);
+
+/** `NEVER_SOURCE_EXTENSIONS`/`NEVER_SOURCE_FILENAMES`에 없으면 "코드일 수 있다"고 본다. */
+export function isNeverSource(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  const base = lower.split("/").pop() ?? lower;
+  if (NEVER_SOURCE_FILENAMES.has(base)) return true;
+  return [...NEVER_SOURCE_EXTENSIONS].some((extension) => lower.endsWith(extension));
+}
+
+/**
+ * `collectSourceFiles`와 반대로, 언어를 몰라도 "코드가 아니라고 확신할 수 없는" 파일은
+ * 전부 담는다. `isSourceFile`의 닫힌 허용목록 밖에 있는 프레임워크/언어를 관측 가능하게
+ * 만드는 지점이 여기다 — Core가 planDiscoveryGaps에서 이 집합과 `collectSourceFiles`의
+ * 차이를 계산해 "언어를 인식하지 못한 파일"을 gap으로 드러낸다.
+ */
+export function collectAllRepositoryFiles(projectRoot: string): string[] {
+  return collectSourceFiles(projectRoot, { predicate: (relPath) => !isNeverSource(relPath) });
+}
+
 export function readSource(projectRoot: string, relPath: string): string {
   return readFileSync(join(projectRoot, relPath), "utf8");
 }

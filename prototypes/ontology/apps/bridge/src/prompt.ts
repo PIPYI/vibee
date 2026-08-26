@@ -7,6 +7,7 @@
  * C9의 evidence-first 제약을 넣되 한 줄을 바꾼다 — CoderMind의 "실재하는 노드만"을 그대로
  * 쓰면 엔진이 못 본 근거를 agent가 **버리게** 된다. 우리는 대신 제안하게 한다.
  */
+import { architectureViewExampleText, architectureViewSchemaText } from "@onto/architecture-view";
 import type { EvidenceGraph } from "@onto/core";
 import {
   analysisContractDigest,
@@ -301,12 +302,26 @@ export function buildSkeletonSummary(graph: EvidenceGraph): string {
   ].join("\n");
 }
 
-const ASSEMBLY_RULES = [
+/**
+ * `packetEnabled=false`는 `ONTO_ASSEMBLY_CONTEXT_PACKET=off` 롤백 레버다. `get_assembly_context`가
+ * shadow-first 검증 없이(§v6 §6.3의 계획과 달리) 이미 실서비스에 나가 있으므로, 사후에라도
+ * 결과가 달라졌다는 게 확인되면 즉시 621dd1e 이전의 개별 tool 호출 흐름으로 되돌릴 수 있어야
+ * 한다 — off일 때는 rule 1도 get_assembly_context를 언급하지 않는다.
+ */
+function assemblyRules(packetEnabled: boolean): string {
+  return [
   "규칙:",
   "1. entityRefs·systemLinkRefs·evidenceRefs 는 전부 실재해야 한다 — 지어내지 마라.",
-  "   full assembly는 get_assembly_context packet의 현재 System Entity/Link를 우선 쓰고,",
-  "   packet 누락 또는 validator diagnostics를 확인할 때만 get_system_facts를 fallback으로 쓴다.",
-  "   증분 assembly는 get_incremental_analysis_context와 get_system_facts 지시를 따른다.",
+  ...(packetEnabled
+    ? [
+        "   full assembly는 get_assembly_context packet의 현재 System Entity/Link를 우선 쓰고,",
+        "   packet 누락 또는 validator diagnostics를 확인할 때만 get_system_facts를 fallback으로 쓴다.",
+        "   증분 assembly는 get_incremental_analysis_context와 get_system_facts 지시를 따른다.",
+      ]
+    : [
+        "   get_system_facts 로 현재 generation의 System Entity/Link를 확인한 뒤에만",
+        "   그 값을 architecture component/connection에 쓴다.",
+      ]),
   "2. architecture.connections 는 valid|relocated인 System Link의 연속된 방향 경로를",
   "   요약해야 한다(I20-v4). status가 stale|missing|needs_review인 Link는 여전히 쓸 수 없다.",
   "   certainty가 inferred인 Link는 이제 거부되지 않는다 — Core가 connection.certainty를",
@@ -346,7 +361,8 @@ const ASSEMBLY_RULES = [
   "12. workflow.node와 architecture.component에 sublabel을 쓸 수 있다 — label이 짧은 이름일",
   "   때, 배포 종류(cloud/on-prem 등)나 구체적 기술(예: \"OpenAI gpt-4o-mini\", \"PostgreSQL\")처럼",
   "   근거가 있는 보조 설명을 sublabel에 넣는다. label을 대신하지 않는다.",
-].join("\n");
+  ].join("\n");
+}
 
 /**
  * Assembly Prompt (schema3 §5.2 Stage 3).
@@ -355,7 +371,12 @@ const ASSEMBLY_RULES = [
  * 골격을 입력으로 "클러스터링 + 라벨링 + 역할 부여"만 지시한다 — 구조 자체를 상상하게
  * 하지 않는다(§5.2 R4의 정신을 Assembly로 확장한 것).
  */
-export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string, topologySummary: string): string {
+export function buildAssemblyPrompt(
+  projectPath: string,
+  skeletonSummary: string,
+  topologySummary: string,
+  packetEnabled: boolean = true,
+): string {
   return [
     "지금까지 만든 Semantic Memory와 Evidence 골격을 클러스터링·라벨링해서 " +
       "ArchitectureIR + WorkflowIR + UserMapIR + SequenceIR 한 벌(AnalysisBundle)을 만든다.",
@@ -375,20 +396,30 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     analysisContractDigest(),
     "",
     "순서:",
-    "1. 첫 자료 조회로 get_assembly_context를 정확히 1회 호출한다. 이 compact packet에서",
-    "   Concept·Claim·CanonicalScenario와 검증된 System Entity·System Link 참조 후보 전체를 받는다.",
-    "2. packet의 관계·goal·anchor·evidenceRefs를 조립 재료로 쓴다. 개별 read tool",
-    "   (get_project_semantic_memory/get_system_facts/get_impact_context_batch/get_impact_context/",
-    "   get_scenario_context/get_concept_context/get_evidence)은 packet 누락 또는 validator",
-    "   diagnostics의 특정 참조를 확인할 때만 fallback으로 호출한다. 초기 자료를 다시 조립하려고",
-    "   반복 호출하지 마라.",
+    ...(packetEnabled
+      ? [
+          "1. 첫 자료 조회로 get_assembly_context를 정확히 1회 호출한다. 이 compact packet에서",
+          "   Concept·Claim·CanonicalScenario와 검증된 System Entity·System Link 참조 후보 전체를 받는다.",
+          "2. packet의 관계·goal·anchor·evidenceRefs를 조립 재료로 쓴다. 개별 read tool",
+          "   (get_project_semantic_memory/get_system_facts/get_impact_context_batch/get_impact_context/",
+          "   get_scenario_context/get_concept_context/get_evidence)은 packet 누락 또는 validator",
+          "   diagnostics의 특정 참조를 확인할 때만 fallback으로 호출한다. 초기 자료를 다시 조립하려고",
+          "   반복 호출하지 마라.",
+        ]
+      : [
+          "1. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다.",
+          "2. get_system_facts(entityIds 배열)로 검증된 System Entity와 System Link ID를 한 번에",
+          "   가져온다. CanonicalScenario·Concept anchor가 둘 이상이면 get_impact_context_batch·",
+          "   get_scenario_context_batch·get_concept_context_batch로 각각 한 번에 조회한다.",
+          "   하나만 더 확인할 때만 개별 get_impact_context/get_scenario_context/get_concept_context를 쓴다.",
+        ]),
     "3. architecture.components 를 만든다. 각 component 는 entityRefs 로 실제 골격 entity를",
     "   하나 이상 가리켜야 하고, evidenceRefs 는 그 entity 들의 근거를 합친 것이다.",
     "   description 을 쓰려면 evidenceRefs 가 반드시 있어야 한다(I9).",
     "4. Core 토폴로지의 런타임별로 boundary를 만들고 entrypoint·로컬 데이터 저장소가",
     "   component.entityRefs에 들어갔는지 확인한다. 화면은 기능별 group으로 압축하고",
     "   architecture.viewPlan에 primaryPath와 groups를 만든다.",
-    "5. architecture.connections 를 만든다 — systemLinkRefs에 packet에서 확인한 System Link ID를",
+    `5. architecture.connections 를 만든다 — systemLinkRefs에 ${packetEnabled ? "packet에서" : "2번에서"} 확인한 System Link ID를`,
     "   from component → to component 방향의 연속 경로 순서로 넣는다.",
     "6. workflow.nodes/edges 를 만든다. workflow.edges 의 label 은 사용자에게 보이는 문장으로",
     "   쓰고, 여러 용어를 다룰 때는 가운데점(·)으로 잇는다(예: \"위치 · 추천 조회\").",
@@ -400,7 +431,7 @@ export function buildAssemblyPrompt(projectPath: string, skeletonSummary: string
     "   코드 근거가 있는 것만 쓴다. entry에서 모든 step이 도달 가능해야 한다.",
     "9. submit_analysis_bundle 로 { architecture, workflow, userMap, sequences } 를 제출한다.",
     "",
-    ASSEMBLY_RULES,
+    assemblyRules(packetEnabled),
   ].join("\n");
 }
 
@@ -410,6 +441,7 @@ export function buildIncrementalAssemblyPrompt(
   draftId: string,
   plan: IncrementalAnalysisPlan,
   skeletonSummary: string,
+  packetEnabled: boolean = true,
 ): string {
   return [
     "기존 AnalysisBundle 전체를 다시 만들지 말고, 영향받은 지도 조각만 증분 보정한다.",
@@ -436,7 +468,7 @@ export function buildIncrementalAssemblyPrompt(
     "   전체 architecture/workflow/userMap/sequences 배열을 replace하지 마라.",
     "5. 검증 실패 시 같은 draftId와 diagnostics 경로만 다시 고친다.",
     "",
-    ASSEMBLY_RULES,
+    assemblyRules(packetEnabled),
   ].join("\n");
 }
 
@@ -456,6 +488,7 @@ export function describeSession(preview: string): string {
   if (text.startsWith("하나의 목적을 설명하는 대표 흐름")) return "Scenario 생성";
   if (text.startsWith("지금까지 만든 Semantic Memory와 Evidence 골격을")) return "Architecture/User Map/Sequence 조립";
   if (text.startsWith("기존 AnalysisBundle 전체를 다시 만들지 말고")) return "증분 Architecture/User Map/Sequence 보정";
+  if (text.startsWith("이 프로젝트의 Architecture 다이어그램을 archify 패턴으로")) return "Architecture 뷰 저작 (archify 패턴)";
   return text.replace(/\s+/gu, " ").slice(0, 80);
 }
 
@@ -480,5 +513,70 @@ export function buildVerifyPrompt(projectPath: string): string {
     "3. 두 응답에서 본 것을 3줄 이내로 요약하고 끝낸다.",
     "",
     "tool 을 부르지 못했다면 그 사실과 오류 메시지를 그대로 보고하라. 지어내지 마라.",
+  ].join("\n");
+}
+
+/**
+ * v7 — Architecture 뷰 전용 archify 패턴 저작 turn (v7/README.md §5.1).
+ *
+ * `buildAssemblyPrompt`와 근본적으로 다르다: `get_assembly_context`/`get_evidence`/
+ * `get_system_facts` 등 grounding MCP tool을 전혀 지시하지 않는다. 대신 archify SKILL.md의
+ * "Fast authoring path"(스키마 1개 + 예시 1개만 읽고, 최대 12개 컴포넌트로 저작, validate 후
+ * 반복 수정, 두 라운드 연속 무개선이면 중단하고 보고)를 그대로 프롬프트 텍스트로 옮긴다.
+ *
+ * 저장소 탐색은 이 turn의 native Read/Grep/Glob(모든 TaskMode에 이미 부여됨)로 한다 — 새
+ * evidence 도구를 만들지 않는다. 완전성 체크(Core 토폴로지)는 제출 뒤에만 warning으로
+ * 돌아온다 — 저작을 막는 사전 게이트가 아니다(§4b). 그래서 여기서 토폴로지를 미리 보여주지
+ * 않는다.
+ */
+export function buildArchitectureViewPrompt(projectPath: string): string {
+  const maxRounds = 6;
+  return [
+    "이 프로젝트의 Architecture 다이어그램을 archify 패턴으로 직접 저작한다.",
+    `프로젝트 경로: ${projectPath}`,
+    "",
+    "이것은 기존 core+ai 분석(semantic memory/System Fact grounding)과 완전히 다른 경로다.",
+    "get_project_semantic_memory·get_system_facts·get_evidence 같은 grounding tool을 부르지",
+    "마라 — 이 turn에는 없다. 대신 네가 가진 Read/Grep/Glob으로 저장소를 직접 읽는다.",
+    "",
+    "## 산출물 스키마 (JSON Schema, draft 2020-12)",
+    "```json",
+    architectureViewSchemaText().trim(),
+    "```",
+    "",
+    "## 예시 (이 모양을 그대로 따른다 — 내용은 참고용일 뿐이다)",
+    "```json",
+    architectureViewExampleText().trim(),
+    "```",
+    "",
+    "순서 (Fast authoring path):",
+    "1. Read/Grep/Glob으로 저장소의 진입점·주요 런타임(프론트/백엔드/DB/외부 서비스)과",
+    "   그 사이의 실제 호출 관계를 파악한다. 파일 전체를 다 읽을 필요는 없다 — 구조를",
+    "   드러내는 지점(entrypoint, 라우트 선언, 설정, 주요 클라이언트 호출)만 본다.",
+    "2. 위 스키마를 만족하는 ArchitectureViewDocument를 저작한다.",
+    "   - components는 6~12개의 거시 단위로 묶는다 — 파일/함수 단위로 늘어놓지 않는다.",
+    "   - 모든 component에 pos/size를 직접 정한다(viewBox 안, 서로 겹치지 않게). 렌더러는",
+    "     이 좌표를 그대로 그린다 — 자동 배치를 하지 않는다.",
+    "   - 근거가 있는 component에는 sources[]에 { path, line?, endLine? }로 실제 파일 위치를",
+    "     적는다. 지어내지 마라 — 존재하지 않는 경로/줄 범위는 제출 후 error로 거절된다.",
+    "   - connections는 실제로 코드에서 확인한 호출/의존 관계만 넣는다.",
+    "3. validate_architecture_view로 문서를 검증한다. diagnostics의 severity:\"error\"는",
+    "   반드시 고친다. severity:\"warning\"(예: 탐지된 런타임/데이터 저장소/라우트를 인용하는",
+    "   component가 없다는 completeness 경고)은 근거가 있으면 반영하고, 근거가 없거나 정말",
+    "   대표할 component가 없으면 남겨도 된다 — 저작을 막지 않는다.",
+    `4. error가 남아 있으면 고쳐서 다시 validate한다. 단, 같은 이유로 연속 2라운드 동안`,
+    "   error 개수가 줄지 않으면 멈추고 남은 diagnostics를 그대로 보고한다 — 무한히 왕복하지",
+    `   마라(최대 ${maxRounds}회 validate 호출).`,
+    "5. error가 없으면(또는 4번 조건으로 멈췄으면) submit_architecture_view로 제출한다.",
+    "",
+    "규칙:",
+    "1. 좌표(pos)는 이 turn에서만 AI가 직접 쓴다 — 다른 뷰(Workflow 등)의 \"AI는 좌표를 쓰지",
+    "   않는다\" 규칙은 여기 적용되지 않는다. Architecture 뷰 전용 예외다.",
+    "2. sources[]의 path/line은 실재해야 한다(허구 grounding 0) — 확인 없이 줄 번호를",
+    "   추측하지 마라. 확신이 없으면 line/endLine을 생략하고 path만 남긴다.",
+    "3. label은 파일명이 아니라 사용자가 이해할 수 있는 이름을 쓴다. sublabel에는 구체적",
+    "   기술(예: \"PostgreSQL\", \"Redis\")이나 배포 형태를 적을 수 있다.",
+    "4. 전체 지도가 아니라 이 프로젝트를 처음 보는 사람이 5분 안에 이해할 수 있는 지도를",
+    "   만든다는 것이 목표다 — archify처럼 6~12개 노드를 벗어나지 않는다.",
   ].join("\n");
 }

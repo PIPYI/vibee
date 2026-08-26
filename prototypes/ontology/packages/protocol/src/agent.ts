@@ -54,8 +54,12 @@ export type AgentId = "codex" | "claude";
  * `assembly`는 schema3 §5.2 Stage 3다 — `analyze`(Stage 2)가 끝난 뒤 같은 taskId 아래서
  * 이어진다(`runAnalyzePipeline`). `analyze`와 같은 이유로 `AGENTS.md`/`CLAUDE.md`를
  * 로드하지 않는다.
+ *
+ * `architecture`는 v7 — Architecture 뷰 전용 archify 패턴 저작 turn이다. `view`를 재사용하지
+ * 않는 이유: `view`는 이미 `ViewCacheKey`/`semanticVersion` freshness 결합을 갖고 있어
+ * Architecture 뷰가 원치 않는 캐시-신선도 모델을 강제로 물려받게 된다(v7/README.md §5.1).
  */
-export type TaskMode = "analyze" | "view" | "chat" | "assembly";
+export type TaskMode = "analyze" | "view" | "chat" | "assembly" | "architecture";
 
 export type McpToolName =
   | "get_assembly_context"
@@ -73,7 +77,9 @@ export type McpToolName =
   | "submit_semantic_patch"
   | "submit_view_ir"
   | "submit_analysis_bundle"
-  | "patch_analysis_bundle";
+  | "patch_analysis_bundle"
+  | "validate_architecture_view"
+  | "submit_architecture_view";
 
 /** MCP 호출이 관측된 경로. **두 증거원이 모두 있어야** 통과다 (B4). */
 export type McpCallSource = "agent-stream" | "bridge-endpoint";
@@ -89,7 +95,7 @@ export type McpCallRecord = {
   outcome?: "data" | "unavailable";
 };
 
-export type AnalysisStage = "semantic" | "assembly" | "view" | "chat";
+export type AnalysisStage = "semantic" | "assembly" | "view" | "chat" | "architecture";
 
 export type AnalysisPipelineStage = "indexing" | "semantic" | "retrieval" | "assembly" | "validation" | "commit";
 export type AnalysisStageStatus = "pending" | "running" | "completed" | "correcting" | "failed";
@@ -160,6 +166,8 @@ export type AgentEvent =
   | { type: "view.ready"; taskId: string; viewKind: string; requestId: string }
   /** schema3 §5.2 Stage 4 — AnalysisBundle이 검증을 통과해 generation에 커밋되었다. */
   | { type: "bundle.ready"; taskId: string; generation: number; correctedAttempts?: number }
+  /** v7 — Architecture 뷰(archify 패턴)가 검증을 통과해 generation에 커밋되었다. */
+  | { type: "architecture-view.ready"; taskId: string; generation: number }
   | {
       type: "validation.retrying";
       taskId: string;

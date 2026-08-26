@@ -1,5 +1,6 @@
 export * from "./agent.js";
 export * from "./schemas.js";
+export * from "./architecture-view.js";
 
 /**
  * Evidence Engine · Core · MCP server · bridge · 브라우저가 공유하는 타입.
@@ -64,6 +65,18 @@ export type ProjectState = {
   semanticVersion: number;
 
   /**
+   * 이 프로젝트에서 전체 discovery가 **한 번이라도 완료된 analysisVersion**. 0이면
+   * 아직 한 번도 없었다는 뜻이다.
+   *
+   * `semanticVersion`/`memory.concepts`로 "첫 분석 여부"를 유추하지 마라 — 그 둘은
+   * Semantic Patch(AI turn)가 커밋돼야 오르는데, `/api/index`(재색인만) 뒤에 바로
+   * `/api/analyze`가 오면 AI turn이 아직 한 번도 없었으므로 두 번째 호출도 "첫 분석"
+   * 으로 잘못 보여서 불필요한 전체 재색인이 중복 실행된다. 이 필드는 Core가 재색인
+   * 완료 시점에 직접 스탬프하는 사실이라 그 문제가 없다.
+   */
+  discoveryBaselineVersion: number;
+
+  /**
    * 현재 Semantic Memory가 **어느 시점의 코드와 맞춰진 것인지** (V1 / plan §6.9).
    *
    * ```text
@@ -89,8 +102,12 @@ export type SemanticVersion = {
   semanticVersion: number;
   semanticReconciledAnalysisVersion: number;
   at: string;
-  /** 무엇 때문에 만들어진 generation인가. `bundle`은 schema3 §5.2 Stage 4(AnalysisBundle 커밋) */
-  source: "index" | "patch" | "init" | "bundle" | "rollback";
+  /**
+   * 무엇 때문에 만들어진 generation인가. `bundle`은 schema3 §5.2 Stage 4(AnalysisBundle 커밋).
+   * `architecture-view`는 v7 — archify 패턴 Architecture 뷰 저작 커밋으로, `bundle`과 달리
+   * `analysis-bundle-commit.ts`/I20-v4 검증을 거치지 않는다(별도 경로, v7/README.md §6).
+   */
+  source: "index" | "patch" | "init" | "bundle" | "rollback" | "architecture-view";
   message: string;
   /** patch generation일 때만 */
   diffSummary?: SemanticDiffSummary;
@@ -213,7 +230,13 @@ export type DiscoveryGapKind =
   | "config-consumer"
   | "runtime-boundary"
   | "adapter-degraded"
-  | "semantic-coverage";
+  | "semantic-coverage"
+  /**
+   * `isSourceFile`의 닫힌 언어 허용목록 밖에 있어 evidence가 전혀 안 생긴 파일들
+   * (`EvidenceIndex.unindexedFiles`)에서 나온다. 특정 프레임워크 이름을 하드코딩하지
+   * 않는 catch-all이다 — 새 언어가 추가돼도 이 kind는 코드 변경 없이 계속 잡는다.
+   */
+  | "unrecognized-source-language";
 
 /** Vibee가 저장소 전체 대신 조사할 결정론적 open-world root. */
 export type DiscoveryGap = {
@@ -456,6 +479,13 @@ export type EvidenceIndex = {
   evidence: Evidence[];
   /** 어떤 adapter가 무엇에 실패했는가. **조용히 사라지지 않는다** (C1) */
   adapterReport: AdapterReportEntry[];
+  /**
+   * 언어를 몰라 `kind:"file"` evidence조차 못 만든 파일들 — `isSourceFile`의 닫힌
+   * 허용목록 밖 확장자다(Rust·Elixir·PHP·Kotlin 등). 여기 있다고 코드가 아니라는 뜻이
+   * 아니다 — Core가 아직 아무 신호도 못 얻었다는 뜻이다. `planDiscoveryGaps`가 이 목록을
+   * 확장자별로 묶어 gap으로 드러낸다.
+   */
+  unindexedFiles: readonly { filePath: string; extension: string }[];
 };
 
 export type AdapterReportEntry = {
@@ -1132,10 +1162,19 @@ export type RepositoryRuntime = {
   id: string;
   label: string;
   rootPath: string;
-  manifestPath: string;
+  /** manifest 기반으로 탐지됐을 때만 있다. route-cluster 기원 런타임은 없다(V5 B1). */
+  manifestPath?: string;
   kind: RepositoryRuntimeKind;
   entrypointRefs: string[];
   evidenceRefs: string[];
+  /**
+   * "manifest"는 package.json 등에서 확정적으로 탐지된 런타임이고, "route-cluster"는
+   * manifest 없이 route-surface 파일들의 공통 조상 디렉터리로만 추정된 런타임이다(V5 B1 —
+   * 원래 탐지가 package.json에만 의존해 manifest 없는 Flask/Rails/Go 서비스가 통째로
+   * 보이지 않던 문제). 후자는 entrypoint를 모르므로 "확정된 실행 단위"라고 과장하지 않고
+   * 구분해 표시한다.
+   */
+  origin: "manifest" | "route-cluster";
 };
 
 export type RepositoryDataStore = {

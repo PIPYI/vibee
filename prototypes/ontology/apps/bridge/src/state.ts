@@ -18,6 +18,7 @@ import type {
   IncrementalAnalysisPlan,
   McpCallSource,
   OverviewIR,
+  RepositoryTopology,
   ScenarioIR,
   StageUsage,
   TaskState,
@@ -66,6 +67,12 @@ export class BridgeState {
   private readonly retrievalCache = new Map<string, Map<string, unknown>>();
   /** V4 Phase 4~6 — 현재 task의 provider 범위와 허용 patch ID. */
   private readonly incrementalPlans = new Map<string, IncrementalAnalysisPlan>();
+  /**
+   * v7 — architecture turn 시작 시 서버가 미리 계산해 둔 저장소 토폴로지(completeness 체크
+   * 전용, AI에게 노출하지 않는다)와 이번 turn에서 validate_architecture_view를 부른 횟수
+   * (무한 왕복을 막는 하드 캡, v7/README.md §5.2 — 프롬프트 규율만 믿지 않는다).
+   */
+  private readonly architectureViewSessions = new Map<string, { topology: RepositoryTopology; validateCount: number }>();
 
   /**
    * 가장 최근 재인덱싱의 EvidenceDiff (evidenceId → diff). **재인덱싱마다 통째로 갈아 끼운다**
@@ -247,6 +254,26 @@ export class BridgeState {
 
   clearBundleDraft(taskId: string): void {
     this.bundleDrafts.delete(taskId);
+  }
+
+  startArchitectureViewSession(taskId: string, topology: RepositoryTopology): void {
+    this.architectureViewSessions.set(taskId, { topology, validateCount: 0 });
+  }
+
+  getArchitectureViewTopology(taskId: string): RepositoryTopology | undefined {
+    return this.architectureViewSessions.get(taskId)?.topology;
+  }
+
+  /** 검증 시도 횟수를 올리고 허용 여부를 함께 돌려준다 — `recordValidationAttempt`와 같은 모양. */
+  recordArchitectureViewValidateAttempt(taskId: string, maxAttempts: number): { attempt: number; allowed: boolean } {
+    const session = this.architectureViewSessions.get(taskId);
+    if (!session) return { attempt: 0, allowed: false };
+    session.validateCount += 1;
+    return { attempt: session.validateCount, allowed: session.validateCount <= maxAttempts };
+  }
+
+  clearArchitectureViewSession(taskId: string): void {
+    this.architectureViewSessions.delete(taskId);
   }
 
   getRetrievalCache(taskId: string, key: string): unknown | undefined {

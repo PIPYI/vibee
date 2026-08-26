@@ -19,14 +19,23 @@ const JAVA_SPRING = fileURLToPath(new URL("../../../fixtures/v5/java-spring/", i
 const PYTHON_NO_MANIFEST = fileURLToPath(new URL("../../../fixtures/v5/python-no-manifest/", import.meta.url));
 const JAVA_FILE = "src/main/java/com/example/controller/UserController.java";
 
-test("V5 A3 — 매니페스트가 전혀 없어도(런타임 미탐지) route evidence만으로 route surface가 잡힌다", () => {
+test("V5 A3 — 매니페스트가 전혀 없어도 route evidence만으로 route surface가 잡힌다", () => {
   const index = indexProject(JAVA_SPRING, { analysisVersion: 1 });
   const topology = detectRepositoryTopology(JAVA_SPRING, index);
 
-  assert.equal(topology.runtimes.length, 0, "package.json류 매니페스트가 없으므로 런타임은 탐지되지 않는다");
   assert.equal(topology.routeSurfaces.length, 1);
   assert.equal(topology.routeSurfaces[0].filePath, JAVA_FILE);
   assert.deepEqual(topology.routeSurfaces[0].routeKeys, ["ANY /api/users", "GET /api/users/{id}", "POST /api/users"]);
+});
+
+test("V5 (b) — package.json이 없어도 route evidence 클러스터로 런타임이 추정된다(origin: route-cluster)", () => {
+  const index = indexProject(JAVA_SPRING, { analysisVersion: 1 });
+  const topology = detectRepositoryTopology(JAVA_SPRING, index);
+
+  assert.equal(topology.runtimes.length, 1, "manifest는 없지만 route evidence로 추정된 런타임 1개가 있어야 한다");
+  assert.equal(topology.runtimes[0].origin, "route-cluster");
+  assert.equal(topology.runtimes[0].manifestPath, undefined, "route-cluster 런타임은 manifest를 모른다");
+  assert.equal(topology.runtimes[0].entrypointRefs.length, 0, "entrypoint도 모른다 — route evidence만 안다");
 });
 
 test("V5 A3 — 아키텍처가 라우트 표면을 대표하지 않으면 completeness receipt에 남고 bundle을 막는다", () => {

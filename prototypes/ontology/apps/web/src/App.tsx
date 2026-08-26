@@ -60,6 +60,7 @@ const STAGE_USAGE_LABEL: Record<StageUsage["stage"], string> = {
   assembly: "지도 조립",
   view: "상세 보기",
   chat: "대화",
+  architecture: "시스템 구조 지도",
 };
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -115,6 +116,9 @@ export function App(): React.JSX.Element {
   const [heartbeat, setHeartbeat] = useState<{ stage: AnalysisPipelineStage; elapsedSeconds: number; idleSeconds: number } | null>(null);
 
   const [bundle, setBundle] = useState<AnalysisBundle | null>(null);
+  const [architectureSvg, setArchitectureSvg] = useState<string | null>(null);
+  /** 배경에서 도는 Architecture 뷰 저작 turn의 taskId. 메인 분석 로그/화면 전환과 분리해 다룬다. */
+  const architectureTaskIdRef = useRef<string | null>(null);
   const [passportTarget, setPassportTarget] = useState<PassportTarget | null>(null);
   const [sequenceView, setSequenceView] = useState<SequenceIR | null>(null);
   const [stageUsages, setStageUsages] = useState<StageUsage[]>([]);
@@ -171,6 +175,7 @@ export function App(): React.JSX.Element {
           setScreen("analyzed");
           void api.systemFacts().then((facts) => { if (!api.isUnavailable(facts)) setSystemFacts(facts); });
           void api.rolloutReport(s.projectPath!).then((report) => { if (!("error" in report)) setRolloutReport(report.latest); });
+          void api.fetchArchitectureView(s.projectPath!).then((view) => setArchitectureSvg("error" in view ? null : view.svg));
         });
       }
     });
@@ -240,7 +245,35 @@ export function App(): React.JSX.Element {
     return true;
   }, []);
 
+  /** 이미 저작된 적 있으면 읽기만 한다 — turn을 새로 열지 않는다. */
+  const loadArchitectureView = useCallback(async (path: string): Promise<void> => {
+    const result = await api.fetchArchitectureView(path);
+    setArchitectureSvg("error" in result ? null : result.svg);
+  }, []);
+
+  /**
+   * 시스템 구조 지도를 archify 패턴으로 새로 저작한다. 메인 분석(semantic+assembly)과는 별도
+   * task다 — 완료·실패해도 메인 화면 상태(screen/analyzeError)를 건드리지 않고, 지도만
+   * 준비되면 조용히 교체한다(구 결정론적 지도가 그때까지 그대로 보인다).
+   */
+  const runArchitectureView = useCallback(async (path: string): Promise<void> => {
+    const extra = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    const result = await api.startArchitectureView(agent, path, extra);
+    if ("error" in result) return;
+    architectureTaskIdRef.current = result.taskId;
+  }, [agent, model, effort]);
+
   const stream = useAgentEvents((event, envelope) => {
+    if (event.taskId === architectureTaskIdRef.current) {
+      // 배경 Architecture 뷰 turn — 메인 분석 로그/단계 UI와 완전히 분리해서 다룬다.
+      if (event.type === "task.completed") {
+        architectureTaskIdRef.current = null;
+        if (projectPath) void loadArchitectureView(projectPath);
+      } else if (event.type === "task.interrupted" || event.type === "task.error") {
+        architectureTaskIdRef.current = null;
+      }
+      return;
+    }
     switch (event.type) {
       case "task.started":
         setPipelinePhase("semantic-memory");
@@ -312,6 +345,8 @@ export function App(): React.JSX.Element {
           const ok = await loadBundle(path);
           setScreen(ok ? "analyzed" : "ready");
           if (!ok) setAnalyzeError("분석은 끝났지만 AnalysisBundle을 읽지 못했습니다.");
+          // 시스템 구조 지도는 별도 turn으로 새로 저작한다 — 메인 화면 전환을 막지 않는다.
+          if (ok) void runArchitectureView(path);
         })();
         break;
       case "task.interrupted":
@@ -342,6 +377,8 @@ export function App(): React.JSX.Element {
     }
     setProjectPath(selected.projectPath);
     setBundle(null);
+    setArchitectureSvg(null);
+    architectureTaskIdRef.current = null;
     setSystemFacts(null);
     setIncrementalPlan(null);
     setRolloutReport(null);
@@ -359,7 +396,8 @@ export function App(): React.JSX.Element {
 
     const hasBundle = await loadBundle(selected.projectPath);
     setScreen(hasBundle ? "analyzed" : "ready");
-  }, [projectPathInput, loadBundle]);
+    if (hasBundle) void loadArchitectureView(selected.projectPath);
+  }, [projectPathInput, loadBundle, loadArchitectureView]);
 
   const runAnalyze = useCallback(async () => {
     if (!projectPath || runtimeError) return;
@@ -578,6 +616,7 @@ export function App(): React.JSX.Element {
               <UnifiedMapView
                 bundle={bundle}
                 systemFacts={systemFacts}
+                architectureSvg={architectureSvg}
                 onSelectComponent={(id) => { setSequenceView(null); setPassportTarget({ id }); }}
                 onOpenSequence={(sequence) => { setPassportTarget(null); setSequenceView(sequence); }}
               />

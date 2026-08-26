@@ -66,6 +66,24 @@ test("V4 Phase 4 — 구조와 무관한 CSS 변경도 provider turn을 만들�
   assert.equal(second.plan.semanticTurnRequired, false);
 });
 
+test("V4 Phase 5 — /api/index 직후 /api/analyze 처럼 두 번 연속 재색인하면, semanticVersion이 아직 0이어도 두 번째 discovery는 full이 아니다", async () => {
+  // 회귀 재현: /api/index(재색인만)와 /api/analyze가 연달아 오면, Semantic Patch가
+  // 한 번도 커밋되지 않았으므로 semanticVersion/memory.concepts는 두 호출 모두에서 0이다.
+  // firstAnalysis를 그 둘로 유추하면 두 번째 호출도 "첫 분석"으로 오판해 파일이
+  // 하나도 안 바뀌었는데도 전체 discovery가 중복 실행된다 (docs v6 §4의 gen2→3 관찰).
+  //
+  // 주의: bundle이 아직 없으므로 semanticTurnRequired/assemblyTurnRequired는 두 번째
+  // 호출에서도 여전히 true다 — Vibee가 이 프로젝트를 한 번도 분석한 적이 없어서 실제로
+  // 불려야 하기 때문이다(이건 버그가 아니라 의도된 동작). 이 테스트가 검증하는 건 오직
+  // "파일이 안 바뀌었으면 discovery 자체는 다시 full로 안 돈다"는 것이다.
+  const root = project({ "src/value.ts": "export const value = 1;\n" });
+  const first = await performReindex(new SemanticStore(root), root, undefined);
+  assert.equal(first.plan.fullDiscovery, true);
+  const second = await performReindex(new SemanticStore(root), root, undefined);
+  assert.equal(second.plan.fullDiscovery, false);
+  assert.equal(second.plan.discoveryGaps.length, 0);
+});
+
 test("V4 Phase 8 — off arm은 integration catalog는 관측하되 open-world discovery gap은 provider에 주지 않는다", async () => {
   const root = project({
     "package.json": JSON.stringify({ dependencies: { "novel-ai-sdk": "1.0.0" } }),

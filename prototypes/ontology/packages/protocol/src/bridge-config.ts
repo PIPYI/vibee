@@ -37,6 +37,8 @@ export function protoRootFromModule(moduleUrl: string): string {
   return findProtoRoot(dirname(fileURLToPath(moduleUrl)));
 }
 
+export type AssemblyContextPacketMode = "off" | "on";
+
 export type BridgeConfig = {
   port: number;
   /** `/internal/*`에 필요한 공유 비밀. loopback 밖으로 나가지 않는다 */
@@ -44,10 +46,23 @@ export type BridgeConfig = {
   baseUrl: string;
   configPath: string;
   systemIntelligenceV4: SystemIntelligenceV4Mode;
+  /**
+   * `get_assembly_context` 통합 packet 롤백 레버 (기본 on = 현재 동작 그대로).
+   *
+   * v6 §6.3은 이 packet을 shadow-only로 먼저 검증한 뒤 켜라고 했지만, 그 검증 없이
+   * 621dd1e에서 이미 프롬프트에 필수 호출로 나갔다. off로 두면 621dd1e 이전의 개별 tool
+   * 호출 흐름(get_project_semantic_memory → get_system_facts → get_impact_context_batch)으로
+   * 즉시 되돌아간다 — 사후 coverage/parity 감사가 packet이 결과를 바꿨다고 확인되면 쓴다.
+   */
+  assemblyContextMode: AssemblyContextPacketMode;
 };
 
 export function parseSystemIntelligenceV4Mode(value: string | undefined): SystemIntelligenceV4Mode {
   return value === "off" || value === "shadow" || value === "on" ? value : "on";
+}
+
+export function parseAssemblyContextMode(value: string | undefined): AssemblyContextPacketMode {
+  return value === "off" ? "off" : "on";
 }
 
 /** `.onto/bridge.json`을 읽고, 처음 쓸 때는 새 토큰과 함께 만든다. */
@@ -94,5 +109,6 @@ export function loadBridgeConfig(protoRoot: string): BridgeConfig {
     baseUrl: `http://${BRIDGE_HOST}:${port}`,
     configPath,
     systemIntelligenceV4: parseSystemIntelligenceV4Mode(process.env.ONTO_SYSTEM_INTELLIGENCE_V4),
+    assemblyContextMode: parseAssemblyContextMode(process.env.ONTO_ASSEMBLY_CONTEXT_PACKET),
   };
 }

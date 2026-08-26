@@ -201,4 +201,24 @@ export function fetchAnalysisBundle(projectPath?: string): Promise<AnalysisBundl
   return getJson(`/api/analysis-bundle${qs}`);
 }
 
+// ---------------------------------------------------------------------------
+// Architecture 뷰 — 시스템 구조 지도의 별도 저작 경로. AnalysisBundle을 대체하지 않는다.
+// ---------------------------------------------------------------------------
+
+export type ArchitectureViewResponse = { document: unknown; svg: string } | { error: string };
+
+export function startArchitectureView(
+  agent: AgentId,
+  projectPath: string,
+  extra: { model?: string; effort?: string } = {},
+): Promise<{ taskId: string } | { error: string }> {
+  return postJson("/api/architecture-view", { agent, projectPath, ...extra });
+}
+
+/** HEAD generation의 `architecture-view.json`을 읽기만 한다 — turn을 열지 않는다. */
+export function fetchArchitectureView(projectPath?: string): Promise<ArchitectureViewResponse> {
+  const qs = projectPath ? `?projectPath=${encodeURIComponent(projectPath)}` : "";
+  return getJson(`/api/architecture-view${qs}`);
+}
+
 export type { AgentReadiness };

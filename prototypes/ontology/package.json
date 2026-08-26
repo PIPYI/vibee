@@ -12,8 +12,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core && npm run build -w @onto/mcp-server && npm run build -w @onto/bridge",
-    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core && npm run typecheck -w @onto/mcp-server && npm run typecheck -w @onto/bridge && npm run typecheck -w @onto/web",
+    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core && npm run build -w @onto/architecture-view && npm run build -w @onto/mcp-server && npm run build -w @onto/bridge",
+    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core && npm run typecheck -w @onto/architecture-view && npm run typecheck -w @onto/mcp-server && npm run typecheck -w @onto/bridge && npm run typecheck -w @onto/web",
     "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs scripts/*.test.mjs",
     "bridge": "npm run start -w @onto/bridge",
     "bridge:stop": "node scripts/bridge-stop.mjs",

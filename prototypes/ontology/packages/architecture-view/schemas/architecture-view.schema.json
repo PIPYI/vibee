@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onto.local/schemas/architecture-view.schema.json",
+  "title": "ArchitectureViewDocument",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "title", "components", "boundaries", "connections"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "viewBox": {
+      "type": "array",
+      "items": { "type": "number", "exclusiveMinimum": 0 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" },
+        "revision": { "type": "string" }
+      }
+    },
+    "components": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/component" }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/boundary" }
+    },
+    "connections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/connection" }
+    },
+    "cards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/card" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "label": { "type": "string" }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "label", "pos", "size"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": ["frontend", "backend", "database", "cloud", "security", "messagebus", "external"]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "sublabel": { "type": "string" },
+        "pos": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "size": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 }, "minItems": 2, "maxItems": 2 },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label", "wraps"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "wraps": { "type": "array", "items": { "type": "string" } },
+        "pad": { "type": "number", "minimum": 0 }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "variant": { "enum": ["default", "emphasis", "security", "dashed"] }
+      }
+    },
+    "card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "items"],
+      "properties": {
+        "dot": { "type": "string" },
+        "title": { "type": "string", "minLength": 1 },
+        "items": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

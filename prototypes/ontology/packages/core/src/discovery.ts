@@ -304,6 +304,50 @@ export function planDiscoveryGaps(input: {
       priority: "high",
     });
   }
+  gaps.push(...unrecognizedSourceLanguageGaps(input.evidence));
   gaps.sort((a, b) => (a.priority !== b.priority ? ({ high: 0, medium: 1, low: 2 }[a.priority] - { high: 0, medium: 1, low: 2 }[b.priority]) : a.id.localeCompare(b.id)));
   return { gaps, catalog };
+}
+
+/** 한 언어 그룹의 gap에 담는 대표 파일 수 — 그 이상은 reason 텍스트의 총개수로만 알린다. */
+const UNRECOGNIZED_LANGUAGE_SAMPLE_SIZE = 50;
+/** 이 미만이면 프로젝트에 우연히 섞인 파일 한둘로 보고 gap을 만들지 않는다. */
+const UNRECOGNIZED_LANGUAGE_MIN_COUNT = 3;
+/** 전체 파일 대비 이 비율 이상이면 개수가 적어도(예: 소형 저장소) gap을 만든다. */
+const UNRECOGNIZED_LANGUAGE_MIN_SHARE = 0.05;
+
+/**
+ * `isSourceFile`의 닫힌 언어 허용목록 밖에 있어 지금까지 evidence가 전혀 없던 파일들을
+ * gap으로 드러낸다. 특정 프레임워크/언어를 하나도 하드코딩하지 않는다 — 확장자별로 묶어
+ * "이 확장자는 우리가 모른다"는 사실만 알린다. 이게 있어야 `get_incremental_analysis_context`가
+ * "gap 밖은 조사하지 마라"고 해도 미지 언어가 조사 범위 밖으로 완전히 사라지지 않는다.
+ */
+function unrecognizedSourceLanguageGaps(evidence: EvidenceIndex): DiscoveryGap[] {
+  if (evidence.unindexedFiles.length === 0) return [];
+  const totalFiles = Object.keys(evidence.fileHashes).length + evidence.unindexedFiles.length;
+  const byExtension = new Map<string, string[]>();
+  for (const item of evidence.unindexedFiles) {
+    const key = item.extension || "(확장자 없음)";
+    const values = byExtension.get(key) ?? [];
+    values.push(item.filePath);
+    byExtension.set(key, values);
+  }
+  const gaps: DiscoveryGap[] = [];
+  for (const [extension, filePaths] of byExtension) {
+    const share = totalFiles > 0 ? filePaths.length / totalFiles : 0;
+    if (filePaths.length < UNRECOGNIZED_LANGUAGE_MIN_COUNT && share < UNRECOGNIZED_LANGUAGE_MIN_SHARE) continue;
+    const sample = sorted(filePaths).slice(0, UNRECOGNIZED_LANGUAGE_SAMPLE_SIZE);
+    gaps.push({
+      id: stableId("gap", `unrecognized-language:${extension}`),
+      kind: "unrecognized-source-language",
+      reason:
+        `${extension} 파일 ${filePaths.length}개가 인식된 언어/프레임워크 밖에 있어 ` +
+        "evidence가 전혀 없습니다. 직접 읽고 propose_evidence/propose_system_facts로 등록하세요." +
+        (filePaths.length > sample.length ? ` (파일 목록은 처음 ${sample.length}개만 표시)` : ""),
+      filePaths: sample,
+      evidenceRefs: [],
+      priority: "medium",
+    });
+  }
+  return gaps;
 }

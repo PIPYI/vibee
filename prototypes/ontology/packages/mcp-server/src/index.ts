@@ -125,18 +125,23 @@ DB 읽기/쓰기·설정이 들어 있다. Semantic Memory는 AI가 만들고 Co
   · 이 프로젝트에 무엇이 있는가 (개요)           -> get_project_semantic_memory
   · full assembly의 전체 참조 후보를 처음 받을 때  -> get_assembly_context (첫 조회 정확히 1회)
   · 이 개념은 무엇이고 어디에 근거하는가          -> get_concept_context
+  · 여러 개념을 한 번에 조회하려면                -> get_concept_context_batch
   · 어떤 주장들이 있는가                         -> search_claims
-  · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence
+  · 이 파일/심볼의 실제 근거는 무엇인가           -> get_evidence (여러 id는 ids 배열로 한 번에)
   · 이 기능은 어떻게 동작하는가 (흐름)            -> get_scenario_context
+  · 여러 기능/anchor를 한 번에 조회하려면          -> get_scenario_context_batch
   · 이 anchor에서 인덱싱된 관계로 어디까지 닿는가  -> get_impact_context (authored reachability, impact 아님)
   · 여러 anchor의 관계를 한 번에 조회하려면          -> get_impact_context_batch
-  · 검증된 시스템 entity/link ID를 조회하려면          -> get_system_facts
+  · 검증된 시스템 entity/link ID를 조회하려면          -> get_system_facts (여러 id는 entityIds 배열로 한 번에)
   · 이번 증분 분석의 gap·영향 ID·patch 범위를 보려면    -> get_incremental_analysis_context
   · 엔진이 못 본 근거를 등록하려면                -> propose_evidence
   · 엔진이 모르는 시스템 대상과 관계를 등록하려면   -> propose_system_facts
   · 만든 의미를 저장하려면                       -> submit_semantic_patch
   · 아키텍처/워크플로우/시퀀스 한 벌을 제출하려면    -> submit_analysis_bundle (assembly turn 전용)
   · Bundle 검증 오류의 일부 경로만 고치려면         -> patch_analysis_bundle (draftId 필요)
+  · Architecture 뷰를 archify 패턴으로 직접 저작해 검증하려면 -> validate_architecture_view
+    (architecture turn 전용. 좌표를 AI가 직접 쓴다 — grounding tool과 무관하다)
+  · 검증을 통과한 Architecture 뷰를 저장하려면      -> submit_architecture_view
 
 중요한 규칙:
 
@@ -236,6 +241,27 @@ server.registerTool(
 );
 
 server.registerTool(
+  "get_concept_context_batch",
+  {
+    title: "Concept 맥락 일괄 조회",
+    description:
+      "둘 이상의 Concept를 확인할 때 쓴다. Concept마다 get_concept_context를 반복 호출하지 " +
+      "말고 최대 12개(conceptId·name 합산)를 한 요청으로 묶는다. 결과는 항목별로 분리된다.",
+    inputSchema: {
+      conceptIds: z.array(z.string().min(1)).max(12).optional().describe("Concept id들"),
+      names: z.array(z.string().min(1)).max(12).optional().describe("이름으로 찾을 것들"),
+    },
+  },
+  async ({ conceptIds, names }) =>
+    compactReply(
+      await callBridge("/internal/concepts-batch", {
+        method: "POST",
+        body: JSON.stringify({ conceptIds, names }),
+      }),
+    ),
+);
+
+server.registerTool(
   "search_claims",
   {
     title: "Claim 검색",
@@ -295,6 +321,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  "get_scenario_context_batch",
+  {
+    title: "Scenario 맥락 일괄 조회",
+    description:
+      "둘 이상의 Scenario/Concept anchor를 같은 hops로 확인할 때 쓴다. anchor마다 " +
+      "get_scenario_context를 반복 호출하지 말고 최대 12개를 한 요청으로 묶는다. " +
+      "결과는 anchor별로 분리된다.",
+    inputSchema: {
+      anchors: z.array(z.string().min(1)).min(1).max(12),
+      hops: z.number().optional().describe("기본 2"),
+    },
+  },
+  async ({ anchors, hops }) =>
+    compactReply(
+      await callBridge("/internal/scenario-context-batch", {
+        method: "POST",
+        body: JSON.stringify({ anchors, hops }),
+      }),
+    ),
+);
+
+server.registerTool(
   "get_system_facts",
   {
     title: "검증된 System Fact 조회",
@@ -306,12 +354,20 @@ server.registerTool(
       origin: z.enum(["engine", "vibee"]).optional(),
       certainty: z.enum(["confirmed", "grounded", "inferred"]).optional(),
       status: z.enum(["valid", "relocated", "stale", "missing", "needs_review"]).optional(),
-      entityId: z.string().optional(),
+      entityId: z.string().optional().describe("특정 entity 하나만"),
+      entityIds: z
+        .array(z.string())
+        .optional()
+        .describe("특정 entity 여러 개를 한 번에 — 하나씩 반복 호출하지 마라"),
       limit: z.number().int().min(1).max(2000).optional(),
     },
   },
-  async ({ origin, certainty, status, entityId, limit }) =>
-    reply(await callBridge(`/internal/system-facts${query({ origin, certainty, status, entityId, limit })}`)),
+  async ({ origin, certainty, status, entityId, entityIds, limit }) =>
+    reply(
+      await callBridge(
+        `/internal/system-facts${query({ origin, certainty, status, entityId, entityIds: entityIds?.join(","), limit })}`,
+      ),
+    ),
 );
 
 server.registerTool(
@@ -582,6 +638,67 @@ server.registerTool(
       await callBridge("/internal/submit-analysis-bundle", {
         method: "POST",
         body: JSON.stringify(bundle),
+      }),
+    ),
+);
+
+/**
+ * v7 — Architecture 뷰 전용 archify 패턴 저작 turn의 산출물 shape. `submit_analysis_bundle`과
+ * 달리 여기서는 shape을 느슨하게만 잡는다(A6의 "schema는 한 벌만" 원칙은 지키되, 그 한 벌은
+ * `@onto/architecture-view`의 ajv schema다 — `$ref`/`$defs`를 쓰므로 `jsonSchemaToZod`가
+ * 아직 지원하지 않는다). 진짜 검증은 bridge가 `validateArchitectureView()`로 한다.
+ */
+const architectureViewDocumentShape = {
+  schemaVersion: z.literal(1),
+  title: z.string(),
+  viewBox: z.tuple([z.number(), z.number()]).optional(),
+  repository: z.object({ url: z.string().optional(), revision: z.string().optional() }).optional(),
+  components: z.array(z.record(z.string(), z.unknown())),
+  boundaries: z.array(z.record(z.string(), z.unknown())),
+  connections: z.array(z.record(z.string(), z.unknown())),
+  cards: z.array(z.record(z.string(), z.unknown())).optional(),
+};
+
+server.registerTool(
+  "validate_architecture_view",
+  {
+    title: "Architecture 뷰 문서 검증",
+    description:
+      "저작한 ArchitectureViewDocument를 제출하지 않고 검증만 한다. schema(스키마 미준수) → " +
+      "geometry(viewBox 이탈·겹침·끊어진 참조·edge-crossing) → completeness(탐지된 런타임/데이터" +
+      "저장소/라우트를 인용하는 component가 있는지, warning일 뿐 hard reject 아님) → citation" +
+      "(sources[]의 경로·줄 범위가 실재하는지, 인용이 있을 때만 동작) 순으로 돈다. schema 오류가 " +
+      "있으면 나머지 층은 건너뛰고 schema 오류만 돌아온다. diagnostics가 비어 있으면 " +
+      "submit_architecture_view로 제출한다. severity:\"error\"가 하나라도 있으면 제출이 거절된다.",
+    inputSchema: architectureViewDocumentShape,
+  },
+  async (document) =>
+    reply(
+      await callBridge("/internal/validate-architecture-view", {
+        method: "POST",
+        body: JSON.stringify(document),
+      }),
+    ),
+);
+
+server.registerTool(
+  "submit_architecture_view",
+  {
+    title: "Architecture 뷰 문서 제출",
+    description:
+      "검증을 통과한 ArchitectureViewDocument를 이 프로젝트의 Architecture 뷰로 커밋한다. " +
+      "AnalysisBundle.architecture와는 완전히 별도 저장 경로다 — 이 제출은 " +
+      "analysis-bundle-validator의 I20-v4/coverage 검증을 거치지 않는다. 서버가 " +
+      "validate_architecture_view와 같은 검증을 다시 돌리므로(defense in depth), " +
+      "클라이언트가 이미 검증했다고 생략하지 마라 — error가 있으면 여전히 거절되고 " +
+      "diagnostics로 돌아온다.",
+    inputSchema: architectureViewDocumentShape,
+  },
+  async (document) =>
+    reply(
+      await callBridge("/internal/submit-architecture-view", {
+        method: "POST",
+        body: JSON.stringify(document),
       }),
     ),
 );

@@ -154,7 +154,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.aborters.set(input.taskId, abortController);
 
     const resumeFrom = this.sessionByProject.get(input.projectPath);
-    const analyzeLike = input.mode === "analyze" || input.mode === "view";
+    const analyzeLike = input.mode === "analyze" || input.mode === "view" || input.mode === "architecture";
     let stoppedOutcome: TaskOutcome | undefined;
 
     const stream = sdk.query({
@@ -174,9 +174,10 @@ export class ClaudeAdapter implements AgentAdapter {
         },
         // 다른 MCP 서버를 애초에 로드하지 않는다. Codex 처럼 거부할 필요가 없다.
         strictMcpConfig: true,
-        // 네 TaskMode(analyze/view/chat/assembly) 전부 코드를 읽고 MCP tool로만 결과를
-        // 제출한다 — Bash/Write/Edit/Task(서브에이전트)는 필요 없다. 기본 프리셋을 그대로
-        // 두면 이 tool들이 열려, 서브에이전트가 없는 Codex 대비 토큰 사용량이 크게 불어난다.
+        // 모든 TaskMode(analyze/view/chat/assembly/architecture)가 코드를 읽고 MCP tool로만
+        // 결과를 제출한다 — Bash/Write/Edit/Task(서브에이전트)는 필요 없다. 기본 프리셋을
+        // 그대로 두면 이 tool들이 열려, 서브에이전트가 없는 Codex 대비 토큰 사용량이 크게
+        // 불어난다.
         tools: ["Read", "Grep", "Glob"],
         // 프로젝트의 CLAUDE.md 는 기능1의 인계 산출물이지 분석 turn 의 규칙이 아니다 (B5).
         ...(analyzeLike ? { settingSources: [] } : {}),

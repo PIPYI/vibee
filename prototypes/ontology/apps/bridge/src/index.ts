@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { renderArchitectureViewSvg, validateArchitectureView } from "@onto/architecture-view";
 import {
   AnalyzeSession,
   SemanticStore,
@@ -56,6 +57,7 @@ import type {
   AnalysisStage,
   AnalysisStageState,
   AnalyzeRequest,
+  ArchitectureViewDocument,
   CachedView,
   EvidenceProposal,
   HealthResponse,
@@ -94,12 +96,14 @@ import {
   loadState,
   memoryDigest,
   queryEvidence,
+  resolveAssemblyContextLimit,
   scenarioContext,
   searchClaims,
 } from "./memory-api.js";
 import { onShutdown } from "./platform.js";
 import { modelSelectionError } from "./model-selection.js";
 import {
+  buildArchitectureViewPrompt,
   buildAssemblyPrompt,
   buildIncrementalAssemblyPrompt,
   buildEvidenceBundle,
@@ -343,6 +347,12 @@ function respondWithSystemFacts(req: Request, res: Response): void {
   const certainty = typeof req.query["certainty"] === "string" ? req.query["certainty"] : undefined;
   const status = typeof req.query["status"] === "string" ? req.query["status"] : undefined;
   const entityId = typeof req.query["entityId"] === "string" ? req.query["entityId"] : undefined;
+  // 여러 특정 System Entity id를 한 번에 확인하려는 것 — get_evidence의 ids 배열과 같은
+  // N+1 완화 목적이다(v6 §3.3, Assembly가 System Fact를 하나씩 23회 조회하던 패턴).
+  const entityIdsParam = req.query["entityIds"];
+  const entityIds =
+    typeof entityIdsParam === "string" ? new Set(entityIdsParam.split(",").filter(Boolean)) : undefined;
+  const matchesEntityId = (id: string): boolean => (!entityId || id === entityId) && (!entityIds || entityIds.has(id));
   const limitValue = Number(req.query["limit"] ?? 500);
   const limit = Number.isFinite(limitValue) ? Math.min(Math.max(Math.floor(limitValue), 1), 2_000) : 500;
 
@@ -350,18 +360,18 @@ function respondWithSystemFacts(req: Request, res: Response): void {
     .filter((item) => !origin || item.origin === origin)
     .filter((item) => !certainty || item.certainty === certainty)
     .filter((item) => !status || item.status === status)
-    .filter((item) => !entityId || item.id === entityId)
+    .filter((item) => matchesEntityId(item.id))
     .slice(0, limit);
   const links = loaded.systemFacts.links
     .filter((item) => !origin || item.origin === origin)
     .filter((item) => !certainty || item.certainty === certainty)
     .filter((item) => !status || item.status === status)
-    .filter(
-      (item) =>
-        !entityId ||
-        findSystemEntity(loaded.systemFacts, item.from)?.id === entityId ||
-        findSystemEntity(loaded.systemFacts, item.to)?.id === entityId,
-    )
+    .filter((item) => {
+      if (!entityId && !entityIds) return true;
+      const from = findSystemEntity(loaded.systemFacts, item.from)?.id;
+      const to = findSystemEntity(loaded.systemFacts, item.to)?.id;
+      return (from !== undefined && matchesEntityId(from)) || (to !== undefined && matchesEntityId(to));
+    })
     .slice(0, limit);
 
   res.json({
@@ -730,7 +740,7 @@ async function performReindex(
   // off는 안전한 V3 호환 arm이다. Store/I20 migration은 유지하되 새 open-world gap을
   // provider에게 주지 않는다. on/shadow는 완전히 같은 V4 실행 경로를 쓴다.
   const discovery = featureMode === "off" ? { catalog: discovered.catalog, gaps: [] } : discovered;
-  const firstAnalysis = before.project.semanticVersion === 0 && before.memory.concepts.length === 0;
+  const firstAnalysis = before.project.discoveryBaselineVersion === 0;
   const impact = buildSystemImpactSet({
     diffs,
     facts,
@@ -740,17 +750,53 @@ async function performReindex(
     discoveryGaps: discovery.gaps,
     firstAnalysis,
   });
-  const plan = buildIncrementalAnalysisPlan({
+  const forceFull = mode === "full" || mode === "index-only";
+  const rawPlan = buildIncrementalAnalysisPlan({
     facts,
     impact,
     discoveryGaps: discovery.gaps,
     integrationCatalog: discovery.catalog,
     firstAnalysis,
-    forceFull: mode === "full" || mode === "index-only",
+    forceFull,
   });
+  // 방어적 보강: 이미 재사용할 AnalysisBundle이 있고, 파일 diff·discovery gap·fact 수명
+  // 상태 중 아무것도 바뀐 게 없는데 (firstAnalysis류 플래그의 미래 회귀로) mode가
+  // fast-path가 아니면, 사용자가 명시적 full/index-only를 요청한 게 아닌 한 여기서
+  // 되돌린다. 조용히 넘기지 않고 로그를 남긴다.
+  //
+  // `before.analysisBundle` 체크가 핵심이다 — bundle이 아직 한 번도 만들어지지 않았다면
+  // (예: 이제 막 index만 하고 처음 analyze하는 경우) "재사용할 기존 지도"가 없으므로
+  // fast-path로 되돌리면 안 된다. 그러면 Vibee가 한 번도 안 불려서 분석 결과가 영원히
+  // 비어 있게 된다.
+  const noRealChange =
+    before.analysisBundle !== null &&
+    diffs.every((item) => item.contentChange === "unchanged" && !item.relocated) &&
+    discovery.gaps.length === 0 &&
+    !facts.diagnostics.some((item) => item.code === "system-facts/lifecycle");
+  let plan = rawPlan;
+  if (noRealChange && !forceFull && rawPlan.mode !== "fast-path") {
+    log(
+      `reindex: no file/discovery/fact change detected but incrementalPlan.mode was "${rawPlan.mode}" ` +
+        `(reason: ${rawPlan.reason}) — forcing fast-path`,
+    );
+    plan = {
+      ...rawPlan,
+      mode: "fast-path",
+      semanticTurnRequired: false,
+      assemblyTurnRequired: false,
+      fullDiscovery: false,
+      fullAssembly: false,
+      reason: "구조·의미·지도에 닿는 변경이 없어 기존 generation을 재사용합니다.",
+    };
+  }
 
   const after = await store.commit(`repository re-index · ${plan.reason}`, "index", (snapshot) => {
     snapshot.project.analysisVersion = nextVersion;
+    // discovery가 이번에 처음 끝났으면 스탬프한다 — 한 번 찍히면 다시 내려가지 않는다.
+    // semanticVersion/memory.concepts로 "첫 분석"을 유추하지 않는 게 이 필드의 목적이다.
+    if (snapshot.project.discoveryBaselineVersion === 0) {
+      snapshot.project.discoveryBaselineVersion = nextVersion;
+    }
     // 의미는 아직 아무것도 바뀌지 않았다.
     if (!plan.semanticTurnRequired) {
       // 포매팅만 바뀐 경우다. agent 를 부르지 않고 reconcile 을 따라잡는다 (V1).
@@ -821,6 +867,11 @@ async function reindex(
       `${plan.mode === "fast-path" ? "provider turn 0" : `${plan.discoveryGaps.length} discovery root`}`,
   });
 
+  // 주의: 이건 performReindex의 firstAnalysis(=discoveryBaselineVersion, discovery가
+  // 한 번이라도 끝났는가)와 다른 개념이다 — 여기는 "Vibee가 이 프로젝트의 의미를 한 번도
+  // 만든 적이 없는가"이며, 그래야 full/incremental 분석 프롬프트를 올바르게 고른다. 같은
+  // 필드로 통일하면 discovery만 끝나고 semantic memory는 아직 없는 첫 실제 분석 turn에서
+  // Vibee가 얕은 incremental 프롬프트를 받는다.
   const isFirst = (before?.project.semanticVersion ?? 0) === 0 && (before?.memory.concepts.length ?? 0) === 0;
   const prompt = selectAnalyzePrompt(mode, isFirst, projectPath, work, buildEvidenceBundle(after.evidence), plan);
 
@@ -961,9 +1012,9 @@ async function runTask(
   state.emit({ type: "task.started", taskId, agent: adapter.id, projectPath, mode });
 
   try {
-    if (mode === "view") {
-      // 온디맨드 View도 요청 하나가 세션 하나다. 사용자 chat 세션만 명시적 reset 전까지
-      // 이어지고, 분석 정확도는 누적 대화에 기대지 않는다.
+    if (mode === "view" || mode === "architecture") {
+      // 온디맨드 View도, Architecture 뷰 저작도 요청 하나가 세션 하나다. 사용자 chat
+      // 세션만 명시적 reset 전까지 이어지고, 분석 정확도는 누적 대화에 기대지 않는다.
       adapter.resetSession(projectPath);
     }
     const outcome = await adapter.startTask(
@@ -992,6 +1043,9 @@ async function runTask(
     // view turn 이 무엇을 만들려 했는지도 마찬가지로 정리한다. 성공한 제출은 이미
     // `viewResultsByTask`에 별도로 남아 있으므로 여기서 지워도 결과는 사라지지 않는다.
     state.clearPendingViewRequest(taskId);
+    // architecture turn의 사전 계산된 토폴로지·validate 호출 횟수도 마찬가지다 — 커밋된
+    // ArchitectureViewDocument는 SemanticStore generation에 있으므로 여기서 지워도 안전하다.
+    state.clearArchitectureViewSession(taskId);
   }
 }
 
@@ -1132,12 +1186,14 @@ async function runAnalyzePipeline(
       draftId,
       assemblyPlan,
       buildSkeletonSummary(skeleton),
+      config.assemblyContextMode !== "off",
     );
   } else {
     stage3Prompt = buildAssemblyPrompt(
       projectPath,
       buildSkeletonSummary(skeleton),
       describeRepositoryTopology(topology),
+      config.assemblyContextMode !== "off",
     );
   }
   recordStage(taskId, "retrieval", "completed", "지도 조립에 필요한 Core 근거 준비 완료");
@@ -1234,6 +1290,89 @@ app.post("/api/verify", async (req: Request, res: Response) => {
 
   res.json({ taskId });
   void runTask(adapter, taskId, projectPath, prompt, "chat", body as AnalyzeRequest);
+});
+
+/**
+ * v7 — Architecture 뷰 전용 archify 패턴 turn (v7/README.md §5.1·§6). 기존 `/api/analyze`
+ * 파이프라인과 완전히 분리된 별도 경로다 — Semantic Memory/System Fact grounding을 거치지
+ * 않고, 이 turn 하나로 저작·검증·커밋까지 끝난다(`/api/verify`처럼 요청 하나 = task 하나).
+ */
+app.post("/api/architecture-view", async (req: Request, res: Response) => {
+  const body = req.body as { agent: AgentId; projectPath?: string; model?: string; effort?: string };
+  const adapter = adapters.get(body?.agent);
+  if (!adapter) {
+    res.status(400).json({ error: `지원하지 않는 agent: ${String(body?.agent)}` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "이미 실행 중인 task 가 있습니다." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(body.projectPath ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const ready = await adapter.checkReady();
+  if (!ready.installed) {
+    res.status(412).json({ error: ready.message ?? "agent 를 쓸 수 없습니다." });
+    return;
+  }
+
+  state.setProjectPath(projectPath);
+  const taskId = randomUUID();
+  const prompt = buildArchitectureViewPrompt(projectPath);
+
+  // AI 턴 전에 서버가 조용히 토폴로지를 계산해 둔다 — AI에게 evidence 도구로 노출하지
+  // 않고(§4b), completeness 체크의 입력으로만 쓴다.
+  const topology = detectRepositoryTopology(
+    projectPath,
+    indexProject(projectPath, { analysisVersion: 0, includeTests: false }),
+  );
+  state.startArchitectureViewSession(taskId, topology);
+
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    mode: "architecture",
+    prompt,
+    status: "starting",
+    ...(body.model ? { model: body.model } : {}),
+    ...(body.effort ? { effort: body.effort } : {}),
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+    exploredFiles: [],
+  });
+
+  res.json({ taskId });
+  void runTask(adapter, taskId, projectPath, prompt, "architecture", body as AnalyzeRequest);
+});
+
+app.get("/api/architecture-view", (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = canonicalizeProjectPath(String(req.query["projectPath"] ?? state.getProjectPath() ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const store = new SemanticStore(projectPath);
+  if (!store.isInitialized()) {
+    res.status(412).json({ error: "프로젝트가 아직 초기화되지 않았습니다." });
+    return;
+  }
+  const head = store.load();
+  if (!head.architectureView) {
+    res.status(404).json({ error: "아직 Architecture 뷰가 없습니다. 먼저 저작을 실행하세요." });
+    return;
+  }
+  res.json({ document: head.architectureView, svg: renderArchitectureViewSvg(head.architectureView) });
 });
 
 app.post("/api/tasks/:taskId/stop", async (req: Request, res: Response) => {
@@ -1533,8 +1672,18 @@ app.get("/internal/memory", requireToken, (req: Request, res: Response) => {
 
 const ASSEMBLY_CONTEXT_DELIVERED_KEY = "assembly-context:delivered";
 
-app.get("/internal/assembly-context", requireToken, (_req: Request, res: Response) => {
+app.get("/internal/assembly-context", requireToken, (req: Request, res: Response) => {
   recordArrival("get_assembly_context");
+  if (config.assemblyContextMode === "off") {
+    recordOutcome(true);
+    res.json({
+      error: "assembly_context_disabled",
+      next_step:
+        "이 packet은 지금 꺼져 있다. get_project_semantic_memory · get_system_facts · " +
+        "get_impact_context_batch로 개별 조회하라.",
+    });
+    return;
+  }
   const activeTaskId = state.getActiveTaskId();
   const activeTask = activeTaskId ? state.getTask(activeTaskId) : undefined;
   if (activeTask && activeTask.mode !== "assembly") {
@@ -1559,7 +1708,7 @@ app.get("/internal/assembly-context", requireToken, (_req: Request, res: Respons
     res.json(loaded);
     return;
   }
-  const payload = assemblyContext(loaded);
+  const payload = assemblyContext(loaded, resolveAssemblyContextLimit(req.query["limit"]));
   if (activeTaskId) state.setRetrievalCache(activeTaskId, ASSEMBLY_CONTEXT_DELIVERED_KEY, true);
   res.json(payload);
 });
@@ -1595,6 +1744,29 @@ app.get("/internal/concepts", requireToken, (req: Request, res: Response) => {
   );
 });
 
+/**
+ * `get_concept_context_batch` — `/internal/impact-context-batch`와 같은 모양이다(N+1 완화).
+ * Assembly가 Concept를 하나씩 15회 조회하던 패턴(v6 §3.3)을 여러 개를 한 요청으로 묶어 없앤다.
+ */
+app.post("/internal/concepts-batch", requireToken, (req: Request, res: Response) => {
+  recordArrival("get_concept_context_batch");
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const body = req.body as { conceptIds?: string[]; names?: string[] };
+  const conceptIds = [...new Set(body.conceptIds ?? [])].slice(0, 12);
+  const names = [...new Set(body.names ?? [])].slice(0, 12);
+  res.json({
+    count: conceptIds.length + names.length,
+    results: [
+      ...conceptIds.map((conceptId) => ({ conceptId, context: conceptContext(loaded, { conceptId }) })),
+      ...names.map((name) => ({ name, context: conceptContext(loaded, { name }) })),
+    ],
+  });
+});
+
 app.get("/internal/claims", requireToken, (req: Request, res: Response) => {
   recordArrival("search_claims");
   const loaded = loadState(state.getProjectPath());
@@ -1624,6 +1796,25 @@ app.get("/internal/scenario-context", requireToken, (req: Request, res: Response
       ...(req.query["hops"] ? { hops: Number(req.query["hops"]) } : {}),
     }),
   );
+});
+
+/** `get_scenario_context_batch` — `/internal/impact-context-batch`와 같은 모양이다 (N+1 완화). */
+app.post("/internal/scenario-context-batch", requireToken, (req: Request, res: Response) => {
+  recordArrival("get_scenario_context_batch");
+  const loaded = loadState(state.getProjectPath());
+  if (isUnavailable(loaded)) {
+    res.json(loaded);
+    return;
+  }
+  const body = req.body as { anchors?: string[]; hops?: number };
+  const anchors = [...new Set(body.anchors ?? [])].slice(0, 12);
+  res.json({
+    count: anchors.length,
+    results: anchors.map((anchor) => ({
+      anchor,
+      context: scenarioContext(loaded, { anchor, ...(body.hops ? { hops: body.hops } : {}) }),
+    })),
+  });
 });
 
 /** `get_impact_context` (schema2 §6) — M12에서 활성화되었다. Reachability의 bounded 조회 판. */
@@ -2097,6 +2288,85 @@ app.post("/internal/patch-analysis-bundle", requireToken, async (req: Request, r
   } catch (error) {
     res.status(400).json({ error: "invalid_bundle_patch", detail: asMessage(error) });
   }
+});
+
+/**
+ * v7 — `validate_architecture_view`/`submit_architecture_view` (v7/README.md §5.2·§6).
+ *
+ * `activeAssembly()`와 같은 모양이지만 `task.mode === "architecture"`로 게이트한다 —
+ * `submit_analysis_bundle`류와 완전히 분리된 transaction이다.
+ */
+const MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS = 6;
+
+function activeArchitectureView(): { projectPath: string; taskId: string } | undefined {
+  const projectPath = state.getProjectPath();
+  const taskId = state.getActiveTaskId();
+  const task = taskId ? state.getTask(taskId) : undefined;
+  return projectPath && taskId && task?.mode === "architecture" ? { projectPath, taskId } : undefined;
+}
+
+app.post("/internal/validate-architecture-view", requireToken, (req: Request, res: Response) => {
+  recordArrival("validate_architecture_view");
+  const active = activeArchitectureView();
+  if (!active) {
+    res.json({ error: "no_active_transaction", next_step: "architecture turn 중에만 validate_architecture_view를 쓸 수 있습니다." });
+    return;
+  }
+  const attempt = state.recordArchitectureViewValidateAttempt(active.taskId, MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS);
+  if (!attempt.allowed) {
+    // 프롬프트 규율("두 라운드 연속 무개선 시 중단")만 믿지 않는다 — 하드 캡이다
+    // (v7/README.md §5.2, archify SKILL.md의 bounded repair loop를 서버에서 강제한다).
+    res.json({
+      ok: false,
+      retryable: false,
+      diagnostics: [
+        {
+          code: "architecture-view/validate-limit",
+          severity: "error",
+          message: `validate_architecture_view를 ${MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS}회 넘게 불렀습니다. 더 반복하지 말고 남은 diagnostics를 그대로 보고하세요.`,
+          subject: {},
+          evidence: { attempt: attempt.attempt, max: MAX_ARCHITECTURE_VIEW_VALIDATE_CALLS },
+          supportedFixes: [],
+        },
+      ],
+    });
+    return;
+  }
+  const topology = state.getArchitectureViewTopology(active.taskId);
+  const diagnostics = validateArchitectureView(req.body, {
+    projectPath: active.projectPath,
+    ...(topology ? { repositoryTopology: topology } : {}),
+  });
+  res.json({ ok: !hasError(diagnostics), diagnostics });
+});
+
+app.post("/internal/submit-architecture-view", requireToken, async (req: Request, res: Response) => {
+  recordArrival("submit_architecture_view");
+  const active = activeArchitectureView();
+  if (!active) {
+    res.json({ error: "no_active_transaction", next_step: "architecture turn 중에만 submit_architecture_view를 쓸 수 있습니다." });
+    return;
+  }
+  // 클라이언트가 이미 검증했다고 보고해도 서버가 다시 검증한다(defense in depth, §6).
+  const topology = state.getArchitectureViewTopology(active.taskId);
+  const diagnostics = validateArchitectureView(req.body, {
+    projectPath: active.projectPath,
+    ...(topology ? { repositoryTopology: topology } : {}),
+  });
+  if (hasError(diagnostics)) {
+    state.emit({ type: "validation.failed", taskId: active.taskId, tool: "submit_architecture_view", diagnostics });
+    res.json({ ok: false, diagnostics });
+    return;
+  }
+
+  const store = new SemanticStore(active.projectPath);
+  const document = req.body as ArchitectureViewDocument;
+  const committed = await store.commit("architecture view 저작", "architecture-view", (snapshot) => ({
+    ...snapshot,
+    architectureView: document,
+  }));
+  state.emit({ type: "architecture-view.ready", taskId: active.taskId, generation: committed.generation });
+  res.json({ ok: true, diagnostics, generation: committed.generation });
 });
 
 /** 시험과 진단용 — 이 task 에서 두 증거원이 모두 관측된 tool 들 (B4). */

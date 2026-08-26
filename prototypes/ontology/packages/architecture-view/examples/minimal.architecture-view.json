@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "title": "예시: 간단한 웹 서비스",
+  "viewBox": [1200, 800],
+  "components": [
+    {
+      "id": "web-client",
+      "type": "frontend",
+      "label": "웹 클라이언트",
+      "sublabel": "React SPA",
+      "pos": [80, 320],
+      "size": [220, 100],
+      "sources": [{ "path": "src/App.tsx", "line": 1, "label": "루트 컴포넌트" }]
+    },
+    {
+      "id": "api-server",
+      "type": "backend",
+      "label": "API 서버",
+      "sublabel": "Express",
+      "pos": [480, 320],
+      "size": [220, 100],
+      "sources": [{ "path": "server/index.js", "line": 1, "endLine": 40, "label": "라우트 등록" }]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "PostgreSQL",
+      "pos": [880, 320],
+      "size": [200, 100],
+      "sources": [{ "path": "server/db.js", "label": "커넥션 풀" }]
+    }
+  ],
+  "boundaries": [
+    { "id": "backend-boundary", "kind": "runtime", "label": "백엔드", "wraps": ["api-server"], "pad": 24 }
+  ],
+  "connections": [
+    { "from": "web-client", "to": "api-server", "label": "HTTPS / JSON", "variant": "default" },
+    { "from": "api-server", "to": "database", "label": "SQL", "variant": "default" }
+  ],
+  "cards": [
+    { "title": "핵심 흐름", "items": ["클라이언트가 API를 호출한다", "API가 DB를 조회/갱신한다"] }
+  ]
+}

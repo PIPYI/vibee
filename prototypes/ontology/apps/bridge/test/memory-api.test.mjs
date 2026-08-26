@@ -8,7 +8,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { assemblyContext, impactContext } from "../dist/memory-api.js";
+import {
+  DEFAULT_ASSEMBLY_CONTEXT_LIMIT,
+  MAX_ASSEMBLY_CONTEXT_LIMIT,
+  assemblyContext,
+  impactContext,
+  resolveAssemblyContextLimit,
+} from "../dist/memory-api.js";
 
 function symbolEntity(id, name) {
   return {
@@ -228,7 +234,7 @@ test("assemblyContext는 참조 후보를 보존하고 lifecycle 중복 필드�
   });
 
   assert.equal(result.generation, 7);
-  assert.deepEqual(result.semantic.counts.concepts, { total: 2, eligible: 1 });
+  assert.deepEqual(result.semantic.counts.concepts, { total: 2, eligible: 1, truncated: false });
   assert.deepEqual(result.semantic.concepts.map((item) => item.id), ["concept-1", "concept-old"]);
   assert.deepEqual(result.semantic.concepts[0].aliases, ["허가"]);
   assert.deepEqual(result.semantic.concepts[0].evidenceRefs, ["ev-concept-grounding"]);
@@ -237,7 +243,7 @@ test("assemblyContext는 참조 후보를 보존하고 lifecycle 중복 필드�
   assert.deepEqual(result.semantic.claims[0].evidenceRefs, ["ev-claim-grounding"]);
   assert.equal(result.semantic.claims[0].groundingConfidence, 0.8);
   assert.deepEqual(result.semantic.canonicalScenarios[0].anchorConceptIds, ["concept-1"]);
-  assert.deepEqual(result.systemFacts.counts.links, { total: 3, eligible: 1 });
+  assert.deepEqual(result.systemFacts.counts.links, { total: 3, eligible: 1, truncated: false });
   assert.deepEqual(result.systemFacts.entities[0], {
     id: "symbol:src/a.ts#save", kind: "symbol", certainty: "confirmed",
     evidenceRefs: ["ev-entity"], status: "valid",
@@ -251,4 +257,27 @@ test("assemblyContext는 참조 후보를 보존하고 lifecycle 중복 필드�
   const serialized = JSON.stringify(result);
   assert.doesNotMatch(serialized, /createdAtVersion|updatedAtVersion|firstSeenVersion|lastValidatedVersion/);
   assert.doesNotMatch(serialized, /dependsOnEvidenceRefs|diagnostics|"origin"|"ref"|"endpoint"/);
+});
+
+test("assemblyContext는 대형 저장소에서 목록마다 독립적으로 limit을 적용하고 잘렸는지 알려준다", () => {
+  const concepts = Array.from({ length: 5 }, (_, i) => ({
+    id: `concept-${i}`, name: `concept ${i}`, evidenceRefs: [], status: "active",
+    createdAtVersion: 1, updatedAtVersion: 1,
+  }));
+  const base = stateOf({ concepts });
+  const result = assemblyContext(
+    { ...base, systemFacts: { schemaVersion: 4, analysisVersion: 1, entities: [], links: [], diagnostics: [] } },
+    2,
+  );
+  assert.equal(result.semantic.concepts.length, 2, "limit을 넘는 목록은 잘린다");
+  assert.deepEqual(result.semantic.counts.concepts, { total: 5, eligible: 5, truncated: true });
+  // claims는 원래 비어 있으므로 limit보다 작을 때는 잘리지 않는다.
+  assert.deepEqual(result.semantic.counts.claims, { total: 0, eligible: 0, truncated: false });
+  assert.equal(
+    resolveAssemblyContextLimit(undefined),
+    DEFAULT_ASSEMBLY_CONTEXT_LIMIT,
+    "값이 없으면 기본 500을 쓴다",
+  );
+  assert.equal(resolveAssemblyContextLimit("999999"), MAX_ASSEMBLY_CONTEXT_LIMIT, "상한 2000을 넘지 않는다");
+  assert.equal(resolveAssemblyContextLimit("not-a-number"), DEFAULT_ASSEMBLY_CONTEXT_LIMIT);
 });

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildArchitectureViewPrompt,
   buildAssemblyPrompt,
   buildEvidenceBundle,
   buildFullAnalyzePrompt,
@@ -218,6 +219,24 @@ test("Assembly 프롬프트는 골격 요약과 목적별 userMap·1엣지-1시�
   assert.ok(prompt.includes(summary), "골격 요약이 프롬프트에 그대로 실린다");
 });
 
+test("packetEnabled=false면 Assembly 프롬프트가 get_assembly_context 이전(621dd1e 이전) 개별 tool 흐름으로 되돌아간다", () => {
+  // ONTO_ASSEMBLY_CONTEXT_PACKET=off 롤백 레버의 회귀 테스트. v6 §6.3이 요구한 shadow
+  // 검증 없이 이미 실서비스에 나간 get_assembly_context를 끌 수 있어야 하며, 껐을 때는
+  // 그 packet을 아예 언급하지 않고 621dd1e 이전의 개별 tool 흐름(+ 그 뒤에 추가된 batch
+  // tool들)으로 되돌아가야 한다 — 문구가 바이트 단위로 같을 필요는 없다.
+  const summary = buildSkeletonSummary(evidenceGraph());
+  const topology = "독립 실행 런타임 2개: traveler, admin";
+  const prompt = buildAssemblyPrompt("/tmp/proj", summary, topology, false);
+  assert.doesNotMatch(prompt, /get_assembly_context/);
+  assert.match(prompt, /1\. get_project_semantic_memory 로 Concept·Scenario 전체를 훑는다/);
+  assert.match(prompt, /2\. get_system_facts\(entityIds 배열\)로 검증된 System Entity와 System Link ID를/);
+  assert.match(prompt, /get_impact_context_batch/);
+  assert.match(prompt, /get_scenario_context_batch/);
+  assert.match(prompt, /get_concept_context_batch/);
+  assert.match(prompt, /systemLinkRefs에 2번에서 확인한 System Link ID를/);
+  assert.match(prompt, /submit_analysis_bundle/);
+});
+
 test("V4 증분 Assembly 프롬프트는 기존 draft와 ImpactSet ID만 수정하게 한다", () => {
   const impact = {
     evidenceIds: ["ev-1"], systemEntityIds: [], systemLinkIds: ["link-1"], conceptIds: [], claimIds: [], scenarioIds: [],
@@ -245,4 +264,26 @@ test("describeSession은 Assembly 프롬프트를 식별한다", () => {
 test("EVIDENCE_RULES는 get_evidence를 여러 id 한 번에 불러오라고 지시한다", () => {
   const prompt = buildFullAnalyzePrompt("/tmp/project");
   assert.match(prompt, /get_evidence.*ids 배열에 한 번에/);
+});
+
+/**
+ * `buildArchitectureViewPrompt` — v7. grounding 파이프라인과 완전히 분리된 archify 패턴
+ * 저작 turn이다. get_assembly_context류 grounding tool을 지시하지 않고, 좌표를 AI가 직접
+ * 쓰게 하며, validate/submit MCP tool 두 개만 언급해야 한다.
+ */
+test("Architecture 뷰 프롬프트는 grounding tool을 지시하지 않고 스키마·예시를 인라인한다", () => {
+  const prompt = buildArchitectureViewPrompt("/tmp/proj");
+  assert.doesNotMatch(prompt, /get_assembly_context/);
+  assert.match(prompt, /get_project_semantic_memory·get_system_facts·get_evidence 같은 grounding tool을 부르지/);
+  assert.doesNotMatch(prompt, /submit_analysis_bundle/);
+  assert.match(prompt, /validate_architecture_view/);
+  assert.match(prompt, /submit_architecture_view/);
+  assert.match(prompt, /"schemaVersion": 1/);
+  assert.match(prompt, /좌표\(pos\)는 이 turn에서만 AI가 직접 쓴다/);
+  assert.match(prompt, /6~12개/);
+});
+
+test("describeSession은 Architecture 뷰 프롬프트를 식별한다", () => {
+  const prompt = buildArchitectureViewPrompt("/tmp/proj");
+  assert.equal(describeSession(prompt), "Architecture 뷰 저작 (archify 패턴)");
 });

@@ -4,6 +4,7 @@ import type { AnalysisBundle, ArchitectureComponent, ScenarioIR, ScenarioStep, S
 
 import { componentReferenceSet, journeyReferenceSet, relatedComponentIds, stepReferenceSet } from "../layout/unifiedMap.js";
 import { ArchitectureRelationshipMap } from "./ArchitectureRelationshipMap.js";
+import { SystemStructureMap } from "./SystemStructureMap.js";
 import { UserMapView } from "./UserMapView.js";
 
 export function UnifiedMapView({
@@ -11,11 +12,14 @@ export function UnifiedMapView({
   onSelectComponent,
   onOpenSequence,
   systemFacts,
+  architectureSvg,
 }: {
   bundle: AnalysisBundle;
   onSelectComponent: (componentId: string) => void;
   onOpenSequence: (sequence: SequenceIR) => void;
   systemFacts?: SystemFactStore | null;
+  /** 저작된 시스템 구조 지도(SVG). 있으면 결정론적 관계 지도 대신 이것을 그린다. */
+  architectureSvg?: string | null;
 }): React.JSX.Element {
   const [focusRefs, setFocusRefs] = useState<Set<string>>(new Set());
   const [focusSource, setFocusSource] = useState<"system" | "journey" | null>(null);
@@ -62,21 +66,25 @@ export function UnifiedMapView({
           <div><p className="detail-eyebrow">시스템 구조</p><h3 id="system-map-title">코드가 나뉘고 연결되는 방식</h3></div>
           <p>카드를 누르면 근거를 확인하고, 아래 여정에서 같은 근거를 쓰는 단계를 함께 찾습니다.</p>
         </div>
-        <ArchitectureRelationshipMap
-          ir={bundle.architecture}
-          topology={bundle.repositoryTopology}
-          sequences={bundle.sequences}
-          highlightedComponentIds={highlightedComponentIds}
-          hasExternalFocus={focusSource === "journey" && focusRefs.size > 0}
-          hasFocus={focusRefs.size > 0}
-          focusMessage={focusSource === "system" ? "관련 사용자 여정 강조 중" : "선택한 여정과 관련된 구성요소 강조 중"}
-          onClearFocus={clearFocus}
-          onSelectComponent={(id) => {
-            const component = bundle.architecture.components.find((item) => item.id === id);
-            if (component) focusComponent(component);
-          }}
-          systemFacts={systemFacts}
-        />
+        {architectureSvg ? (
+          <SystemStructureMap svg={architectureSvg} />
+        ) : (
+          <ArchitectureRelationshipMap
+            ir={bundle.architecture}
+            topology={bundle.repositoryTopology}
+            sequences={bundle.sequences}
+            highlightedComponentIds={highlightedComponentIds}
+            hasExternalFocus={focusSource === "journey" && focusRefs.size > 0}
+            hasFocus={focusRefs.size > 0}
+            focusMessage={focusSource === "system" ? "관련 사용자 여정 강조 중" : "선택한 여정과 관련된 구성요소 강조 중"}
+            onClearFocus={clearFocus}
+            onSelectComponent={(id) => {
+              const component = bundle.architecture.components.find((item) => item.id === id);
+              if (component) focusComponent(component);
+            }}
+            systemFacts={systemFacts}
+          />
+        )}
       </section>
 
       <section id="journey-map" className="unified-section" aria-labelledby="journey-map-title">

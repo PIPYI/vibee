@@ -94,14 +94,33 @@ export function memoryDigest(state: LoadedState): Record<string, unknown> {
   };
 }
 
+/** `get_system_facts`(respondWithSystemFacts)와 같은 기본/상한 — 대형 저장소에서 이 packet
+ * 하나가 무제한으로 커지는 걸 막는다. counts.*.total은 잘리기 전 실제 개수를 그대로 보여준다. */
+export const DEFAULT_ASSEMBLY_CONTEXT_LIMIT = 500;
+export const MAX_ASSEMBLY_CONTEXT_LIMIT = 2_000;
+
+export function resolveAssemblyContextLimit(value: unknown): number {
+  const parsed = Number(value ?? DEFAULT_ASSEMBLY_CONTEXT_LIMIT);
+  return Number.isFinite(parsed)
+    ? Math.min(Math.max(Math.floor(parsed), 1), MAX_ASSEMBLY_CONTEXT_LIMIT)
+    : DEFAULT_ASSEMBLY_CONTEXT_LIMIT;
+}
+
 /**
  * Full Assembly가 첫 조회 한 번으로 참조 후보 전체를 받는 compact packet.
  *
  * 저장 형식의 version/lifecycle metadata와 중복 grounding object는 제외하되, Assembly가
  * 실제로 인용하는 ID·관계·근거·상태는 자르지 않는다. System Fact는 validator가 지도에
  * 허용하는 현재 상태(valid|relocated)만 싣는다.
+ *
+ * `limit`은 목록마다 독립적으로 적용된다(entities 500개 초과 + concepts 10개인 저장소에서
+ * concepts까지 자르지 않기 위함). 잘렸다면 `counts.*.truncated: true`로 드러낸다 — 조용히
+ * 자르면 Assembly가 빠진 항목이 있는지 모른 채 지도를 완성한다.
  */
-export function assemblyContext(state: LoadedState): Record<string, unknown> {
+export function assemblyContext(
+  state: LoadedState,
+  limit: number = DEFAULT_ASSEMBLY_CONTEXT_LIMIT,
+): Record<string, unknown> {
   const usableFactStatus = new Set(["valid", "relocated"]);
   const conceptGrounding = new Map(
     state.grounding.conceptGroundings.map((item) => [item.conceptId, item] as const),
@@ -164,6 +183,14 @@ export function assemblyContext(state: LoadedState): Record<string, unknown> {
       status: link.status,
     }));
 
+  const boundedLimit = resolveAssemblyContextLimit(limit);
+  const cap = <T,>(items: T[]) => ({ items: items.slice(0, boundedLimit), truncated: items.length > boundedLimit });
+  const conceptsCapped = cap(concepts);
+  const claimsCapped = cap(claims);
+  const canonicalScenariosCapped = cap(canonicalScenarios);
+  const entitiesCapped = cap(entities);
+  const linksCapped = cap(links);
+
   return {
     generation: state.generation,
     versions: {
@@ -177,29 +204,32 @@ export function assemblyContext(state: LoadedState): Record<string, unknown> {
         concepts: {
           total: concepts.length,
           eligible: state.memory.concepts.filter((item) => item.status === "active" || item.status === "uncertain").length,
+          truncated: conceptsCapped.truncated,
         },
         claims: {
           total: claims.length,
           eligible: state.memory.claims.filter((item) => item.status === "active" || item.status === "uncertain").length,
+          truncated: claimsCapped.truncated,
         },
         canonicalScenarios: {
           total: canonicalScenarios.length,
           eligible: state.memory.canonicalScenarios.filter((item) => item.status === "active").length,
+          truncated: canonicalScenariosCapped.truncated,
         },
       },
-      concepts,
-      claims,
-      canonicalScenarios,
+      concepts: conceptsCapped.items,
+      claims: claimsCapped.items,
+      canonicalScenarios: canonicalScenariosCapped.items,
     },
     systemFacts: {
       schemaVersion: state.systemFacts.schemaVersion,
       analysisVersion: state.systemFacts.analysisVersion,
       counts: {
-        entities: { total: state.systemFacts.entities.length, eligible: entities.length },
-        links: { total: state.systemFacts.links.length, eligible: links.length },
+        entities: { total: state.systemFacts.entities.length, eligible: entities.length, truncated: entitiesCapped.truncated },
+        links: { total: state.systemFacts.links.length, eligible: links.length, truncated: linksCapped.truncated },
       },
-      entities,
-      links,
+      entities: entitiesCapped.items,
+      links: linksCapped.items,
     },
   };
 }

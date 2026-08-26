@@ -23,6 +23,12 @@ export const STATE_FILES = {
   systemFacts: "system-facts.json",
   /** schema3 §5.4 — AnalysisBundle. 아직 분석하지 않은 generation에서는 `null`이다. */
   analysisBundle: "analysis-bundle.json",
+  /**
+   * v7 — Architecture 뷰 전용 archify 패턴 산출물. `AnalysisBundle.architecture`와는 완전히
+   * 별도 경로다(AI가 좌표까지 저작하고 grounding을 거치지 않는다). 아직 저작하지 않은
+   * generation에서는 `null`이다.
+   */
+  architectureView: "architecture-view.json",
   manifest: "manifest.json",
 } as const;
 
@@ -37,6 +43,7 @@ export const MANIFEST_MEMBERS: StateFileName[] = [
   STATE_FILES.versions,
   STATE_FILES.systemFacts,
   STATE_FILES.analysisBundle,
+  STATE_FILES.architectureView,
 ];
 
 export function intelDir(projectPath: string): string {
