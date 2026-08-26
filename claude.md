@@ -60,9 +60,9 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5.  코딩 작업은 서브에이전트에 맡긴다
+## 코딩 작업은 서브에이전트에 맡긴다
 
-모든 코딩 작업 및 단순 코드 읽기 작업은 네 판단으로 적절한 하위(lower power) 모델을 골라 서브에이전트에서
+모든 코딩 작업은 네 판단으로 적절한 하위(lower power) 모델을 골라 서브에이전트에서
 실행한다.
 
 원문: "For all coding tasks use your judgement to decide an appropriate lower power model

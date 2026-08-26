@@ -8,11 +8,27 @@ import { readArchitectureView, writeArchitectureView } from "../store.js";
 
 function makeDoc(): ArchitectureViewDocument {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Test App",
     components: [
-      { id: "web", type: "frontend", label: "Web App", pos: [0, 0], size: [170, 70] },
-      { id: "api", type: "backend", label: "API", pos: [250, 0], size: [170, 70] },
+      {
+        id: "web",
+        type: "frontend",
+        semanticRole: "responsibility",
+        semanticRefs: ["resp-web"],
+        label: "Web App",
+        pos: [0, 0],
+        size: [170, 70],
+      },
+      {
+        id: "api",
+        type: "backend",
+        semanticRole: "responsibility",
+        semanticRefs: ["resp-api"],
+        label: "API",
+        pos: [250, 0],
+        size: [170, 70],
+      },
     ],
     boundaries: [],
     connections: [{ from: "web", to: "api", label: "HTTPS" }],

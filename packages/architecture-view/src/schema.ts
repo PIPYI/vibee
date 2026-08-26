@@ -9,9 +9,11 @@ import type { Diagnostic } from "@vibee/protocol";
 // `../schemas/...` / `../examples/...`.
 const SCHEMA_URL = new URL("../schemas/architecture-view.schema.json", import.meta.url);
 const EXAMPLE_URL = new URL("../examples/minimal.architecture-view.json", import.meta.url);
+const RUNTIME_SEMANTIC_SCHEMA_URL = new URL("../schemas/runtime-semantic.schema.json", import.meta.url);
 
 let cachedSchemaText: string | undefined;
 let cachedExampleText: string | undefined;
+let cachedRuntimeSemanticSchemaText: string | undefined;
 
 /**
  * Raw JSON Schema text for the ArchitectureView document. This is the exact
@@ -55,6 +57,47 @@ export function checkSchema(doc: unknown): Diagnostic[] {
     const subject = err.instancePath || "(root)";
     return {
       code: "architecture-view/schema",
+      severity: "error" as const,
+      message: `${subject} ${err.message ?? "is invalid"}`.trim(),
+      subject,
+      evidence: { keyword: err.keyword, params: err.params },
+      supportedFixes: [`fix "${subject}" so it satisfies: ${err.message ?? "the schema"}`],
+    };
+  });
+}
+
+/**
+ * Raw JSON Schema text for the RuntimeSemanticDocument. Same rationale as
+ * `architectureViewSchemaText`: this is the exact text embedded in AI
+ * prompts elsewhere and the exact text `checkRuntimeSemanticSchema` compiles.
+ */
+export function runtimeSemanticSchemaText(): string {
+  if (cachedRuntimeSemanticSchemaText === undefined) {
+    cachedRuntimeSemanticSchemaText = readFileSync(RUNTIME_SEMANTIC_SCHEMA_URL, "utf8").trim();
+  }
+  return cachedRuntimeSemanticSchemaText;
+}
+
+let cachedRuntimeSemanticValidate: ValidateFunction | undefined;
+
+function getRuntimeSemanticValidator(): ValidateFunction {
+  if (!cachedRuntimeSemanticValidate) {
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    const schema = JSON.parse(runtimeSemanticSchemaText());
+    cachedRuntimeSemanticValidate = ajv.compile(schema);
+  }
+  return cachedRuntimeSemanticValidate;
+}
+
+export function checkRuntimeSemanticSchema(doc: unknown): Diagnostic[] {
+  const validate = getRuntimeSemanticValidator();
+  const valid = validate(doc);
+  if (valid) return [];
+  const errors = validate.errors ?? [];
+  return errors.map((err) => {
+    const subject = err.instancePath || "(root)";
+    return {
+      code: "runtime-semantic/schema",
       severity: "error" as const,
       message: `${subject} ${err.message ?? "is invalid"}`.trim(),
       subject,

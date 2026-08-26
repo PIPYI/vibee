@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import type { ArchitectureViewDocument, Diagnostic } from "@vibee/protocol";
 
-export type CitationContext = { projectPath: string; revision?: string };
+export type CitationContext = { projectPath: string };
 
 function countLines(text: string): number {
   if (text.length === 0) return 0;
@@ -27,7 +26,13 @@ function checkRangeInBounds(
   return undefined;
 }
 
-function checkWorkingTreeSource(
+/**
+ * Exported so other document kinds with their own `sources[]` shape (e.g.
+ * RuntimeSemanticDocument in runtime-semantic-validator.ts) can reuse the
+ * same file-existence/line-range checking without duplicating it -- this
+ * function has no ArchitectureViewDocument-specific logic in it.
+ */
+export function checkWorkingTreeSource(
   projectPath: string,
   path: string,
   line: number | undefined,
@@ -47,55 +52,32 @@ function checkWorkingTreeSource(
   return checkRangeInBounds(countLines(text), line, endLine);
 }
 
-function checkGitSource(
-  projectPath: string,
-  revision: string,
-  path: string,
-  line: number | undefined,
-  endLine: number | undefined,
-): string | undefined {
-  const exists = spawnSync("git", ["-C", projectPath, "cat-file", "-e", `${revision}:${path}`], {
-    encoding: "utf8",
-  });
-  if (exists.status !== 0) {
-    return `file "${path}" does not exist at revision ${revision}`;
-  }
-  if (line === undefined && endLine === undefined) return undefined;
-  const show = spawnSync("git", ["-C", projectPath, "show", `${revision}:${path}`], {
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024 * 64,
-  });
-  if (show.status !== 0) {
-    return `file "${path}" could not be read at revision ${revision}: ${show.stderr}`;
-  }
-  return checkRangeInBounds(countLines(show.stdout), line, endLine);
-}
-
 /**
  * Verifies every `sources[]` entry across all components actually points at
  * a real file (and, if `line`/`endLine` are given, a range within that
  * file's bounds). Only meaningful when at least one component has sources --
  * callers should skip invoking this otherwise (see `validateArchitectureView`).
  *
- * When `ctx.revision` is set, verification is done against that git revision
- * via `git cat-file`/`git show` (works even if the working tree has since
- * changed). Otherwise it falls back to reading the working-tree file
- * directly.
+ * Always checks the live working tree. This intentionally ignores any git
+ * revision the document/context may carry: the AI exploring the repo always
+ * reads the working tree via its Read/Grep/Glob tools (never `git show`), so
+ * checking citations against a pinned historical revision would reject
+ * citations to files the AI actually saw, whenever the tree has any
+ * uncommitted/untracked changes relative to that revision -- a normal state,
+ * not an edge case.
  */
 export function checkCitations(doc: ArchitectureViewDocument, ctx: CitationContext): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const component of doc.components) {
     for (const source of component.sources ?? []) {
-      const problem = ctx.revision
-        ? checkGitSource(ctx.projectPath, ctx.revision, source.path, source.line, source.endLine)
-        : checkWorkingTreeSource(ctx.projectPath, source.path, source.line, source.endLine);
+      const problem = checkWorkingTreeSource(ctx.projectPath, source.path, source.line, source.endLine);
       if (problem) {
         diagnostics.push({
           code: "architecture-view/citation-invalid",
           severity: "error",
           message: `Component "${component.id}" cites an invalid source (${source.path}): ${problem}.`,
           subject: component.id,
-          evidence: { source, revision: ctx.revision },
+          evidence: { source },
           supportedFixes: [`fix or remove the source citation for "${source.path}" on component "${component.id}"`],
         });
       }

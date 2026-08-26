@@ -1,0 +1,13 @@
+{
+  "name": "dual-app-admin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Admin-facing app for the dual-app fixture",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

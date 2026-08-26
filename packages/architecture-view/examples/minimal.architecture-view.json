@@ -1,15 +1,15 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "title": "Generic Web App",
   "viewBox": [1200, 760],
   "components": [
-    { "id": "web", "type": "frontend", "label": "Web App", "pos": [40, 340], "size": [170, 70] },
-    { "id": "api", "type": "backend", "label": "API Server", "pos": [330, 330], "size": [190, 90] },
-    { "id": "auth", "type": "security", "label": "Auth Service", "pos": [680, 60], "size": [170, 80] },
-    { "id": "db", "type": "database", "label": "Primary Database", "pos": [680, 340], "size": [170, 90] },
-    { "id": "queue", "type": "messagebus", "label": "Job Queue", "pos": [680, 560], "size": [170, 80] },
-    { "id": "storage", "type": "cloud", "label": "Object Storage", "pos": [960, 460], "size": [180, 80] },
-    { "id": "payments", "type": "external", "label": "Payment Provider", "pos": [960, 570], "size": [180, 90] }
+    { "id": "web", "type": "frontend", "semanticRole": "responsibility", "semanticRefs": ["resp-web-app"], "label": "Web App", "pos": [40, 340], "size": [170, 70] },
+    { "id": "api", "type": "backend", "semanticRole": "responsibility", "semanticRefs": ["resp-api-server"], "label": "API Server", "pos": [330, 330], "size": [190, 90] },
+    { "id": "auth", "type": "security", "semanticRole": "responsibility", "semanticRefs": ["resp-auth-service"], "label": "Auth Service", "pos": [680, 60], "size": [170, 80] },
+    { "id": "db", "type": "database", "semanticRole": "state", "semanticRefs": ["state-primary-database"], "label": "Primary Database", "pos": [680, 340], "size": [170, 90] },
+    { "id": "queue", "type": "messagebus", "semanticRole": "state", "semanticRefs": ["state-job-queue"], "label": "Job Queue", "pos": [680, 560], "size": [170, 80] },
+    { "id": "storage", "type": "cloud", "semanticRole": "external", "semanticRefs": ["ext-object-storage"], "label": "Object Storage", "pos": [960, 460], "size": [180, 80] },
+    { "id": "payments", "type": "external", "semanticRole": "external", "semanticRefs": ["ext-payment-provider"], "label": "Payment Provider", "pos": [960, 570], "size": [180, 90] }
   ],
   "boundaries": [
     { "kind": "region", "label": "Client", "wraps": ["web"], "pad": 20 },

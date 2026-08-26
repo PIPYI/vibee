@@ -1,13 +1,22 @@
-import type { ArchitectureViewDocument, Diagnostic } from "@vibee/protocol";
+import type { ArchitectureViewDocument, Diagnostic, RuntimeSemanticDocument } from "@vibee/protocol";
 import { checkSchema } from "./schema.js";
 import { checkGeometry } from "./geometry.js";
 import { checkCitations } from "./citation.js";
+import { checkSemanticMapping } from "./semantic-mapping.js";
 
-export type ValidateContext = { projectPath: string; gitRevision?: string };
+export type ValidateContext = {
+  projectPath: string;
+  // When supplied, `checkSemanticMapping` runs too. Omitted, semantic mapping
+  // is skipped silently -- this keeps `validateArchitectureView` usable in
+  // isolation (V1-style tests, or any caller that hasn't wired a semantic
+  // revision through yet).
+  semanticDocument?: RuntimeSemanticDocument;
+};
 
 /**
- * Full three-stage validation: schema -> geometry -> citation. Geometry and
- * citation checks assume a schema-valid document, so if the schema check
+ * Full validation: schema -> geometry -> citation, plus semantic mapping
+ * when a semantic document is supplied. Geometry, citation, and semantic
+ * mapping checks assume a schema-valid document, so if the schema check
  * fails, its diagnostics are returned immediately without attempting the
  * later stages.
  */
@@ -19,13 +28,11 @@ export function validateArchitectureView(doc: unknown, ctx: ValidateContext): Di
   const diagnostics = [...checkGeometry(document)];
 
   if (document.components.some((c) => (c.sources?.length ?? 0) > 0)) {
-    const revision = document.repository?.revision ?? ctx.gitRevision;
-    diagnostics.push(
-      ...checkCitations(
-        document,
-        revision !== undefined ? { projectPath: ctx.projectPath, revision } : { projectPath: ctx.projectPath },
-      ),
-    );
+    diagnostics.push(...checkCitations(document, { projectPath: ctx.projectPath }));
+  }
+
+  if (ctx.semanticDocument) {
+    diagnostics.push(...checkSemanticMapping(document, ctx.semanticDocument));
   }
 
   return diagnostics;

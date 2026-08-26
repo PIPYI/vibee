@@ -29,12 +29,14 @@ test("ArchitectureViewDocument shape accepts a minimal valid structure", () => {
   const component: ArchitectureViewComponent = {
     id: "web",
     type: "frontend",
+    semanticRole: "responsibility",
+    semanticRefs: ["resp-web"],
     label: "Web app",
     pos: [0, 0],
     size: [100, 60],
   };
   const doc: ArchitectureViewDocument = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Minimal",
     components: [component],
     boundaries: [],

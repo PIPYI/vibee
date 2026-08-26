@@ -9,6 +9,8 @@ import { validateArchitectureView } from "../validator.js";
 function comp(overrides: Partial<ArchitectureViewComponent> & Pick<ArchitectureViewComponent, "id">): ArchitectureViewComponent {
   return {
     type: "backend",
+    semanticRole: "responsibility",
+    semanticRefs: [`resp-${overrides.id}`],
     label: overrides.id,
     pos: [0, 0],
     size: [100, 60],
@@ -18,7 +20,7 @@ function comp(overrides: Partial<ArchitectureViewComponent> & Pick<ArchitectureV
 
 function doc(partial: Partial<ArchitectureViewDocument>): ArchitectureViewDocument {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Test doc",
     components: [],
     boundaries: [],
@@ -156,4 +158,18 @@ test("a fully valid document produces zero errors end to end", () => {
   const example = JSON.parse(architectureViewExampleText());
   const diagnostics = validateArchitectureView(example, { projectPath: process.cwd() });
   assert.equal(hasError(diagnostics), false, `expected no errors, got: ${JSON.stringify(diagnostics, null, 2)}`);
+});
+
+// Regression test for the bug where citations were checked against a pinned
+// git revision instead of the working tree: an AI always explores via
+// Read/Grep/Glob (live filesystem), so a stale/unrelated revision recorded on
+// the document must never cause a real, currently-cited file to be flagged
+// as invalid.
+test("validateArchitectureView ignores an unrelated/stale repository.revision and validates the working tree", () => {
+  const d = doc({
+    components: [comp({ id: "a", sources: [{ path: "package.json", line: 1 }] })],
+    repository: { revision: "0000000000000000000000000000000000dead" },
+  });
+  const diagnostics = validateArchitectureView(d, { projectPath: process.cwd() });
+  assert.deepEqual(diagnostics.filter((x) => x.code === "architecture-view/citation-invalid"), []);
 });

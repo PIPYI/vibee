@@ -1,0 +1,13 @@
+{
+  "name": "dual-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dual web app fixture (user + admin) sharing a database, for vibee analysis.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

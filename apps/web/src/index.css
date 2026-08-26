@@ -169,6 +169,28 @@ code {
   margin: 4px 0 0;
 }
 
+.audience-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.audience-tab {
+  margin-top: 0;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
+.audience-tab--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
 .svg-mount {
   margin-top: 16px;
   border: 1px solid var(--border);
@@ -180,6 +202,51 @@ code {
   display: block;
   width: 100%;
   height: auto;
+}
+
+.svg-mount [data-component-id],
+.svg-mount [data-boundary-id],
+.svg-mount [data-connection-id] {
+  cursor: pointer;
+}
+
+.architecture-inspector {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+
+.architecture-inspector h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.architecture-inspector h3 {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 12px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.architecture-inspector p {
+  margin: 0;
+}
+
+.inspector-role {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.inspector-sources {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+}
+
+.architecture-inspector button {
+  margin-top: 14px;
 }
 
 .cards {

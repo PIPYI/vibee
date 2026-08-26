@@ -24,6 +24,7 @@ type Props = {
 const TOOL_LABELS: Record<string, string> = {
   validate_architecture_view: "다이어그램 검증 중",
   submit_architecture_view: "다이어그램 제출 중",
+  submit_runtime_semantics: "실행 구조 제출 중",
 };
 
 function toolLabel(tool: string): string {

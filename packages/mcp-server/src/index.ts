@@ -77,7 +77,16 @@ export async function callBridge(path: string, body: unknown): Promise<CallBridg
   return { ok: true, data: parsed };
 }
 
-const INSTRUCTIONS = `Author an ArchitectureViewDocument (a small JSON IR describing this codebase's architecture), then call validate_architecture_view to check it. Fix every diagnostic using its subject/evidence/supportedFixes -- never guess at a fix without reading them. Once validate_architecture_view returns zero severity:"error" diagnostics, call submit_architecture_view exactly once to commit the document. validate_architecture_view and submit_architecture_view together cost at most 6 calls total -- if two consecutive rounds do not reduce the error count, stop and report the remaining diagnostics honestly instead of continuing to guess.`;
+// V2 (docs/v2_plan.md §9): two-stage pipeline instead of V1's single stage.
+// (1) author a RuntimeSemanticDocument (who/what runtimes/responsibilities/
+// state/externals/interactions exist, evidence-backed) and commit it via
+// submit_runtime_semantics to get back a semanticRevision; (2) author one
+// canonical ArchitectureViewDocument that references that semanticRevision
+// and real semantic ids, then validate/submit it as before. The detailed
+// per-stage authoring rules live in the bridge's assembled prompt
+// (apps/bridge/src/prompt.ts) -- this is just the short tool-discovery blurb
+// shown when the model lists available tools.
+const INSTRUCTIONS = `This project uses a two-stage architecture pipeline. First, author a RuntimeSemanticDocument (actors/runtimes/responsibilities/states/externals/interactions, each evidence-backed) and call submit_runtime_semantics; fix any returned diagnostics and retry until it returns a semanticRevision. Second, author one canonical ArchitectureViewDocument that references that semanticRevision and real semantic ids, then call validate_architecture_view to check it -- fix every diagnostic using its subject/evidence/supportedFixes, never guess at a fix without reading them. Once validate_architecture_view returns zero severity:"error" diagnostics, call submit_architecture_view exactly once with the same document (including semanticRevision) to commit it.`;
 
 // Shaped but permissive: an earlier version of this schema was a bare
 // `z.object({}).passthrough()` (i.e. "any object at all"). In live testing
@@ -104,12 +113,38 @@ const sourceInputSchema = z
   })
   .passthrough();
 
+// V2: per-audience display override (see PresentationOverride in
+// @vibee/protocol). Same permissive, field-shaped-but-unconstrained style as
+// everything else here -- e.g. `visibility` is a plain string, not an enum,
+// because the real enum check happens in the ajv schema on the bridge side.
+const presentationOverrideInputSchema = z
+  .object({
+    label: z.string().optional(),
+    sublabel: z.string().optional(),
+    visibility: z.string().optional(),
+  })
+  .passthrough();
+
+const audiencePresentationInputSchema = z
+  .object({
+    simple: presentationOverrideInputSchema.optional(),
+    technical: presentationOverrideInputSchema.optional(),
+  })
+  .passthrough();
+
 const componentInputSchema = z
   .object({
     id: z.string().optional(),
     type: z.string().optional(),
+    // V2: which RuntimeSemanticDocument entity kind this component stands
+    // for, and which id(s) it references. `kind`/role values are left as
+    // plain strings here on purpose -- see the passthrough-schema comment
+    // above this block.
+    semanticRole: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
     sublabel: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
     pos: z.array(z.number()).optional(),
     size: z.array(z.number()).optional(),
     sources: z.array(sourceInputSchema).optional(),
@@ -118,8 +153,11 @@ const componentInputSchema = z
 
 const boundaryInputSchema = z
   .object({
+    id: z.string().optional(),
     kind: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
     wraps: z.array(z.string()).optional(),
     pad: z.number().optional(),
   })
@@ -130,7 +168,9 @@ const connectionInputSchema = z
     id: z.string().optional(),
     from: z.string().optional(),
     to: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
     variant: z.string().optional(),
   })
   .passthrough();
@@ -143,8 +183,20 @@ const cardInputSchema = z
   })
   .passthrough();
 
+// V2 (docs/v2_plan.md §9.2): validate_architecture_view/submit_architecture_view
+// now also carry a `semanticRevision` identifying the already-committed
+// RuntimeSemanticDocument this architecture document was composed from. It is
+// merged flatly alongside the document's own fields (one flat JSON object,
+// same as every other field on this schema) rather than nested under a
+// `document` key -- this matches how this file already shapes its other two
+// tools' inputs (a flat document, no wrapper object), so the model only ever
+// has to learn one input shape convention across all three tools. Left
+// `.optional()` here for the same reason every other field is optional (see
+// the passthrough-schema comment above) -- the bridge route is what actually
+// enforces that it's present and resolves to a real committed revision.
 const documentInputSchema = z
   .object({
+    semanticRevision: z.number().optional(),
     schemaVersion: z.number().optional(),
     title: z.string().optional(),
     viewBox: z.array(z.number()).optional(),
@@ -152,10 +204,107 @@ const documentInputSchema = z
       .object({ url: z.string().optional(), revision: z.string().optional() })
       .passthrough()
       .optional(),
+    presentation: z
+      .object({
+        defaultAudience: z.string().optional(),
+        availableAudiences: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
     components: z.array(componentInputSchema).optional(),
     boundaries: z.array(boundaryInputSchema).optional(),
     connections: z.array(connectionInputSchema).optional(),
     cards: z.array(cardInputSchema).optional(),
+  })
+  .passthrough();
+
+// ---------------------------------------------------------------------------
+// RuntimeSemanticDocument input schema (docs/v2_plan.md §7.2, §9.1). Mirrors
+// packages/protocol/src/runtime-semantic.ts field-for-field, in the same
+// permissive style as the schemas above.
+// ---------------------------------------------------------------------------
+
+const implementationHintInputSchema = z
+  .object({
+    label: z.string().optional(),
+    kind: z.string().optional(),
+  })
+  .passthrough();
+
+const actorInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const runtimeUnitInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const responsibilityInputSchema = z
+  .object({
+    id: z.string().optional(),
+    runtimeId: z.string().optional(),
+    label: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const stateInputSchema = z
+  .object({
+    id: z.string().optional(),
+    runtimeId: z.string().optional(),
+    label: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const externalInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const interactionInputSchema = z
+  .object({
+    id: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+export const runtimeSemanticDocumentInputSchema = z
+  .object({
+    schemaVersion: z.number().optional(),
+    title: z.string().optional(),
+    repository: z
+      .object({ url: z.string().optional(), revision: z.string().optional() })
+      .passthrough()
+      .optional(),
+    actors: z.array(actorInputSchema).optional(),
+    runtimes: z.array(runtimeUnitInputSchema).optional(),
+    responsibilities: z.array(responsibilityInputSchema).optional(),
+    states: z.array(stateInputSchema).optional(),
+    externals: z.array(externalInputSchema).optional(),
+    interactions: z.array(interactionInputSchema).optional(),
   })
   .passthrough();
 
@@ -196,10 +345,24 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "submit_runtime_semantics",
+    {
+      description:
+        "Author a RuntimeSemanticDocument (actors/runtimes/responsibilities/states/externals/interactions, each backed by real source citations) and submit it for server-side validation: schema -> referential integrity -> citations. On success, commits it as an immutable semantic revision and returns { diagnostics: [], semanticRevision } -- you must pass that semanticRevision when you later call validate_architecture_view/submit_architecture_view. On failure, returns { diagnostics } describing exactly what to fix; fix and call this tool again (do not guess at a fix without reading subject/evidence/supportedFixes).",
+      inputSchema: runtimeSemanticDocumentInputSchema,
+    },
+    async (document) => {
+      const result = await callBridge("/internal/submit-runtime-semantics", coerceJsonStrings(document));
+      const text = result.ok ? JSON.stringify(result.data) : JSON.stringify({ error: result.error, next_step: result.next_step });
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.registerTool(
     "validate_architecture_view",
     {
       description:
-        "Validate a candidate ArchitectureViewDocument WITHOUT committing it. Runs schema -> geometry -> citation checks in order; schema errors short-circuit the later stages. Returns { diagnostics, layout? } -- layout (computed component rects, routes, label rects) is included only when there are zero schema-level diagnostics, so you can see the actual rendered coordinates before submitting.",
+        "Validate a candidate ArchitectureViewDocument WITHOUT committing it. Input is the document's own fields plus a top-level `semanticRevision` (the number returned by submit_runtime_semantics) -- omit it or reference an unknown revision and validation fails with a diagnostic telling you to call submit_runtime_semantics first. Runs schema -> semantic mapping -> geometry -> citation checks in order; schema errors short-circuit the later stages. Returns { diagnostics, layout? } -- layout (computed component rects, routes, label rects) is included only when there are zero schema-level diagnostics, so you can see the actual rendered coordinates before submitting.",
       inputSchema: documentInputSchema,
     },
     async (document) => {
@@ -213,7 +376,7 @@ function buildServer(): McpServer {
     "submit_architecture_view",
     {
       description:
-        "Re-validates the candidate ArchitectureViewDocument server-side and, if it has no severity:\"error\" diagnostics, commits it as the project's architecture view. If any error diagnostic remains, the submission is rejected and the diagnostics are returned instead -- fix them and call validate_architecture_view again before retrying submit.",
+        "Re-validates the candidate ArchitectureViewDocument server-side (same document fields plus the top-level `semanticRevision` used with validate_architecture_view) and, if it has no severity:\"error\" diagnostics, commits it as the project's architecture view. If any error diagnostic remains, the submission is rejected and the diagnostics are returned instead -- fix them and call validate_architecture_view again before retrying submit.",
       inputSchema: documentInputSchema,
     },
     async (document) => {
