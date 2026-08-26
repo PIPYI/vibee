@@ -376,10 +376,22 @@ app.post("/api/review", async (req: Request, res: Response) => {
     return;
   }
 
+  // Drift는 "이 프로젝트가 정한 것과 대조한다"가 존재 이유다 — 대조할 기준은 우리
+  // 인터뷰가 인계한 프로젝트에만 있다. 사용자가 알아보는 표식은 `.project-intel/design.json`이
+  // 아니라 프로젝트 루트의 `app_design.md`이므로, 그 파일에 우리 마커가 있는지로
+  // "인터뷰에서 넘어왔는가"를 가린다. design.json이 있어도 app_design.md가 없거나
+  // 사용자가 직접 쓴 것이면(마커 없음) 인터뷰 인계로 보지 않는다.
+  if (!(await cameFromInterview(projectPath))) {
+    res.status(400).json({
+      error: "이 프로젝트는 요구사항 인터뷰에서 넘어온 것이 아닙니다 (app_design.md가 없거나 직접 쓴 파일입니다). Drift는 인터뷰가 인계한 프로젝트에서만 쓸 수 있습니다.",
+    });
+    return;
+  }
+
   const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
   const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
   if (!design) {
-    res.status(400).json({ error: `No design found. Expected ${DESIGN_DIR}/design.json in ${projectPath}.` });
+    res.status(400).json({ error: `app_design.md는 있는데 ${DESIGN_DIR}/design.json을 찾을 수 없습니다 — 손상됐거나 지워진 것 같습니다.` });
     return;
   }
 
@@ -521,6 +533,20 @@ async function isHandWritten(path: string): Promise<boolean> {
   try {
     const existing = await readFile(path, "utf8");
     return !existing.includes(HARNESS_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `app_design.md`가 **우리 인터뷰가 내보낸 것**인지. `isHandWritten`과 반대 방향의
+ * 질문이다 — 저건 "우리가 덮어써도 되는가"(없으면 true, 즉 안전)를 묻고, 이건
+ * "인터뷰 인계가 실제로 일어났는가"(없으면 false, 즉 인계 안 됨)를 묻는다.
+ */
+async function cameFromInterview(projectPath: string): Promise<boolean> {
+  try {
+    const content = await readFile(join(projectPath, "app_design.md"), "utf8");
+    return content.includes(HARNESS_MARKER);
   } catch {
     return false;
   }

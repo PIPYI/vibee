@@ -38,7 +38,7 @@ export function DriftPanel(state: DriftFeatureState) {
       })()}
       <input
         type="text"
-        placeholder="프로젝트 절대 경로 (design.json이 있어야 함)"
+        placeholder="프로젝트 절대 경로 (Design 인터뷰를 거친 프로젝트여야 함)"
         value={state.projectPath}
         onChange={(event) => state.setProjectPath(event.target.value)}
         disabled={state.running}
