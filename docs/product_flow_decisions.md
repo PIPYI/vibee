@@ -938,3 +938,52 @@ claude (haiku)              19/19
 `npm run typecheck`·`npm run build`·`npm run acceptance`(codex·claude 9/9, 회귀 없음)도
 다시 확인했다. 이 검증을 위해 다른 세션이 쓰던 bridge(43120)를 사용자 승인을 받고
 잠깐 재시작했다 — 재시작 후 child process 잔여 없이 깨끗하게 떠올랐다.
+
+## 질문 8 — Drift의 "design.json 없는 진입 경로" 문제, 다시 보니 문제가 아니었다
+
+질문 7에서 "Drift도 같은 문제(기존 코드베이스에 DEC/RULE이 없을 때 무엇을 기준으로
+할지)를 갖고 있고 미정으로 남겨 뒀다"고 적어 뒀다. 첫 제품 구현(`app/`, Phase 4)에서
+Drift를 실제로 붙이면서 이 질문을 다시 마주쳤다.
+
+사용자의 질문 — 원문 그대로: "drift는 애초에 로컬에 커밋이 있는 상태에서 시작하는거
+아니야?"
+
+**확정**: 맞다. Drift는 Architecture와 달리 "기존 코드베이스를 여는" 진입 경로에서
+애초에 제공되지 않는 것이 올바른 설계다. 이유는 Architecture와 근본적으로 다르다 —
+
+- Architecture는 코드베이스 자체를 봐서 판단하는 기능이라, design.json이 없어도
+  "코드를 읽고 직접 판단"하는 대체 경로가 성립한다(질문 7에서 이미 그렇게 고쳤다).
+- Drift는 "이 프로젝트가 **정한 것**과 대조한다"는 것 자체가 존재 이유다. 대조할
+  기준(DEC/RULE)이 없으면 무엇을 어겼는지 판단할 근거 자체가 없어서, Architecture
+  방식의 fallback이 아예 성립하지 않는다.
+- `resolveReviewStart()`의 시작점 결정 로직(마지막 리뷰 지점 → 없으면 **design.json이
+  처음 커밋된 지점**부터) 자체가 "인터뷰 → design.json/harness 인계 → 그 위에 커밋이
+  쌓인다"는 흐름을 전제로 만들어져 있다.
+
+사용자가 덧붙인 것 — "하네스랑": 이 전제는 design.json 하나가 아니라 **인터뷰
+인계 산출물 전체**(design.json + harness)다. Drift가 리뷰할 커밋들이 애초에 쌓이는
+이유는 harness의 "## 커밋은 자주, 멈추지는 말고" 절이 사용자의 옆 agent에게 자주
+커밋하라고 지시하기 때문이다(§6, `renderHarness`). 즉 design.json만 있고 harness가
+없는 상태를 따로 가정할 필요가 없다 — `/api/design/export`가 둘을 항상 같이 내보내므로
+Drift의 전제는 "design.json이 있다"가 아니라 "인터뷰 인계가 끝났다"로 보는 게 정확하다.
+
+**결론**: Architecture처럼 design.json-optional fallback을 Drift에 만들 필요가 없다.
+이걸로 질문 7 말미의 미해결 항목이 닫힌다.
+
+**정정 — 실제 게이트는 design.json이 아니라 app_design.md 마커다.** 위 결론을 쓴
+직후 사용자가 다시 짚었다: "일단 인터뷰를 통해 만들어진 건 json이 아니라
+app_design.md이고 UX상에서 인터뷰에서 넘어온게 아니면 안쓰는 걸로 가자." 즉 "인터뷰
+인계가 끝났다"를 판정할 때 봐야 할 파일은 사용자가 알아보는 `app_design.md`이지
+`.project-intel/design.json`이 아니다 — 둘은 보통 같이 있지만, `/api/design/export`가
+사용자가 이미 손으로 쓴 `app_design.md`는 덮어쓰지 않고 건너뛰면서도(§6 마커 규칙)
+`.project-intel/design.json`은 그대로 쓰기 때문에, "design.json은 있지만 화면에 보이는
+app_design.md는 사용자가 직접 쓴 것"인 상태가 생길 수 있다. 그 상태에서 design.json만
+확인하면 실제로는 인터뷰가 인계되지 않은 프로젝트에서도 Drift가 동작해 버린다.
+
+**구현**(`app/apps/bridge/src/index.ts`): `/api/review`가 `design.json`을 읽기 전에
+`cameFromInterview(projectPath)`를 먼저 확인한다 — 프로젝트 루트의 `app_design.md`을
+읽어 `HARNESS_MARKER`가 있는지만 본다. 없으면(파일이 없거나 사용자가 직접 쓴 것이면)
+"인터뷰에서 넘어온 것이 아닙니다"로 거절하고, design.json 파싱 자체를 시도하지 않는다.
+DEC/RULE 실제 값은 여전히 design.json에서 읽는다 — 이건 판정 기준(원본 데이터)이고,
+app_design.md 마커는 그 기준을 쓸 자격이 있는 프로젝트인지 가리는 게이트라는 역할이
+다르다.
