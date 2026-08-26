@@ -1,0 +1,30 @@
+{
+  "name": "ontology-proto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "기능2 (코드 시각화) 프로토타입 — Evidence Engine · Semantic Memory · View-specific IR · MCP/Codex 연동",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @onto/protocol && npm run build -w @onto/evidence && npm run build -w @onto/core && npm run build -w @onto/architecture-view && npm run build -w @onto/mcp-server && npm run build -w @onto/bridge",
+    "typecheck": "npm run typecheck -w @onto/protocol && npm run typecheck -w @onto/evidence && npm run typecheck -w @onto/core && npm run typecheck -w @onto/architecture-view && npm run typecheck -w @onto/mcp-server && npm run typecheck -w @onto/bridge && npm run typecheck -w @onto/web",
+    "test": "node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs scripts/*.test.mjs",
+    "bridge": "npm run start -w @onto/bridge",
+    "bridge:stop": "node scripts/bridge-stop.mjs",
+    "web": "npm run dev -w @onto/web",
+    "fixture": "node scripts/create-fixture.mjs",
+    "mcp:register": "node scripts/register-codex-mcp.mjs",
+    "mcp:unregister": "node scripts/unregister-codex-mcp.mjs",
+    "mcp:status": "node scripts/mcp-status.mjs",
+    "acceptance": "node scripts/acceptance.mjs",
+    "codex:probe": "node scripts/codex-probe.mjs",
+    "eval": "node scripts/eval.mjs",
+    "eval:index-only": "node scripts/eval-index-only.mjs"
+  }
+}

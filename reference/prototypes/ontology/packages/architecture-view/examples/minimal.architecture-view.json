@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "title": "예시: 온라인 예약 서비스",
+  "viewBox": [1200, 760],
+  "components": [
+    {
+      "id": "visitor",
+      "type": "external",
+      "label": "방문자",
+      "sublabel": "Browser",
+      "pos": [45, 315],
+      "size": [150, 76],
+      "sources": [{ "path": "src/App.tsx", "line": 1, "label": "진입 화면" }]
+    },
+    {
+      "id": "web-client",
+      "type": "frontend",
+      "label": "예약 웹 앱",
+      "sublabel": "React SPA",
+      "pos": [250, 315],
+      "size": [180, 76],
+      "sources": [{ "path": "src/main.tsx", "line": 1, "label": "웹 진입점" }]
+    },
+    {
+      "id": "api-server",
+      "type": "backend",
+      "label": "예약 API",
+      "sublabel": "HTTP service",
+      "pos": [520, 210],
+      "size": [185, 76],
+      "sources": [{ "path": "server/routes.ts", "line": 1, "endLine": 40, "label": "라우트 등록" }]
+    },
+    {
+      "id": "booking-service",
+      "type": "backend",
+      "label": "예약 처리 서비스",
+      "sublabel": "Domain service",
+      "pos": [520, 440],
+      "size": [185, 76],
+      "sources": [{ "path": "server/booking.ts", "line": 1, "label": "예약 처리" }]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "예약 데이터베이스",
+      "sublabel": "PostgreSQL",
+      "pos": [830, 190],
+      "size": [180, 76],
+      "sources": [{ "path": "server/db.ts", "label": "커넥션 풀" }]
+    },
+    {
+      "id": "notifications",
+      "type": "cloud",
+      "label": "알림 서비스",
+      "sublabel": "Email provider",
+      "pos": [830, 440],
+      "size": [180, 76],
+      "sources": [{ "path": "server/notify.ts", "label": "알림 클라이언트" }]
+    }
+  ],
+  "boundaries": [
+    { "id": "application", "kind": "runtime", "label": "예약 애플리케이션", "wraps": ["web-client", "api-server", "booking-service"], "pad": 28 },
+    { "id": "managed-services", "kind": "external", "label": "관리형 서비스", "wraps": ["database", "notifications"], "pad": 28 }
+  ],
+  "connections": [
+    { "id": "visit", "from": "visitor", "to": "web-client", "label": "웹 사용", "variant": "emphasis" },
+    { "id": "request", "from": "web-client", "to": "api-server", "label": "HTTPS / JSON", "variant": "default" },
+    { "id": "delegate", "from": "api-server", "to": "booking-service", "label": "예약 요청", "variant": "default" },
+    { "id": "store", "from": "api-server", "to": "database", "label": "SQL", "variant": "default" },
+    { "id": "query", "from": "booking-service", "to": "database", "label": "예약 조회", "variant": "default" },
+    { "id": "notify", "from": "booking-service", "to": "notifications", "label": "완료 이벤트", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "#2563eb", "title": "주 흐름", "items": ["방문자가 웹 앱에서 예약을 요청한다", "API가 예약 처리 서비스에 전달한다"] },
+    { "dot": "#16a34a", "title": "상태", "items": ["예약 데이터는 PostgreSQL에 저장된다"] },
+    { "dot": "#7c3aed", "title": "후속 처리", "items": ["완료 후 외부 알림 서비스에 이벤트를 보낸다"] }
+  ]
+}

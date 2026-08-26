@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vibee/
+.env
+.DS_Store
