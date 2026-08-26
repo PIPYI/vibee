@@ -6,6 +6,9 @@ import { ComingSoon } from "./features/ComingSoon.js";
 import { DesignMain } from "./features/design/DesignMain.js";
 import { DesignPanel } from "./features/design/DesignPanel.js";
 import { useDesignFeature } from "./features/design/useDesignFeature.js";
+import { DriftMain } from "./features/drift/DriftMain.js";
+import { DriftPanel } from "./features/drift/DriftPanel.js";
+import { useDriftFeature } from "./features/drift/useDriftFeature.js";
 
 const FEATURE_LABELS: Record<FeatureId, string> = {
   design: "Design",
@@ -17,8 +20,8 @@ const FEATURE_LABELS: Record<FeatureId, string> = {
 
 export function App() {
   const [feature, setFeature] = useState<FeatureId>("design");
-  // 지금은 Design만 실제로 연결돼 있다 — 다른 기능이 이식되면 각자의 훅으로 교체한다.
   const design = useDesignFeature();
+  const drift = useDriftFeature();
 
   return (
     <div className="shell">
@@ -27,9 +30,14 @@ export function App() {
       <div className="body">
         <aside className="panel">
           <h2>{FEATURE_LABELS[feature]}</h2>
-          {feature === "design" ? <DesignPanel {...design} /> : <ComingSoon label={FEATURE_LABELS[feature]} />}
+          {feature === "design" && <DesignPanel {...design} />}
+          {feature === "drift" && <DriftPanel {...drift} />}
+          {feature !== "design" && feature !== "drift" && <ComingSoon label={FEATURE_LABELS[feature]} />}
         </aside>
-        <main className="main">{feature === "design" ? <DesignMain {...design} /> : null}</main>
+        <main className="main">
+          {feature === "design" && <DesignMain {...design} />}
+          {feature === "drift" && <DriftMain {...drift} />}
+        </main>
       </div>
     </div>
   );

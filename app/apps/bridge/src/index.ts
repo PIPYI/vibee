@@ -12,7 +12,19 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { WebSocketServer } from "ws";
 
 import { BRIDGE_HOST, BRIDGE_TOKEN_HEADER, type AgentReadiness, type ModelOption } from "@vci/protocol";
-import type { AskUserInput, DesignDoc, ExportDesignRequest, InterviewMessageRequest } from "@vci/protocol";
+import type {
+  AskUserInput,
+  DesignDoc,
+  ExportDesignRequest,
+  InterviewMessageRequest,
+  ReviewContext,
+  ReviewCommit,
+  ReviewCriterion,
+  ReviewStart,
+  ReportDriftInput,
+  StartReviewRequest,
+  ReviewLog,
+} from "@vci/protocol";
 import { appRootFromModule, loadBridgeConfig } from "@vci/protocol/node";
 
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -28,7 +40,7 @@ import {
   suggestFirstPrompt,
   validateDesign,
 } from "./design.js";
-import { buildInterviewPrompt } from "./prompt.js";
+import { buildInterviewPrompt, buildReviewPrompt, renderResolutionPrompt } from "./prompt.js";
 import { cliSpawnOptions } from "./platform.js";
 
 const log = (...args: unknown[]): void => console.log("[vci-bridge]", ...args);
@@ -339,6 +351,153 @@ app.post("/internal/design", requireToken, (req: Request, res: Response) => {
   res.json({ taskId, warnings });
 });
 
+/**
+ * 드리프트 리뷰. PR 리뷰와 같은 모양이되 기준이 다르다 — 범용 베스트프랙티스가 아니라
+ * 이 프로젝트가 인터뷰에서 정한 DEC/RULE 하나만 본다.
+ */
+app.post("/api/review", async (req: Request, res: Response) => {
+  const body = req.body as StartReviewRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
+  const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
+  if (!design) {
+    res.status(400).json({ error: `No design found. Expected ${DESIGN_DIR}/design.json in ${projectPath}.` });
+    return;
+  }
+
+  const criteria = criteriaFrom(design);
+  if (criteria.length === 0) {
+    res.status(400).json({ error: "The design has no DEC or RULE to check against." });
+    return;
+  }
+
+  let start;
+  let commits: Awaited<ReturnType<typeof collectCommits>>["commits"];
+  let skipped: number;
+  try {
+    const resolved = await resolveReviewStart(projectPath, body.since);
+    start = resolved.start;
+    ({ commits, skipped } = await collectCommits(projectPath, resolved.since));
+  } catch (error) {
+    res.status(400).json({ error: `git log failed: ${asMessage(error)}` });
+    return;
+  }
+
+  if (commits.length === 0) {
+    res.json({ taskId: null, commits: [], start, skipped: 0, criteriaCount: criteria.length });
+    return;
+  }
+
+  state.startReview({ commits, criteria, skipped });
+
+  const taskId = randomUUID();
+  const label = `review ${commits.length}개 커밋`;
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({
+    taskId,
+    commits: commits.map((c) => ({ sha: c.sha, subject: c.subject })),
+    start,
+    skipped,
+    criteriaCount: criteria.length,
+  });
+
+  void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+app.get("/internal/review-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_review_context");
+  const context = state.getReviewContext();
+  if (!context) {
+    res.status(409).json({ error: "No review is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
+  const report = req.body as ReportDriftInput;
+  if (!Array.isArray(report?.findings) || typeof report?.summary !== "string") {
+    res.status(400).json({ error: "findings (array) and summary (string) are required" });
+    return;
+  }
+
+  const context = state.getReviewContext();
+  const knownCommits = new Set((context?.commits ?? []).map((c) => c.sha));
+  const warnings: string[] = [];
+  const findings = report.findings.map((finding) => {
+    const criterion = context?.criteria.find((c) => c.id === finding.criterionId);
+    if (!criterion) warnings.push(`Unknown criterion id: ${finding.criterionId}`);
+    if (!knownCommits.has(finding.commit)) warnings.push(`Unknown commit: ${finding.commit}`);
+    return criterion ? { ...finding, resolutionPrompt: renderResolutionPrompt(finding, criterion) } : finding;
+  });
+  const enrichedReport: ReportDriftInput = { ...report, findings };
+
+  state.recordDrift(enrichedReport);
+  const taskId = noteMcpEndpointHit("report_drift");
+  if (taskId) state.emit({ type: "app.drift", taskId, report: enrichedReport });
+  else log("report_drift arrived with no active task; stored but not routed to the UI");
+
+  log(`report_drift: ${findings.length}건`);
+  for (const warning of warnings) log(`  ! ${warning}`);
+
+  const projectPath = state.getAppContext().projectPath;
+  const task = taskId ? state.getTask(taskId) : undefined;
+  if (context && projectPath) {
+    void (async () => {
+      try {
+        const existing = await readReviewLog(projectPath);
+        existing.lastReviewedSha = context.commits.at(-1)?.sha ?? existing.lastReviewedSha;
+        existing.runs.push({
+          at: new Date().toISOString(),
+          agent: task?.agent ?? "codex",
+          commits: context.commits.map((c) => c.sha),
+          findings,
+          summary: report.summary,
+        });
+        await writeReviewLog(projectPath, existing);
+      } catch (error) {
+        log(`리뷰 기록 저장 실패: ${asMessage(error)}`);
+      }
+    })();
+  }
+
+  res.json({ taskId, warnings });
+});
+
 /** 존재하는 디렉터리가 아니면 거부하고, 심볼릭 링크는 해소한다. */
 export async function canonicalizeProjectPath(input: string): Promise<string> {
   if (!input?.trim()) throw new Error("projectPath is required");
@@ -369,6 +528,9 @@ async function isHandWritten(path: string): Promise<boolean> {
 
 const GENERATED_DOCS = ["app_design.md", "AGENTS.md", "CLAUDE.md"] as const;
 const DESIGN_DIR = ".project-intel";
+const MAX_DIFF_CHARS = 20_000;
+const MAX_REVIEW_COMMITS = 50;
+const REVIEW_LOG = "reviews.json";
 
 /** 설계를 디스크에서 읽는다. bridge가 재시작돼도 인터뷰가 남긴 것이 유일한 원본이다. */
 async function loadDesignFromDisk(projectPath: string): Promise<DesignDoc | null> {
@@ -458,6 +620,112 @@ function noteMcpEndpointHit(tool: string): string | null {
   state.recordMcpCall(taskId, tool, "bridge-endpoint");
   state.emit({ type: "mcp.tool.called", taskId, tool, source: "bridge-endpoint" });
   return taskId;
+}
+
+/** 리뷰가 대조할 기준 목록. DEC과 RULE을 한 목록으로 준다. */
+function criteriaFrom(design: DesignDoc): ReviewCriterion[] {
+  return [
+    ...design.decisions.map((d) => ({ id: d.id, text: d.text, why: d.why, source: d.source })),
+    ...design.rules.map((r) => ({ id: r.id, text: r.text, source: r.source })),
+  ];
+}
+
+/** 프로젝트에서 git을 돌리고 stdout을 그대로 돌려준다. */
+async function gitOutput(projectPath: string, args: string[]): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const { stdout } = await run("git", args, { cwd: projectPath, maxBuffer: 32 * 1024 * 1024, ...cliSpawnOptions });
+  return stdout;
+}
+
+async function gitLines(projectPath: string, args: string[]): Promise<string[]> {
+  const out = await gitOutput(projectPath, args);
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+async function readReviewLog(projectPath: string): Promise<ReviewLog> {
+  try {
+    const raw = await readFile(join(projectPath, DESIGN_DIR, REVIEW_LOG), "utf8");
+    return JSON.parse(raw) as ReviewLog;
+  } catch {
+    return { lastReviewedSha: null, runs: [] };
+  }
+}
+
+async function writeReviewLog(projectPath: string, log: ReviewLog): Promise<void> {
+  const dir = join(projectPath, DESIGN_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+}
+
+/** ref가 이 저장소에 실제로 있는지. */
+async function commitExists(projectPath: string, ref: string): Promise<boolean> {
+  try {
+    await gitOutput(projectPath, ["cat-file", "-e", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 어디부터 볼지 정한다. 설계보다 앞선 커밋은 판정 대상이 아니다. */
+async function resolveReviewStart(
+  projectPath: string,
+  since: string | undefined,
+): Promise<{ start: ReviewStart; since: string | null }> {
+  if (since?.trim()) return { start: "explicit", since: since.trim() };
+
+  const log = await readReviewLog(projectPath);
+  if (log.lastReviewedSha && (await commitExists(projectPath, log.lastReviewedSha))) {
+    return { start: "last-review", since: log.lastReviewedSha };
+  }
+
+  try {
+    const shas = await gitLines(projectPath, [
+      "log", "--format=%H", "--diff-filter=A", "--", `${DESIGN_DIR}/design.json`,
+    ]);
+    const handover = shas.at(-1);
+    if (handover) return { start: "design", since: handover };
+  } catch {
+    // 저장소가 아니거나 아직 커밋이 없다.
+  }
+
+  return { start: "recent", since: null };
+}
+
+/** 리뷰할 커밋들을 모은다. 오래된 것부터 준다. */
+async function collectCommits(
+  projectPath: string,
+  since: string | null,
+): Promise<{ commits: ReviewCommit[]; skipped: number }> {
+  const range = since ? [`${since}..HEAD`] : [`-n`, String(MAX_REVIEW_COMMITS)];
+  const SEP = "";
+  const lines = await gitLines(projectPath, [
+    "log", "--reverse", "--no-merges", `--format=%H${SEP}%s${SEP}%an${SEP}%aI`, ...range,
+  ]);
+
+  const skipped = Math.max(0, lines.length - MAX_REVIEW_COMMITS);
+  const selected = lines.slice(0, MAX_REVIEW_COMMITS);
+
+  const commits: ReviewCommit[] = [];
+  for (const line of selected) {
+    const [sha, subject = "", author = "", at = ""] = line.split(SEP);
+    if (!sha) continue;
+    const changedFiles = await gitLines(projectPath, ["show", "--name-only", "--format=", sha]);
+    const raw = await gitOutput(projectPath, ["show", "--format=", sha]);
+    const truncated = raw.length > MAX_DIFF_CHARS;
+    commits.push({
+      sha,
+      subject,
+      author,
+      at,
+      changedFiles,
+      diff: truncated ? `${raw.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : raw,
+      truncated,
+    });
+  }
+  return { commits, skipped };
 }
 
 const server = createServer(app);

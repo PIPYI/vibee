@@ -11,6 +11,8 @@ import type {
   PendingQuestion,
   SelectedItem,
   TaskState,
+  ReportDriftInput,
+  ReviewContext,
 } from "@vci/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
@@ -63,6 +65,9 @@ export class BridgeState {
   private readonly exchanges: InterviewExchange[] = [];
   private questionSeq = 0;
 
+  private reviewContext: ReviewContext | null = null;
+  private driftReport: ReportDriftInput | null = null;
+
   getAppContext(includeDesign = false): AppContext {
     return {
       projectPath: this.projectPath,
@@ -113,6 +118,25 @@ export class BridgeState {
     this.exchanges.length = 0;
     this.questionSeq = 0;
     this.design = null;
+  }
+
+  // ---------- 드리프트 리뷰 ----------
+
+  startReview(context: ReviewContext): void {
+    this.reviewContext = context;
+    this.driftReport = null;
+  }
+
+  getReviewContext(): ReviewContext | null {
+    return this.reviewContext;
+  }
+
+  recordDrift(report: ReportDriftInput): void {
+    this.driftReport = report;
+  }
+
+  getDriftReport(): ReportDriftInput | null {
+    return this.driftReport;
   }
 
   // ---------- 설계 산출물 ----------

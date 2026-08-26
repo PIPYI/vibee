@@ -2,7 +2,7 @@ export type FeatureId = "design" | "drift" | "architecture" | "wiki" | "analysis
 
 const FEATURES: Array<{ id: FeatureId; icon: string; label: string; available: boolean }> = [
   { id: "design", icon: "📝", label: "Design", available: true },
-  { id: "drift", icon: "🔀", label: "Drift", available: false },
+  { id: "drift", icon: "🔀", label: "Drift", available: true },
   { id: "architecture", icon: "🏗️", label: "구조", available: false },
   { id: "wiki", icon: "📚", label: "Wiki", available: false },
   { id: "analysis", icon: "🗺️", label: "Analysis", available: false },

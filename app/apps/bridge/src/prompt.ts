@@ -74,6 +74,73 @@ export function describeSession(preview: string): string {
   const text = preview.trim();
   if (!text) return "(빈 대화)";
   if (text.startsWith("You are interviewing a NON-PROGRAMMER")) return "요구사항 인터뷰";
+  if (text.startsWith("You are checking a code change")) return "드리프트 리뷰";
   // 아직 매칭할 기능별 프롬프트가 없다 — 원문이 곧 가장 좋은 설명이다.
   return text.replace(/\s+/g, " ").slice(0, 80);
+}
+
+/**
+ * 리뷰 프롬프트 (docs/vibe_coding_assistant_design.md §3.3).
+ *
+ * diff를 bridge가 만들어 넘기므로 agent에게 셸이나 쓰기 권한이 필요 없다. 판단 기준은
+ * 범용 베스트프랙티스가 아니라 이 프로젝트가 인터뷰에서 정한 DEC/RULE 하나뿐이다.
+ */
+export function buildReviewPrompt(): string {
+  return [
+    "You are checking a code change against decisions this project already made.",
+    "You are inside the Vibe Coding Project Intelligence app.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_review_context` (server: vci-app). It returns `commits` (oldest first,",
+    "   each with its own diff) and `criteria` — the decisions and rules recorded for this",
+    "   project.",
+    "2. Go through the commits in order. For each one, check every criterion against that",
+    "   commit's diff. Work criterion by criterion, not file by file.",
+    "3. Call `report_drift` (server: vci-app) ONCE for all of them, then end your turn.",
+    "",
+    "What counts as a finding:",
+    "- ONLY a criterion from `criteria` that a commit actually breaks. Quote its id and the",
+    "  sha of the commit it broke in.",
+    "- Judge each commit by its OWN diff. A later commit does not inherit a violation from an",
+    "  earlier one, and an earlier one is not excused by a later fix.",
+    "- Not bugs. Not style. Not missing tests. Not things you would have done differently.",
+    "  Those may be real, but they are not what this check is for, and reporting them here",
+    "  makes the result useless.",
+    "- If the commits are unrelated to every criterion, that is the normal case. Report zero",
+    "  findings. You must still call `report_drift` with an empty `findings` array — silence",
+    "  and 'checked, nothing broken' must be distinguishable.",
+    "- Use confidence \"low\" when you are inferring rather than seeing it in the diff.",
+    "- A commit whose diff is marked `truncated: true` was cut for size. Do not read that as",
+    "  'nothing else is there'; say so in the summary if it mattered.",
+    "",
+    "Do NOT change any file. You are not fixing anything; you are reporting. The user's own",
+    "agent will do the fixing, with a prompt this app hands them.",
+  ].join("\n");
+}
+
+/**
+ * finding 하나를 해소할 프롬프트. **LLM을 쓰지 않는다** — criterion 원문을 그대로 채워
+ * 넣는 순수 템플릿이다. 이 프롬프트를 받는 것은 이 앱이 아니라 사용자가 옆에 띄운
+ * 자기 Codex/Claude Code다 — 코드를 고치는 것도, 결정이 낡았다고 판단하는 것도 그쪽이 한다.
+ */
+export function renderResolutionPrompt(
+  finding: { commit: string; files: string[]; detail: string },
+  criterion: { id: string; text: string; why?: string },
+): string {
+  const files = finding.files.length > 0 ? finding.files.join(", ") : "the relevant code";
+  const lines = [`Commit ${finding.commit} conflicts with a decision this project already made.`, "", `${criterion.id}: ${criterion.text}`];
+  if (criterion.why) lines.push(`Why this was decided: ${criterion.why}`);
+  lines.push("", `What was found: ${finding.detail}`);
+  if (finding.files.length > 0) lines.push(`Files: ${files}`);
+  lines.push(
+    "",
+    "Judge which of these is true, then act on it yourself — do not just report back:",
+    `1. The code is wrong. Fix ${files} so it follows ${criterion.id}.`,
+    `2. The decision is outdated. Edit ONLY the "${criterion.id}" entry in`,
+    "   .project-intel/design.json to match what the code now does. You are allowed to edit",
+    "   this file — it is this project's own recorded decisions, not generated output. Change",
+    "   just that one entry's text (and why, if it changed). Do not touch any other DEC, RULE,",
+    "   or the file's structure.",
+  );
+  return lines.join("\n");
 }

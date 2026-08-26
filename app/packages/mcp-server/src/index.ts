@@ -24,6 +24,8 @@ import {
   type AskUserInput,
   type DesignDoc,
   type ShowResultInput,
+  type ReviewContext,
+  type ReportDriftInput,
 } from "@vci/protocol";
 import { appRootFromModule, loadBridgeConfig } from "@vci/protocol/node";
 
@@ -318,6 +320,84 @@ server.registerTool(
           text:
             `Design saved and rendered in the app UI.` +
             (ack.warnings.length ? `\n\nDangling references you should fix:\n- ${ack.warnings.join("\n- ")}` : ""),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  "get_review_context",
+  {
+    title: "Get what to review",
+    description:
+      "Return the commits to review and the criteria to check them against. `commits` is " +
+      "oldest-first, each with its own `diff` (produced by the app, so you do not need to run " +
+      "git), and `criteria` holds the decisions (DEC) and rules (RULE) recorded for this " +
+      "project. Those criteria are the ONLY thing to check. General code review is not what " +
+      "this is for.",
+    inputSchema: {},
+  },
+  async () => {
+    const context = await bridgeFetch<ReviewContext>("/internal/review-context");
+    log(
+      "get_review_context ->",
+      `commits ${context.commits.length},`,
+      `criteria ${context.criteria.length}`,
+      context.commits.some((c) => c.truncated) ? "(일부 diff 잘림)" : "",
+    );
+    return {
+      content: [{ type: "text", text: JSON.stringify(context, null, 2) }],
+      structuredContent: context as unknown as Record<string, unknown>,
+    };
+  },
+);
+
+server.registerTool(
+  "report_drift",
+  {
+    title: "Report drift against the project's decisions",
+    description:
+      "Report which recorded decisions or rules the reviewed commits break. Call this EXACTLY " +
+      "ONCE per review -- one call covering ALL commits, including when nothing is broken " +
+      "(pass an empty `findings` array). An empty report is a normal, expected outcome; " +
+      "reporting things that are not in `criteria` is not. Do not modify any file: you are " +
+      "reporting, not fixing.",
+    inputSchema: {
+      findings: z
+        .array(
+          z.object({
+            commit: z.string().describe("The sha from `commits` where this broke"),
+            criterionId: z.string().describe("The id from `criteria` that this commit breaks"),
+            files: z.array(z.string()).describe("Where it broke, relative to the project"),
+            detail: z.string().describe("One sentence: what in the change contradicts it"),
+            confidence: z
+              .enum(["high", "low"])
+              .describe('"high" if you can see it in the diff, "low" if you are inferring'),
+          }),
+        )
+        .describe("Empty when the commits break nothing. That is the common case"),
+      summary: z.string().describe("One paragraph on what you checked and what you concluded"),
+    },
+  },
+  async (input) => {
+    const report = input as ReportDriftInput;
+    const ack = await bridgeFetch<{ taskId: string | null; warnings: string[] }>("/internal/drift", {
+      method: "POST",
+      body: JSON.stringify(report),
+    });
+    log(
+      "report_drift ->",
+      `${report.findings.length} finding(s)`,
+      report.findings.map((f) => `${f.criterionId}@${f.commit.slice(0, 7)}`).join(", "),
+    );
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Drift report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
+            (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],
     };
