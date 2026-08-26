@@ -49,7 +49,7 @@ export type AppContext = {
    */
   designDigest: DesignDigest | null;
   metadata: {
-    source: "byoa-mcp-spike";
+    source: "vci-app";
     timestamp: string;
   };
 };
