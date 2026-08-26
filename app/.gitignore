@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .vci-app/
+
+# drift-fixture.mjs가 만드는 일회용 fixture 프로젝트
+tmp/

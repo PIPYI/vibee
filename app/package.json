@@ -10,6 +10,10 @@
     "build:server": "npm run build -w @vci/protocol && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge",
     "typecheck": "npm run typecheck -w @vci/protocol && npm run typecheck -w @vci/mcp-server && npm run typecheck -w @vci/bridge && npm run typecheck -w @vci/web",
     "bridge": "npm run start -w @vci/bridge",
-    "web": "npm run dev -w @vci/web"
+    "web": "npm run dev -w @vci/web",
+    "mcp:register": "node scripts/register-codex-mcp.mjs",
+    "mcp:unregister": "node scripts/unregister-codex-mcp.mjs",
+    "drift:fixture": "node scripts/drift-fixture.mjs",
+    "architecture:fixture": "node scripts/architecture-fixture.mjs"
   }
 }

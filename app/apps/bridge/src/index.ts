@@ -17,8 +17,12 @@ import type {
   ArchitectureContext,
   ArchitectureDebtReport,
   DesignDoc,
+  DriftFinding,
+  DriftResolution,
+  DriftVerifyContext,
   ExportDesignRequest,
   InterviewMessageRequest,
+  MyWikiAddRequest,
   ReviewContext,
   ReviewCommit,
   ReviewCriterion,
@@ -29,6 +33,8 @@ import type {
   ReviewLog,
   StartWikiKeywordsRequest,
   StartWikiRequest,
+  VerifyDriftFixInput,
+  VerifyDriftFixRequest,
   WikiKeyword,
   WikiPage,
   WikiPageInput,
@@ -55,18 +61,22 @@ import {
 } from "./architecture.js";
 import {
   buildArchitecturePrompt,
+  buildDriftVerifyPrompt,
   buildInterviewPrompt,
   buildReviewPrompt,
   buildWikiKeywordsPrompt,
   buildWikiPrompt,
   renderResolutionPrompt,
+  renderRetryResolutionPrompt,
 } from "./prompt.js";
 import {
   condenseTranscript,
   countOccurrences,
   findAdvice,
   findMentions,
+  renderMyWikiMarkdown,
   renderWikiMarkdown,
+  wikiSlug,
 } from "./wiki.js";
 import { cliSpawnOptions } from "./platform.js";
 
@@ -184,6 +194,7 @@ app.post("/api/interview", async (req: Request, res: Response) => {
 
   // 새 인터뷰는 새 프로젝트다. 지난 인터뷰의 흔적을 세 곳에서 모두 지운다.
   state.resetInterview();
+  state.setInterviewProject(projectPath);
   adapter.resetSession(projectPath);
   let cleared: string[] = [];
   try {
@@ -303,10 +314,8 @@ app.post("/api/design/export", async (req: Request, res: Response) => {
       await writeFile(target, file.content, "utf8");
       written.push(file.name);
     }
-    const intelDir = join(projectPath, DESIGN_DIR);
-    await mkdir(intelDir, { recursive: true });
-    await writeFile(join(intelDir, "design.json"), JSON.stringify(design, null, 2), "utf8");
-    written.push(`${DESIGN_DIR}/design.json`);
+    await writeFile(join(projectPath, "design.json"), JSON.stringify(design, null, 2), "utf8");
+    written.push("design.json");
   } catch (error) {
     res.status(500).json({ error: asMessage(error) });
     return;
@@ -404,10 +413,10 @@ app.post("/api/review", async (req: Request, res: Response) => {
   }
 
   // Drift는 "이 프로젝트가 정한 것과 대조한다"가 존재 이유다 — 대조할 기준은 우리
-  // 인터뷰가 인계한 프로젝트에만 있다. 사용자가 알아보는 표식은 `.project-intel/design.json`이
-  // 아니라 프로젝트 루트의 `app_design.md`이므로, 그 파일에 우리 마커가 있는지로
-  // "인터뷰에서 넘어왔는가"를 가린다. design.json이 있어도 app_design.md가 없거나
-  // 사용자가 직접 쓴 것이면(마커 없음) 인터뷰 인계로 보지 않는다.
+  // 인터뷰가 인계한 프로젝트에만 있다. design.json이 있다는 사실만으로는 인터뷰에서
+  // 넘어왔다고 볼 수 없다(직접 놓아둔 파일일 수 있다) — 그래서 `app_design.md`에 우리
+  // 마커가 있는지로 "인터뷰에서 넘어왔는가"를 가린다. design.json이 있어도 app_design.md가
+  // 없거나 사용자가 직접 쓴 것이면(마커 없음) 인터뷰 인계로 보지 않는다.
   if (!(await cameFromInterview(projectPath))) {
     res.status(400).json({
       error: "이 프로젝트는 요구사항 인터뷰에서 넘어온 것이 아닙니다 (app_design.md가 없거나 직접 쓴 파일입니다). Drift는 인터뷰가 인계한 프로젝트에서만 쓸 수 있습니다.",
@@ -418,7 +427,7 @@ app.post("/api/review", async (req: Request, res: Response) => {
   const inMemory = state.getAppContext().projectPath === projectPath ? state.getDesign() : null;
   const design = (await loadDesignFromDisk(projectPath)) ?? inMemory;
   if (!design) {
-    res.status(400).json({ error: `app_design.md는 있는데 ${DESIGN_DIR}/design.json을 찾을 수 없습니다 — 손상됐거나 지워진 것 같습니다.` });
+    res.status(400).json({ error: `app_design.md는 있는데 design.json을 찾을 수 없습니다 — 손상됐거나 지워진 것 같습니다.` });
     return;
   }
 
@@ -440,8 +449,12 @@ app.post("/api/review", async (req: Request, res: Response) => {
     return;
   }
 
+  // 이번 리뷰가 새로 뭘 찾을지와 무관하게, 지금까지 안 고쳐진 것들을 화면이 바로 알 수
+  // 있게 turn을 돌리기 전에 먼저 실어 보낸다.
+  const openFindings = openFindingsFrom(await readReviewLog(projectPath));
+
   if (commits.length === 0) {
-    res.json({ taskId: null, commits: [], start, skipped: 0, criteriaCount: criteria.length });
+    res.json({ taskId: null, commits: [], start, skipped: 0, criteriaCount: criteria.length, openFindings });
     return;
   }
 
@@ -469,9 +482,116 @@ app.post("/api/review", async (req: Request, res: Response) => {
     start,
     skipped,
     criteriaCount: criteria.length,
+    openFindings,
   });
 
   void runTask(adapter, taskId, projectPath, buildReviewPrompt(), "review", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+/**
+ * finding 하나를 "피드백 받기"로 다시 확인한다. 전체 리뷰를 다시 돌리지 않는다 — 사용자가
+ * 옆에 띄운 agent로 이 finding을 고치고 커밋 하나를 새로 만들었다는 전제로, 그 커밋
+ * 하나만 이 기준 하나에 대해 다시 본다. 기준 텍스트는 마지막 리뷰의 `reviewContext`에서
+ * 그대로 가져온다 — 새로 저장할 것을 만들지 않는다.
+ */
+app.post("/api/drift/verify", async (req: Request, res: Response) => {
+  const body = req.body as VerifyDriftFixRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body?.projectPath ?? "");
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const criterion = state.getReviewContext()?.criteria.find((c) => c.id === body.criterionId);
+  if (!criterion) {
+    res.status(409).json({ error: "리뷰 기준을 찾을 수 없습니다. Drift 리뷰를 다시 시작한 뒤 확인해주세요." });
+    return;
+  }
+
+  let head: string;
+  try {
+    head = (await gitOutput(projectPath, ["rev-parse", "HEAD"])).trim();
+  } catch (error) {
+    res.status(400).json({ error: `git 저장소를 확인할 수 없습니다: ${asMessage(error)}` });
+    return;
+  }
+  if (head === body.commit) {
+    res.status(409).json({ error: "이 finding 이후 새 커밋이 없습니다. 먼저 고친 내용을 커밋하세요." });
+    return;
+  }
+
+  const subject = (await gitLines(projectPath, ["log", "-1", "--format=%s", head]))[0] ?? "";
+  const raw = await gitOutput(projectPath, ["show", "--format=", head]);
+  const truncated = raw.length > MAX_DIFF_CHARS;
+
+  // 이 turn에는 Read 도구가 없고 diff는 checkedCommit 하나의 변경분만 보여준다 — 그 diff가
+  // 원래 지목된 파일을 안 건드렸다면(예: 다른 파일 하나만 고치고 끝냄) agent가 diff만으로는
+  // "그 파일이 지금도 그대로 있는지"를 알 방법이 없다. 그래서 현재 내용을 직접 읽어 준다.
+  const currentFiles: DriftVerifyContext["currentFiles"] = [];
+  for (const file of body.files) {
+    try {
+      const content = await gitOutput(projectPath, ["show", `${head}:${file}`]);
+      const fileTruncated = content.length > MAX_DIFF_CHARS;
+      currentFiles.push({
+        path: file,
+        content: fileTruncated ? `${content.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : content,
+        truncated: fileTruncated,
+      });
+    } catch {
+      currentFiles.push({ path: file, content: null, truncated: false });
+    }
+  }
+
+  const context: DriftVerifyContext = {
+    originalCommit: body.commit,
+    criterionId: criterion.id,
+    criterionText: criterion.text,
+    criterionWhy: criterion.why,
+    originalDetail: body.detail,
+    files: body.files,
+    checkedCommit: head,
+    checkedCommitSubject: subject,
+    diff: truncated ? `${raw.slice(0, MAX_DIFF_CHARS)}\n... (truncated)` : raw,
+    truncated,
+    currentFiles,
+  };
+  state.startDriftVerify(context);
+
+  const taskId = randomUUID();
+  const label = `verify ${criterion.id}`;
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId, checkedCommit: head });
+
+  void runTask(adapter, taskId, projectPath, buildDriftVerifyPrompt(), "review", {
     model: body.model || undefined,
     effort: body.effort || undefined,
   });
@@ -553,7 +673,7 @@ app.get("/internal/review-context", requireToken, (_req: Request, res: Response)
   res.json(context);
 });
 
-app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
+app.post("/internal/drift", requireToken, async (req: Request, res: Response) => {
   const report = req.body as ReportDriftInput;
   if (!Array.isArray(report?.findings) || typeof report?.summary !== "string") {
     res.status(400).json({ error: "findings (array) and summary (string) are required" });
@@ -573,34 +693,98 @@ app.post("/internal/drift", requireToken, (req: Request, res: Response) => {
 
   state.recordDrift(enrichedReport);
   const taskId = noteMcpEndpointHit("report_drift");
-  if (taskId) state.emit({ type: "app.drift", taskId, report: enrichedReport });
-  else log("report_drift arrived with no active task; stored but not routed to the UI");
 
   log(`report_drift: ${findings.length}건`);
   for (const warning of warnings) log(`  ! ${warning}`);
 
+  // 새 finding을 reviews.json에 먼저 합쳐 넣어야, 이번 turn에서 emit하는 openFindings에
+  // 그게 반영된다 — "이번에 찾은 것"과 "지금까지 안 고쳐진 것"이 화면에서 갈라지면 안 된다.
   const projectPath = state.getAppContext().projectPath;
   const task = taskId ? state.getTask(taskId) : undefined;
+  let openFindings: DriftFinding[] = [];
   if (context && projectPath) {
-    void (async () => {
-      try {
-        const existing = await readReviewLog(projectPath);
-        existing.lastReviewedSha = context.commits.at(-1)?.sha ?? existing.lastReviewedSha;
-        existing.runs.push({
-          at: new Date().toISOString(),
-          agent: task?.agent ?? "codex",
-          commits: context.commits.map((c) => c.sha),
-          findings,
-          summary: report.summary,
-        });
-        await writeReviewLog(projectPath, existing);
-      } catch (error) {
-        log(`리뷰 기록 저장 실패: ${asMessage(error)}`);
-      }
-    })();
+    try {
+      const existing = await readReviewLog(projectPath);
+      existing.lastReviewedSha = context.commits.at(-1)?.sha ?? existing.lastReviewedSha;
+      existing.runs.push({
+        at: new Date().toISOString(),
+        agent: task?.agent ?? "codex",
+        commits: context.commits.map((c) => c.sha),
+        findings,
+        summary: report.summary,
+      });
+      await writeReviewLog(projectPath, existing);
+      openFindings = openFindingsFrom(existing);
+    } catch (error) {
+      log(`리뷰 기록 저장 실패: ${asMessage(error)}`);
+    }
   }
 
+  if (taskId) state.emit({ type: "app.drift", taskId, report: enrichedReport, openFindings });
+  else log("report_drift arrived with no active task; stored but not routed to the UI");
+
   res.json({ taskId, warnings });
+});
+
+app.get("/internal/drift-verify-context", requireToken, (_req: Request, res: Response) => {
+  noteMcpEndpointHit("get_drift_verify_context");
+  const context = state.getDriftVerifyContext();
+  if (!context) {
+    res.status(409).json({ error: "No drift verification is in progress." });
+    return;
+  }
+  res.json(context);
+});
+
+app.post("/internal/drift-verify", requireToken, async (req: Request, res: Response) => {
+  const result = req.body as VerifyDriftFixInput;
+  if (typeof result?.resolved !== "boolean" || !result?.detail?.trim()) {
+    res.status(400).json({ error: "resolved (boolean) and detail (string) are required" });
+    return;
+  }
+
+  const context = state.getDriftVerifyContext();
+  const taskId = noteMcpEndpointHit("verify_drift_fix");
+  if (taskId && context) {
+    const projectPath = state.getAppContext().projectPath;
+    let openFindings: DriftFinding[] = [];
+    try {
+      const log_ = await readReviewLog(projectPath);
+      // 해결됐다고 확인됐을 때만 resolutions에 기록한다 — 아직 위반이면 열린 목록은
+      // 그대로 두고, 다음에 "피드백 받기"를 다시 누를 수 있게 한다.
+      if (result.resolved) {
+        const resolution: DriftResolution = {
+          originalCommit: context.originalCommit,
+          criterionId: context.criterionId,
+          resolvedAt: new Date().toISOString(),
+          checkedCommit: context.checkedCommit,
+        };
+        log_.resolutions.push(resolution);
+        await writeReviewLog(projectPath, log_);
+      }
+      openFindings = openFindingsFrom(log_);
+    } catch (error) {
+      log(`검증 기록 저장 실패: ${asMessage(error)}`);
+    }
+
+    state.emit({
+      type: "app.drift.verify",
+      taskId,
+      originalCommit: context.originalCommit,
+      criterionId: context.criterionId,
+      checkedCommit: context.checkedCommit,
+      result,
+      // 아직 위반이면 이번에 확인한 것을 반영해 프롬프트를 다시 만든다 — 똑같은 문장을
+      // 또 주면 agent가 뭘 놓쳤는지 모른 채 반복만 하게 된다.
+      nextPrompt: result.resolved ? undefined : renderRetryResolutionPrompt(context, result),
+      openFindings,
+    });
+  } else {
+    log("verify_drift_fix arrived with no active task or context; result not routed to the UI");
+  }
+
+  log(`verify_drift_fix: ${result.resolved ? "resolved" : "still violated"}`);
+  res.json({ taskId });
 });
 
 app.get("/internal/architecture-context", requireToken, (_req: Request, res: Response) => {
@@ -660,7 +844,7 @@ app.post("/internal/architecture", requireToken, async (req: Request, res: Respo
   const automaticLimitations: string[] = [];
   if (context.designRefs.length === 0) {
     automaticLimitations.push(
-      ".project-intel/design.json이 없어, oversized-module 판정에 REQ/ENTITY 경계 대신 agent가 코드를 직접 읽은 판단만 사용했습니다.",
+      "design.json이 없어, oversized-module 판정에 REQ/ENTITY 경계 대신 agent가 코드를 직접 읽은 판단만 사용했습니다.",
     );
   }
   const unreadContent = context.files.filter((file) => !file.contentScanned).length;
@@ -701,7 +885,7 @@ app.post("/internal/architecture", requireToken, async (req: Request, res: Respo
   if (taskId) state.emit({ type: "app.architecture", taskId, report: enrichedReport });
   else log("report_architecture arrived with no active task; stored but not routed to the UI");
 
-  log(`report_architecture: 부채 ${report.findings.length}건 → ${DESIGN_DIR}/architecture.{json,md}`);
+  log(`report_architecture: 부채 ${report.findings.length}건 → architecture.{json,md}`);
   for (const warning of warnings) log(`  ! ${warning}`);
   res.json({ taskId, warnings });
 });
@@ -798,6 +982,15 @@ app.post("/api/wiki", async (req: Request, res: Response) => {
   }
 
   const term = body.term.trim();
+
+  // 이미 만들어 둔 페이지가 있으면 다시 agent turn을 돌리지 않는다 — 후보군을 오갈 때마다
+  // 같은 용어를 다시 생성하는 비용을 없앤다. 재생성하고 싶으면 wiki/<slug>.json을 지우면 된다.
+  const cached = await readWikiPage(projectPath, term);
+  if (cached) {
+    res.json({ term, page: cached, cached: true });
+    return;
+  }
+
   const messages = await adapter.readTranscript(projectPath);
   state.startWiki({ term, mentions: findMentions(messages, term), design: await loadDesignFromDisk(projectPath) });
 
@@ -822,6 +1015,51 @@ app.post("/api/wiki", async (req: Request, res: Response) => {
     model: body.model || undefined,
     effort: body.effort || undefined,
   });
+});
+
+// '내 위키' — 후보 미리보기(wiki/<slug>.json)와 별개로, 사용자가 명시적으로 고른 것만
+// 모아 프로젝트당 하나로 유지한다 (.wiki/wiki.json). agent turn이 없으니 활성 task 여부와
+// 무관하게 즉시 처리한다.
+app.get("/api/wiki/my", async (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(String(req.query["projectPath"] ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+  res.json({ pages: await readMyWiki(projectPath) });
+});
+
+app.post("/api/wiki/my/add", async (req: Request, res: Response) => {
+  const body = req.body as MyWikiAddRequest;
+  if (!body?.term?.trim()) {
+    res.status(400).json({ error: "term is required" });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const term = body.term.trim();
+  const page = await readWikiPage(projectPath, term);
+  if (!page) {
+    res.status(404).json({ error: "먼저 이 용어의 페이지를 만들어야 합니다." });
+    return;
+  }
+
+  const pages = await readMyWiki(projectPath);
+  const index = pages.findIndex((existing) => existing.term === term);
+  if (index === -1) pages.push(page);
+  else pages[index] = page; // 다시 추가하면 최신 생성 결과로 갱신한다. 자리는 유지한다.
+  await writeMyWiki(projectPath, pages);
+
+  res.json({ pages });
 });
 
 app.get("/internal/wiki-transcript", requireToken, (_req: Request, res: Response) => {
@@ -909,9 +1147,13 @@ app.post("/internal/wiki", requireToken, (req: Request, res: Response) => {
 /** 존재하는 디렉터리가 아니면 거부하고, 심볼릭 링크는 해소한다. */
 export async function canonicalizeProjectPath(input: string): Promise<string> {
   if (!input?.trim()) throw new Error("projectPath is required");
+  const requested = input.trim();
+  // 아직 없는 경로면(새 앱을 처음 시작하는 경우) 만들어준다. 이미 파일로 있으면 mkdir가
+  // 실패하고, 아래 realpath/stat에서 그대로 "디렉터리가 아니다"로 걸러진다.
+  await mkdir(requested, { recursive: true }).catch(() => undefined);
   let resolved: string;
   try {
-    resolved = await realpath(input.trim());
+    resolved = await realpath(requested);
   } catch {
     throw new Error(`Project path does not exist: ${input}`);
   }
@@ -949,7 +1191,7 @@ async function cameFromInterview(projectPath: string): Promise<boolean> {
 }
 
 const GENERATED_DOCS = ["app_design.md", "AGENTS.md", "CLAUDE.md"] as const;
-const DESIGN_DIR = ".project-intel";
+const WIKI_DIR = "wiki";
 const MAX_DIFF_CHARS = 20_000;
 const MAX_REVIEW_COMMITS = 50;
 const REVIEW_LOG = "reviews.json";
@@ -957,7 +1199,7 @@ const REVIEW_LOG = "reviews.json";
 /** 설계를 디스크에서 읽는다. bridge가 재시작돼도 인터뷰가 남긴 것이 유일한 원본이다. */
 async function loadDesignFromDisk(projectPath: string): Promise<DesignDoc | null> {
   try {
-    const raw = await readFile(join(projectPath, DESIGN_DIR, "design.json"), "utf8");
+    const raw = await readFile(join(projectPath, "design.json"), "utf8");
     return JSON.parse(raw) as DesignDoc;
   } catch {
     return null;
@@ -1001,11 +1243,21 @@ async function clearGeneratedArtifacts(projectPath: string): Promise<string[]> {
     await rm(path, { force: true });
     removed.push(name);
   }
-  const intel = join(projectPath, DESIGN_DIR);
+  for (const name of ["design.json", REVIEW_LOG, "architecture.json", "architecture.md"]) {
+    const path = join(projectPath, name);
+    try {
+      await stat(path);
+      await rm(path, { force: true });
+      removed.push(name);
+    } catch {
+      // 없다
+    }
+  }
+  const wiki = join(projectPath, WIKI_DIR);
   try {
-    await stat(intel);
-    await rm(intel, { recursive: true, force: true });
-    removed.push(`${DESIGN_DIR}/`);
+    await stat(wiki);
+    await rm(wiki, { recursive: true, force: true });
+    removed.push(`${WIKI_DIR}/`);
   } catch {
     // 없다
   }
@@ -1068,34 +1320,50 @@ async function gitLines(projectPath: string, args: string[]): Promise<string[]> 
 
 async function readReviewLog(projectPath: string): Promise<ReviewLog> {
   try {
-    const raw = await readFile(join(projectPath, DESIGN_DIR, REVIEW_LOG), "utf8");
-    return JSON.parse(raw) as ReviewLog;
+    const raw = await readFile(join(projectPath, REVIEW_LOG), "utf8");
+    const log = JSON.parse(raw) as ReviewLog;
+    // 이 필드가 생기기 전에 쓰인 reviews.json도 있을 수 있다.
+    if (!log.resolutions) log.resolutions = [];
+    return log;
   } catch {
-    return { lastReviewedSha: null, runs: [] };
+    return { lastReviewedSha: null, runs: [], resolutions: [] };
   }
 }
 
 async function writeReviewLog(projectPath: string, log: ReviewLog): Promise<void> {
-  const dir = join(projectPath, DESIGN_DIR);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+  await writeFile(join(projectPath, REVIEW_LOG), JSON.stringify(log, null, 2), "utf8");
+}
+
+/**
+ * 지금까지 나온 finding 중 "피드백 받기"로 해결 확인이 안 된 것들. 화면은 이번 리뷰가
+ * 새로 찾은 것(`ReportDriftInput.findings`)이 아니라 이 목록을 기준으로 그린다 — 그래야
+ * diff만 보는 리뷰가 옛날 finding을 다시 언급하지 않아도 조용히 화면에서 사라지지 않는다.
+ */
+function openFindingsFrom(log: ReviewLog): DriftFinding[] {
+  const resolvedKeys = new Set(log.resolutions.map((r) => `${r.originalCommit}:${r.criterionId}`));
+  const seen = new Set<string>();
+  const open: DriftFinding[] = [];
+  // 최신 run부터 본다 — 같은 commit+criterion이 여러 run에 걸쳐 있으면 최신 정보를 쓴다.
+  for (const run of [...log.runs].reverse()) {
+    for (const finding of run.findings) {
+      const key = `${finding.commit}:${finding.criterionId}`;
+      if (resolvedKeys.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      open.push(finding);
+    }
+  }
+  return open;
 }
 
 /** 구조 점검은 이력 배열을 쌓지 않고 현재 snapshot을 덮어쓴다. 추세는 git이 남긴다. */
 async function writeArchitectureReport(projectPath: string, report: ArchitectureDebtReport): Promise<void> {
-  const dir = join(projectPath, DESIGN_DIR);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "architecture.json"), JSON.stringify(report, null, 2), "utf8");
-  await writeFile(join(dir, "architecture.md"), renderArchitectureMarkdown(report), "utf8");
-}
-
-function wikiSlug(term: string): string {
-  return term.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-|-$/g, "") || "page";
+  await writeFile(join(projectPath, "architecture.json"), JSON.stringify(report, null, 2), "utf8");
+  await writeFile(join(projectPath, "architecture.md"), renderArchitectureMarkdown(report), "utf8");
 }
 
 /** JSON이 원본, 마크다운은 파생물이다 — 이미 있는 도구(Obsidian, GitHub 미리보기 등)가 그대로 동작한다. */
 async function writeWikiPage(projectPath: string, page: WikiPage): Promise<void> {
-  const dir = join(projectPath, DESIGN_DIR, "wiki");
+  const dir = join(projectPath, WIKI_DIR);
   await mkdir(dir, { recursive: true });
   const slug = wikiSlug(page.term);
   await writeFile(join(dir, `${slug}.json`), JSON.stringify(page, null, 2), "utf8");
@@ -1105,7 +1373,7 @@ async function writeWikiPage(projectPath: string, page: WikiPage): Promise<void>
 /** 이미 만들어 둔 페이지들. 화면이 "이미 있음"을 표시하는 데 쓴다. */
 async function listWikiTerms(projectPath: string): Promise<string[]> {
   try {
-    const dir = join(projectPath, DESIGN_DIR, "wiki");
+    const dir = join(projectPath, WIKI_DIR);
     const files = (await readdir(dir)).filter((name) => name.endsWith(".json"));
     const terms = await Promise.all(
       files.map(async (name) => {
@@ -1120,6 +1388,36 @@ async function listWikiTerms(projectPath: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** 이 용어의 페이지가 이미 생성돼 있으면 읽어 온다. 없으면 null — 재생성 여부를 호출부가 결정한다. */
+async function readWikiPage(projectPath: string, term: string): Promise<WikiPage | null> {
+  try {
+    const raw = await readFile(join(projectPath, WIKI_DIR, `${wikiSlug(term)}.json`), "utf8");
+    return JSON.parse(raw) as WikiPage;
+  } catch {
+    return null;
+  }
+}
+
+const MY_WIKI_DIR = ".wiki";
+
+/** '내 위키' 전체. 파일이 없으면(아직 아무것도 추가하지 않았으면) 빈 배열이다. */
+async function readMyWiki(projectPath: string): Promise<WikiPage[]> {
+  try {
+    const raw = await readFile(join(projectPath, MY_WIKI_DIR, "wiki.json"), "utf8");
+    return JSON.parse(raw) as WikiPage[];
+  } catch {
+    return [];
+  }
+}
+
+/** wiki/<slug>.json과 같은 패턴 — JSON이 원본, .md는 파생물. */
+async function writeMyWiki(projectPath: string, pages: WikiPage[]): Promise<void> {
+  const dir = join(projectPath, MY_WIKI_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "wiki.json"), JSON.stringify(pages, null, 2), "utf8");
+  await writeFile(join(dir, "wiki.md"), renderMyWikiMarkdown(pages), "utf8");
 }
 
 /** ref가 이 저장소에 실제로 있는지. */
@@ -1146,7 +1444,7 @@ async function resolveReviewStart(
 
   try {
     const shas = await gitLines(projectPath, [
-      "log", "--format=%H", "--diff-filter=A", "--", `${DESIGN_DIR}/design.json`,
+      "log", "--format=%H", "--diff-filter=A", "--", "design.json",
     ]);
     const handover = shas.at(-1);
     if (handover) return { start: "design", since: handover };
@@ -1163,7 +1461,7 @@ async function collectCommits(
   since: string | null,
 ): Promise<{ commits: ReviewCommit[]; skipped: number }> {
   const range = since ? [`${since}..HEAD`] : [`-n`, String(MAX_REVIEW_COMMITS)];
-  const SEP = "";
+  const SEP = "";
   const lines = await gitLines(projectPath, [
     "log", "--reverse", "--no-merges", `--format=%H${SEP}%s${SEP}%an${SEP}%aI`, ...range,
   ]);

@@ -3,6 +3,7 @@
  * 각 기능을 이식하는 단계에서 이 파일에 추가한다. 지금은 세션 목록이 공통으로 쓰는
  * `describeSession`만 둔다 — 기능이 없으니 매칭할 것도 아직 없다.
  */
+import type { DriftVerifyContext, VerifyDriftFixInput } from "@vci/protocol";
 
 /**
  * 인터뷰 프롬프트 (docs/requirements_flow.md §4).
@@ -31,6 +32,8 @@ export function buildInterviewPrompt(answer: string | null): string {
     "   and the answer will reach you on the next turn.",
     "",
     "How to ask (the user cannot answer technical questions):",
+    "- Write `question`, `why` and every `hints` entry in Korean (한국어). This person speaks",
+    "  Korean, and a question in English is unusable to them.",
     "- Ask about purpose, never about technology. Not 'do you want login?' but",
     "  'who should be able to see this?'.",
     "- Do not drill into sub-features. If they say they want accounts, do NOT then ask about",
@@ -49,7 +52,9 @@ export function buildInterviewPrompt(answer: string | null): string {
     "  first, next, last. A flow with one step means you did not decompose it.",
     "- ENTITY relations and states are almost never stated outright — derive them. If photos",
     "  live inside an album, that is a relation. If a post can be draft or published, those",
-    "  are states.",
+    "  are states. Also give each ENTITY a short `note` on what it is for — the app shows",
+    "  entities to the user by name and note, not by relations/states, so without a note they",
+    "  cannot tell what an entity even is.",
     "- DEC is what makes this design reusable later. Record what the user ruled out, what they",
     "  postponed, and every default you chose for them, each with a `why`.",
     "- Mark source: \"ai\" on anything the user did not say. The app shows those to the user",
@@ -75,6 +80,7 @@ export function describeSession(preview: string): string {
   if (!text) return "(빈 대화)";
   if (text.startsWith("You are interviewing a NON-PROGRAMMER")) return "요구사항 인터뷰";
   if (text.startsWith("You are checking a code change")) return "드리프트 리뷰";
+  if (text.startsWith("You are checking whether a single previously-reported issue")) return "드리프트 재확인";
   if (text.startsWith("You are doing a focused structure check")) return "아키텍처·기술부채";
   if (text.startsWith("You are looking at the conversations")) return "위키 키워드";
   if (text.startsWith("You are explaining one word")) return "위키";
@@ -139,7 +145,8 @@ export function buildArchitecturePrompt(): string {
 export function buildReviewPrompt(): string {
   return [
     "You are checking a code change against decisions this project already made.",
-    "You are inside the Vibe Coding Project Intelligence app.",
+    "You are inside the Vibe Coding Project Intelligence app. Write `detail` and `summary` in",
+    "Korean (한국어) — the person reading this speaks Korean.",
     "",
     "Do this, in order:",
     "1. Call `get_review_context` (server: vci-app). It returns `commits` (oldest first,",
@@ -166,6 +173,34 @@ export function buildReviewPrompt(): string {
     "",
     "Do NOT change any file. You are not fixing anything; you are reporting. The user's own",
     "agent will do the fixing, with a prompt this app hands them.",
+  ].join("\n");
+}
+
+/**
+ * finding 하나를 "피드백 받기"로 다시 확인하는 프롬프트. 전체 리뷰(`buildReviewPrompt`)를
+ * 다시 도는 게 아니다 — 사용자가 옆에 띄운 agent로 딱 그 finding을 고치고 커밋 하나를
+ * 새로 만들었다는 전제로, 그 커밋 하나가 그 기준 하나를 실제로 지키는지만 본다.
+ */
+export function buildDriftVerifyPrompt(): string {
+  return [
+    "You are checking whether a single previously-reported issue has actually been fixed.",
+    "You are inside the Vibe Coding Project Intelligence app. Write `detail` in Korean (한국어)",
+    "— the person reading this speaks Korean.",
+    "",
+    "Do this, in order:",
+    "1. Call `get_drift_verify_context` (server: vci-app). It returns the criterion that was",
+    "   broken, the original finding's detail, the diff of the one commit made since then, AND",
+    "   `currentFiles` — the actual current content of every file the original finding named",
+    "   (null if a file was deleted).",
+    "2. Judge from `currentFiles`, not just the diff, whether the criterion is satisfied RIGHT",
+    "   NOW. The diff only shows what the latest commit changed -- if it left one of the named",
+    "   files untouched, the diff alone cannot tell you whether that file still violates the",
+    "   criterion. `currentFiles` can. A commit that changes unrelated code, or only partly",
+    "   addresses the finding (e.g. removes the call site but leaves the violating module in",
+    "   place), does not resolve it.",
+    "3. Call `verify_drift_fix` (server: vci-app) ONCE with your verdict, then end your turn.",
+    "",
+    "Do NOT change any file. You are not fixing anything; you are checking.",
   ].join("\n");
 }
 
@@ -283,20 +318,47 @@ export function renderResolutionPrompt(
   finding: { commit: string; files: string[]; detail: string },
   criterion: { id: string; text: string; why?: string },
 ): string {
-  const files = finding.files.length > 0 ? finding.files.join(", ") : "the relevant code";
-  const lines = [`Commit ${finding.commit} conflicts with a decision this project already made.`, "", `${criterion.id}: ${criterion.text}`];
-  if (criterion.why) lines.push(`Why this was decided: ${criterion.why}`);
-  lines.push("", `What was found: ${finding.detail}`);
-  if (finding.files.length > 0) lines.push(`Files: ${files}`);
+  const files = finding.files.length > 0 ? finding.files.join(", ") : "관련 코드";
+  const lines = [`커밋 ${finding.commit}이(가) 이 프로젝트가 이미 정한 결정과 어긋납니다.`, "", `${criterion.id}: ${criterion.text}`];
+  if (criterion.why) lines.push(`왜 이렇게 정했는지: ${criterion.why}`);
+  lines.push("", `무엇이 발견됐는지: ${finding.detail}`);
+  if (finding.files.length > 0) lines.push(`파일: ${files}`);
   lines.push(
     "",
-    "Judge which of these is true, then act on it yourself — do not just report back:",
-    `1. The code is wrong. Fix ${files} so it follows ${criterion.id}.`,
-    `2. The decision is outdated. Edit ONLY the "${criterion.id}" entry in`,
-    "   .project-intel/design.json to match what the code now does. You are allowed to edit",
-    "   this file — it is this project's own recorded decisions, not generated output. Change",
-    "   just that one entry's text (and why, if it changed). Do not touch any other DEC, RULE,",
-    "   or the file's structure.",
+    "둘 중 어느 쪽인지 판단한 뒤, 보고만 하지 말고 직접 실행하세요:",
+    `1. 코드가 잘못됐다 — ${files}을(를) ${criterion.id}에 맞게 고치세요.`,
+    `2. 결정이 낡았다 — design.json에서 "${criterion.id}" 항목만 지금 코드에 맞게 고치세요.`,
+    "   이 파일은 수정해도 됩니다 — 생성된 산출물이 아니라 이 프로젝트가 직접 기록한 결정입니다.",
+    "   그 항목의 text(그리고 바뀌었다면 why)만 바꾸고, 다른 DEC/RULE이나 파일 구조는",
+    "   건드리지 마세요.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * "피드백 받기"가 아직 위반이라고 판정했을 때 다시 건네는 프롬프트. 이것도 LLM을 쓰지
+ * 않는다 — 순수 템플릿이다. 이전 시도와 똑같은 문장을 그대로 다시 주면 agent가 뭘
+ * 잘못했는지 모른 채 반복만 하게 되므로, 이번에 확인한 것(무엇이 아직 안 됐는지)을
+ * 새로 끼워 넣는다.
+ */
+export function renderRetryResolutionPrompt(context: DriftVerifyContext, result: VerifyDriftFixInput): string {
+  const files = context.files.length > 0 ? context.files.join(", ") : "관련 코드";
+  const lines = [
+    `커밋 ${context.checkedCommit}까지 확인했지만 아직 ${context.criterionId}를 지키지 않습니다.`,
+    "",
+    `${context.criterionId}: ${context.criterionText}`,
+  ];
+  if (context.criterionWhy) lines.push(`왜 이렇게 정했는지: ${context.criterionWhy}`);
+  lines.push("", `지난번 발견: ${context.originalDetail}`, `이번 확인 결과: ${result.detail}`);
+  if (context.files.length > 0) lines.push(`파일: ${files}`);
+  lines.push(
+    "",
+    "다시 판단한 뒤, 보고만 하지 말고 직접 실행하세요:",
+    `1. 코드가 잘못됐다 — ${files}을(를) ${context.criterionId}에 맞게 고치세요.`,
+    `2. 결정이 낡았다 — design.json에서 "${context.criterionId}" 항목만 지금 코드에 맞게 고치세요.`,
+    "   이 파일은 수정해도 됩니다 — 생성된 산출물이 아니라 이 프로젝트가 직접 기록한 결정입니다.",
+    "   그 항목의 text(그리고 바뀌었다면 why)만 바꾸고, 다른 DEC/RULE이나 파일 구조는",
+    "   건드리지 마세요.",
   );
   return lines.join("\n");
 }

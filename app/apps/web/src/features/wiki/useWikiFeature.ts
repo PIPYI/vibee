@@ -14,6 +14,7 @@ export function useWikiFeature() {
   const [existingTerms, setExistingTerms] = useState<string[]>([]);
   const [keywords, setKeywords] = useState<WikiKeyword[] | null>(null);
   const [page, setPage] = useState<WikiPage | null>(null);
+  const [myWiki, setMyWiki] = useState<WikiPage[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -64,6 +65,20 @@ export function useWikiFeature() {
 
   const running = tasks.some((task) => task.status === "running" || task.status === "starting");
 
+  // 이 디렉터리에 저장된 '내 위키'가 있으면 불러온다. 위키 기능을 이 프로젝트로 다시
+  // 열었을 때 곧바로 보여주기 위함이지, 매번 새로 만드는 게 아니다.
+  useEffect(() => {
+    const trimmed = projectPath.trim();
+    if (!trimmed) {
+      setMyWiki([]);
+      return;
+    }
+    fetch(`/api/wiki/my?projectPath=${encodeURIComponent(trimmed)}`)
+      .then((response) => response.json())
+      .then((body: { pages?: WikiPage[] }) => setMyWiki(body.pages ?? []))
+      .catch(() => setMyWiki([]));
+  }, [projectPath]);
+
   const onFindKeywords = useCallback(async () => {
     setError(null);
     setBusy(true);
@@ -98,8 +113,10 @@ export function useWikiFeature() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ agent, projectPath, term, model: model || undefined, effort: effort || undefined }),
         });
-        const body = (await response.json()) as { error?: string };
+        const body = (await response.json()) as { error?: string; page?: WikiPage };
         if (!response.ok) throw new Error(body.error ?? "페이지를 만들지 못했습니다");
+        // 이미 만들어 둔 페이지면 turn 없이 바로 온다 — agent가 끝날 때까지 기다릴 필요가 없다.
+        if (body.page) setPage(body.page);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
@@ -108,6 +125,30 @@ export function useWikiFeature() {
     },
     [agent, projectPath, model, effort],
   );
+
+  const onAddToMyWiki = useCallback(
+    async (target: WikiPage) => {
+      setError(null);
+      try {
+        const response = await fetch("/api/wiki/my/add", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectPath, term: target.term }),
+        });
+        const body = (await response.json()) as { error?: string; pages?: WikiPage[] };
+        if (!response.ok) throw new Error(body.error ?? "내 위키에 추가하지 못했습니다");
+        setMyWiki(body.pages ?? []);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
+    [projectPath],
+  );
+
+  const onBackToMyWiki = useCallback(() => {
+    setPage(null);
+    setWarnings([]);
+  }, []);
 
   return {
     agents,
@@ -124,12 +165,15 @@ export function useWikiFeature() {
     existingTerms,
     keywords,
     page,
+    myWiki,
     warnings,
     error,
     busy,
     running,
     onFindKeywords,
     onPickKeyword,
+    onAddToMyWiki,
+    onBackToMyWiki,
   };
 }
 

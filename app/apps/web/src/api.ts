@@ -77,18 +77,34 @@ export function getNarrative(): Promise<NarrativeResponse> {
 }
 
 /**
- * `/events` WebSocket을 구독한다. 재연결은 하지 않는다 — 이 앱은 로컬 프로세스라 bridge가
- * 죽으면 사용자가 직접 다시 띄운다는 전제다 (spike와 같은 전제).
+ * `/events` WebSocket을 구독한다.
+ *
+ * 연결이 끊기면 다시 붙는다 — 개발 중에는 bridge를 자주 재시작하는데, 탭은 그대로 열려 있는
+ * 경우가 흔하다. 재연결해도 놓친 이벤트를 따로 복구할 필요는 없다: bridge의 `subscribe`
+ * (apps/bridge/src/state.ts)가 새 연결마다 현재 버퍼를 그대로 다시 보내주기 때문이다.
  */
 export function subscribeEvents(onEvent: (envelope: AgentEventEnvelope) => void): () => void {
   const url = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/events`;
-  const socket = new WebSocket(url);
-  socket.addEventListener("message", (event) => {
-    try {
-      onEvent(JSON.parse(event.data as string) as AgentEventEnvelope);
-    } catch {
-      // 파싱 실패한 프레임은 무시한다.
-    }
-  });
-  return () => socket.close();
+  let closed = false;
+  let socket: WebSocket;
+
+  const connect = () => {
+    socket = new WebSocket(url);
+    socket.addEventListener("message", (event) => {
+      try {
+        onEvent(JSON.parse(event.data as string) as AgentEventEnvelope);
+      } catch {
+        // 파싱 실패한 프레임은 무시한다.
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (!closed) setTimeout(connect, 1000);
+    });
+  };
+  connect();
+
+  return () => {
+    closed = true;
+    socket.close();
+  };
 }

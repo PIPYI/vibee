@@ -49,12 +49,17 @@ export function WikiPanel(state: WikiFeatureState) {
       {state.error && <div className="error-banner">{state.error}</div>}
       {state.running && <p className="empty-state">agent가 살펴보는 중…</p>}
 
+      {state.keywords && state.keywords.length === 0 && (
+        <p className="empty-state" style={{ marginTop: 24 }}>
+          설명할 만한 말이 없었습니다.
+        </p>
+      )}
       {state.keywords && state.keywords.length > 0 && (
         <>
           <h2 style={{ marginTop: 24 }}>후보</h2>
           <ul className="exchange-list">
             {state.keywords.map((keyword) => (
-              <li key={keyword.term}>
+              <li key={keyword.term} title={`${keyword.why}\n\n"${keyword.sample}"`}>
                 <button className="secondary" disabled={state.busy || state.running} onClick={() => void state.onPickKeyword(keyword.term)}>
                   {keyword.term} ({keyword.count}회)
                 </button>

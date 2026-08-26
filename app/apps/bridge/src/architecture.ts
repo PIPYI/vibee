@@ -53,7 +53,6 @@ const IGNORED_DIRECTORIES = new Set([
   ".git",
   ".next",
   ".nuxt",
-  ".project-intel",
   ".turbo",
   "build",
   "coverage",
@@ -61,6 +60,7 @@ const IGNORED_DIRECTORIES = new Set([
   "node_modules",
   "target",
   "vendor",
+  "wiki",
 ]);
 
 const MAX_SCANNED_FILES = 2_000;

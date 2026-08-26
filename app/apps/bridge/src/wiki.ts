@@ -128,6 +128,11 @@ export function findAdvice(...texts: string[]): string[] {
   return hits;
 }
 
+/** 파일명과 문서 내 앵커에 함께 쓰는 slug. 한 곳에서만 정의해 둘이 어긋나지 않게 한다. */
+export function wikiSlug(term: string): string {
+  return term.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-|-$/g, "") || "page";
+}
+
 /**
  * 페이지를 마크다운으로도 내보낸다 (LLM 없이).
  *
@@ -149,4 +154,25 @@ export function renderWikiMarkdown(page: WikiPage): string {
   }
   out.push("---", "", `<!-- vci:generated ${page.createdAt} -->`);
   return out.join("\n");
+}
+
+/**
+ * '내 위키' 전체를 하나의 문서로 묶는다 (LLM 없이).
+ *
+ * 각 페이지는 `renderWikiMarkdown`과 같은 본문이되, 문서 하나 안에 여러 `# `가 겹치지 않도록
+ * 한 단계씩 내려서(`##`) 이어붙인다. 순서는 사용자가 추가한 순서를 그대로 따른다 — 최근에
+ * 궁금했던 것이 최신이라는 보장은 없고, 쌓아온 순서 자체가 학습 흐름이기 때문이다.
+ */
+export function renderMyWikiMarkdown(pages: WikiPage[]): string {
+  if (pages.length === 0) {
+    return ["# 내 위키", "", "아직 추가된 페이지가 없습니다.", ""].join("\n");
+  }
+  // `[[wikilink]]`는 Obsidian 전용이라 GitHub·VS Code 미리보기에서는 그냥 텍스트다.
+  // 여기는 실제로 눌러서 이동해야 하는 색인이므로 앵커(`<a id>` + `#slug`)로 만든다.
+  const toc = pages.map((page) => `- [${page.term}](#${wikiSlug(page.term)})`).join("\n");
+  const sections = pages.map((page) => {
+    const body = renderWikiMarkdown(page).replace(/^# /, "## ");
+    return `<a id="${wikiSlug(page.term)}"></a>\n\n${body}`;
+  });
+  return ["# 내 위키", "", toc, "", sections.join("\n\n")].join("\n");
 }

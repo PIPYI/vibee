@@ -6,6 +6,8 @@ const CATEGORY_LABEL: Record<string, string> = {
   "stale-temporary-workaround": "방치된 임시 조치",
 };
 
+const SEVERITY_LABEL: Record<string, string> = { high: "높음", medium: "중간", low: "낮음" };
+
 export function ArchitectureMain(state: ArchitectureFeatureState) {
   if (!state.report) {
     return <p className="empty-state">왼쪽에서 프로젝트 경로를 입력하고 구조 점검을 시작하세요.</p>;
@@ -19,14 +21,28 @@ export function ArchitectureMain(state: ArchitectureFeatureState) {
       {state.report.findings.map((finding, index) => (
         <div className="question-card" key={index}>
           <strong>
-            {finding.title} ({CATEGORY_LABEL[finding.category] ?? finding.category}, {finding.severity})
+            {finding.title} ({CATEGORY_LABEL[finding.category] ?? finding.category},{" "}
+            {SEVERITY_LABEL[finding.severity] ?? finding.severity})
           </strong>
           <p className="why">{finding.explanation}</p>
           <p className="why">영향: {finding.impact}</p>
-          <p className="why">파일: {finding.files.join(", ")}</p>
+          <p className="why">다음 행동: {finding.suggestion}</p>
           {finding.designIds.length > 0 && <p className="why">설계 단위: {finding.designIds.join(", ")}</p>}
+          <p className="why">파일: {finding.files.join(", ")}</p>
+          {finding.evidence.length > 0 && (
+            <ul className="gap-list">
+              {finding.evidence.map((evidence, evidenceIndex) => (
+                <li key={evidenceIndex}>{evidence}</li>
+              ))}
+            </ul>
+          )}
           {finding.resolutionPrompt && (
-            <textarea readOnly rows={6} value={finding.resolutionPrompt} onFocus={(event) => event.currentTarget.select()} />
+            <>
+              <textarea readOnly rows={6} value={finding.resolutionPrompt} />
+              <button className="secondary" onClick={() => void navigator.clipboard.writeText(finding.resolutionPrompt ?? "")}>
+                프롬프트 복사
+              </button>
+            </>
           )}
         </div>
       ))}
