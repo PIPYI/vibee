@@ -25,13 +25,13 @@
   --text-muted: #64748b;
   --text-inverse: #ffffff;
 
-  /* Accent / Primary */
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-active: #1e40af;
-  --accent-subtle: #eff6ff;
-  --accent-border: #bfdbfe;
-  --accent-text: #1d4ed8;
+  /* Accent / Primary - 꿀벌 컬러(노란색·갈색) */
+  --accent: #eab308;
+  --accent-hover: #ca8a04;
+  --accent-active: #a16207;
+  --accent-subtle: #fefce8;
+  --accent-border: #fde047;
+  --accent-text: #854d0e;
 
   /* Semantic Colors */
   --danger: #ef4444;
@@ -49,17 +49,17 @@
   --success-border: #a7f3d0;
   --success-text: #065f46;
 
-  --info: #3b82f6;
-  --info-bg: #eff6ff;
-  --info-border: #bfdbfe;
-  --info-text: #1e40af;
+  --info: #92400e;
+  --info-bg: #fef3c7;
+  --info-border: #fde68a;
+  --info-text: #78350f;
 
   /* Shadows */
   --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-  --shadow-glow: 0 0 15px rgba(37, 99, 235, 0.25);
+  --shadow-glow: 0 0 15px rgba(234, 179, 8, 0.3);
 
   /* Border Radii */
   --radius-xs: 4px;
@@ -143,16 +143,19 @@ html, body {
   width: 38px;
   height: 38px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  background: linear-gradient(135deg, #eab308 0%, #ca8a04 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  font-weight: 800;
-  font-size: 16px;
+  overflow: hidden;
   margin-bottom: 18px;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
-  letter-spacing: -0.05em;
+  box-shadow: 0 4px 12px rgba(234, 179, 8, 0.35);
+}
+
+.rail-brand img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .rail-item {
@@ -199,13 +202,13 @@ html, body {
 }
 
 .rail-item.active {
-  background: rgba(37, 99, 235, 0.2);
-  color: #60a5fa;
+  background: rgba(234, 179, 8, 0.2);
+  color: #fbbf24;
   font-weight: 600;
 }
 
 .rail-item.active svg {
-  color: #60a5fa;
+  color: #fbbf24;
 }
 
 .rail-item.active::before {
@@ -216,8 +219,8 @@ html, body {
   bottom: 10px;
   width: 3px;
   border-radius: 0 var(--radius-full) var(--radius-full) 0;
-  background: #3b82f6;
-  box-shadow: 0 0 8px #3b82f6;
+  background: #eab308;
+  box-shadow: 0 0 8px #eab308;
 }
 
 .rail-item:disabled {
@@ -273,7 +276,6 @@ html, body {
 
 .breadcrumb-placeholder {
   color: var(--text-muted);
-  font-style: italic;
 }
 
 .status-badges {
@@ -326,7 +328,7 @@ html, body {
 
 .dot.running {
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7);
+  box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.7);
   animation: pulse-ring 1.5s cubic-bezier(0.24, 0, 0.38, 1) infinite;
 }
 
@@ -336,13 +338,13 @@ html, body {
 
 @keyframes pulse-ring {
   0% {
-    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7);
+    box-shadow: 0 0 0 0 rgba(234, 179, 8, 0.7);
   }
   70% {
-    box-shadow: 0 0 0 5px rgba(37, 99, 235, 0);
+    box-shadow: 0 0 0 5px rgba(234, 179, 8, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    box-shadow: 0 0 0 0 rgba(234, 179, 8, 0);
   }
 }
 
@@ -435,7 +437,7 @@ input[type="text"]:focus,
 select:focus,
 textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.12);
 }
 
 input[type="text"]:disabled,
@@ -478,7 +480,7 @@ button.primary {
 
 button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
-  box-shadow: var(--shadow-md), 0 0 10px rgba(37, 99, 235, 0.2);
+  box-shadow: var(--shadow-md), 0 0 10px rgba(234, 179, 8, 0.2);
   transform: translateY(-0.5px);
 }
 

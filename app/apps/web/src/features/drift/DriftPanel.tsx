@@ -56,10 +56,10 @@ export function DriftPanel(state: DriftFeatureState) {
       })()}
 
       <div className="form-group">
-        <label className="form-label">Project 절대 경로</label>
+        <label className="form-label">프로젝트 경로</label>
         <input
           type="text"
-          placeholder="인터뷰를 거친 프로젝트 경로"
+          placeholder={state.pathExample}
           value={state.projectPath}
           onChange={(event) => state.setProjectPath(event.target.value)}
           disabled={state.running}

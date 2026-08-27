@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
+import { getEnvironment, getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
 import type { SystemMapDocument } from "@vci/protocol";
 
 export type SystemMapMeta = { committedAt: string; gitRevision?: string; taskId: string };
@@ -13,6 +13,7 @@ export function useSystemMapFeature() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [pathExample, setPathExample] = useState("/path/to/your/project");
   const [tasks, setTasks] = useState<TaskState[]>([]);
   const [result, setResult] = useState<SystemMapResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +63,7 @@ export function useSystemMapFeature() {
 
   useEffect(() => {
     getHealth().then((health) => setAgents(health.agents)).catch(() => undefined);
+    getEnvironment().then((environment) => setPathExample(environment.pathExample)).catch(() => undefined);
     getState().then((state) => setTasks(state.tasks)).catch(() => undefined);
     const unsubscribe = subscribeEvents((envelope) => {
       const { event } = envelope;
@@ -123,6 +125,7 @@ export function useSystemMapFeature() {
     setEffort,
     projectPath,
     setProjectPath,
+    pathExample,
     tasks,
     result,
     error,

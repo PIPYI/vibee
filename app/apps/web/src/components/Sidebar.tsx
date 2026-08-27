@@ -56,8 +56,8 @@ export function Sidebar({
 }) {
   return (
     <nav className="rail">
-      <div className="rail-brand" title="Vibe Coding Intelligence">
-        VCI
+      <div className="rail-brand" title="Vibee">
+        <img src="/vibee-logo.png" alt="Vibee" title="Vibee" />
       </div>
       {FEATURES.map((feature) => (
         <button

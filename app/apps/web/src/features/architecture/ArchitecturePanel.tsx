@@ -56,10 +56,10 @@ export function ArchitecturePanel(state: ArchitectureFeatureState) {
       })()}
 
       <div className="form-group">
-        <label className="form-label">Project 절대 경로</label>
+        <label className="form-label">프로젝트 경로</label>
         <input
           type="text"
-          placeholder="점검할 프로젝트 경로 (인터뷰 없어도 됨)"
+          placeholder={state.pathExample}
           value={state.projectPath}
           onChange={(event) => state.setProjectPath(event.target.value)}
           disabled={state.running}

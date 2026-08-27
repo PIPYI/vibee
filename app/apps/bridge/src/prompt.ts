@@ -24,7 +24,7 @@ import { correctionContract } from "./prompts/correction-contract.js";
 export function buildInterviewPrompt(answer: string | null): string {
   return [
     "You are interviewing a NON-PROGRAMMER to design the app they want to build.",
-    "You are inside the Vibe Coding Project Intelligence app; the UI is a browser panel.",
+    "You are inside the Vibee app; the UI is a browser panel.",
     "",
     answer === null
       ? "The interview is starting now."
@@ -171,7 +171,7 @@ ${correctionContract({ semanticAttempts: MAX_RUNTIME_SEMANTIC_ATTEMPTS, architec
 export function buildArchitecturePrompt(): string {
   return [
     "You are doing a focused structure check of an EXISTING codebase for a NON-PROGRAMMER.",
-    "You are inside the Vibe Coding Project Intelligence app. Write the report in Korean.",
+    "You are inside the Vibee app. Write the report in Korean.",
     "",
     "Do this, in order:",
     "1. Call `get_architecture_context` (server: vci-app). Code has already scanned the",
@@ -214,7 +214,7 @@ export function buildArchitecturePrompt(): string {
 export function buildReviewPrompt(): string {
   return [
     "You are checking a code change against decisions this project already made.",
-    "You are inside the Vibe Coding Project Intelligence app. Write `detail` and `summary` in",
+    "You are inside the Vibee app. Write `detail` and `summary` in",
     "Korean (한국어) — the person reading this speaks Korean.",
     "",
     "Do this, in order:",
@@ -253,7 +253,7 @@ export function buildReviewPrompt(): string {
 export function buildDriftVerifyPrompt(): string {
   return [
     "You are checking whether a single previously-reported issue has actually been fixed.",
-    "You are inside the Vibe Coding Project Intelligence app. Write `detail` in Korean (한국어)",
+    "You are inside the Vibee app. Write `detail` in Korean (한국어)",
     "— the person reading this speaks Korean.",
     "",
     "Do this, in order:",
@@ -284,7 +284,7 @@ export function buildWikiKeywordsPrompt(): string {
   return [
     "You are looking at the conversations a NON-PROGRAMMER had while building their app with",
     "an AI agent. Your job is to find the words that probably went past them.",
-    "You are inside the Vibe Coding Project Intelligence app.",
+    "You are inside the Vibee app.",
     "",
     "Do this, in order:",
     "1. Call `get_wiki_transcript` (server: vci-app).",
@@ -322,7 +322,7 @@ export function buildWikiKeywordsPrompt(): string {
 export function buildWikiPrompt(term: string): string {
   return [
     `You are explaining one word to the NON-PROGRAMMER who is building this app: "${term}".`,
-    "You are inside the Vibe Coding Project Intelligence app.",
+    "You are inside the Vibee app.",
     "",
     "Do this, in order:",
     "1. Call `get_wiki_context` (server: vci-app). It returns where this word came up in",

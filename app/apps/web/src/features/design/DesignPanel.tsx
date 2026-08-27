@@ -65,7 +65,7 @@ export function DesignPanel(state: DesignFeatureState) {
       })()}
 
       <div className="form-group">
-        <label className="form-label">Project 절대 경로</label>
+        <label className="form-label">프로젝트 경로</label>
         <input
           type="text"
           placeholder={state.pathExample}
