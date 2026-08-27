@@ -12,6 +12,7 @@ import type {
   InterviewState,
   PendingQuestion,
   SelectedItem,
+  ShowResultInput,
   TaskState,
   DriftVerifyContext,
   ReportDriftInput,
@@ -259,6 +260,11 @@ export class BridgeState {
     if (task.status !== "starting" && task.status !== "running" && this.activeTaskId === taskId) {
       this.activeTaskId = null;
     }
+  }
+
+  /** show_result는 이벤트뿐 아니라 task에도 남긴다. 재연결·새로고침 뒤에도 결과가 보여야 한다. */
+  recordResult(taskId: string, result: ShowResultInput): void {
+    this.updateTask(taskId, { result });
   }
 
   recordMcpCall(taskId: string, tool: string, source: "agent-stream" | "bridge-endpoint"): void {
