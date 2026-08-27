@@ -9,15 +9,21 @@ import type { Diagnostic } from "@vci/protocol";
 // Constants
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_ARCHITECTURE_VIEW_BOX: [number, number] = [1200, 760];
+export const DEFAULT_SYSTEM_MAP_VIEW_BOX: [number, number] = [1200, 760];
 export const MIN_COMPONENT_GAP = 24;
 export const PORT_INSET = 16;
-export const MAX_PORT_SPACING = 14;
+export const MAX_PORT_SPACING = 20;
 export const ROUTE_STUB = 24;
 export const ROUTE_CHANNEL = 40;
 export const ROUTE_EDGE_INSET = 12;
 export const ARROW_SHORTEN_DISTANCE = 9;
 export const ROUNDED_CORNER_RADIUS = 8;
+const ROUTE_CHANNEL_LANES = 4;
+const ROUTE_CHANNEL_LANE_GAP = 16;
+const MIN_COLLINEAR_OVERLAP = 1;
+const LABEL_GAP = 6;
+const LABEL_ROUTE_OFFSETS = [4, 12, 24, 36, 52, 68, 84] as const;
+const LABEL_ROUTE_FRACTIONS = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8] as const;
 
 // ---------------------------------------------------------------------------
 // Base geometric types
@@ -41,7 +47,11 @@ export type Route = {
   points: Point[];
   strategy: "straight" | "h-first" | "v-first" | "outer-channel";
   crossedComponentIds: string[];
+  /** Existing connections whose axis-aligned segments still overlap this route after lane avoidance. */
+  overlappedConnectionIds: string[];
 };
+
+type OccupiedRoute = { edgeKey: string; points: Point[] };
 
 // ---------------------------------------------------------------------------
 // Small vector helpers
@@ -307,42 +317,6 @@ function segmentIntersectsRect(p0: Point, p1: Point, rect: Rect): boolean {
   return t0 <= t1;
 }
 
-function routeIntersectsRect(points: Point[], rect: Rect): boolean {
-  for (let i = 0; i < points.length - 1; i++) {
-    if (segmentIntersectsRect(points[i]!, points[i + 1]!, rect)) return true;
-  }
-  return false;
-}
-
-function segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
-  const cross = (p: Point, q: Point, r: Point) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-  const onSegment = (p: Point, q: Point, r: Point) =>
-    q.x >= Math.min(p.x, r.x) - 0.01 && q.x <= Math.max(p.x, r.x) + 0.01 &&
-    q.y >= Math.min(p.y, r.y) - 0.01 && q.y <= Math.max(p.y, r.y) + 0.01;
-  const abC = cross(a, b, c);
-  const abD = cross(a, b, d);
-  const cdA = cross(c, d, a);
-  const cdB = cross(c, d, b);
-  if (((abC > 0 && abD < 0) || (abC < 0 && abD > 0)) && ((cdA > 0 && cdB < 0) || (cdA < 0 && cdB > 0))) return true;
-  return (Math.abs(abC) < 0.01 && onSegment(a, c, b)) ||
-    (Math.abs(abD) < 0.01 && onSegment(a, d, b)) ||
-    (Math.abs(cdA) < 0.01 && onSegment(c, a, d)) ||
-    (Math.abs(cdB) < 0.01 && onSegment(c, b, d));
-}
-
-function routesIntersect(a: Point[], b: Point[]): boolean {
-  for (let i = 0; i < a.length - 1; i++) {
-    for (let j = 0; j < b.length - 1; j++) {
-      if (segmentsIntersect(a[i]!, a[i + 1]!, b[j]!, b[j + 1]!)) return true;
-    }
-  }
-  return false;
-}
-
-function routeCrossesAny(points: Point[], routes: Point[][]): boolean {
-  return routes.some((route) => routesIntersect(points, route));
-}
-
 /**
  * Which obstacle ids (if any) a polyline's segments pass through. Obstacles
  * are shrunk by half a pixel on each side so a route that merely runs flush
@@ -367,6 +341,45 @@ function routeClearsComponents(points: Point[], obstacles: Obstacle[]): string[]
   return [...crossed];
 }
 
+/**
+ * Returns the length shared by two collinear axis-aligned segments. A
+ * zero-length touch (including an ordinary crossing) is deliberately not an
+ * overlap: crossings are allowed, while two connections sharing a visible
+ * run of the same line are not.
+ */
+function collinearOverlapLength(a0: Point, a1: Point, b0: Point, b1: Point): number {
+  const eps = 0.01;
+  const aHorizontal = Math.abs(a0.y - a1.y) < eps;
+  const bHorizontal = Math.abs(b0.y - b1.y) < eps;
+  if (aHorizontal && bHorizontal && Math.abs(a0.y - b0.y) < eps) {
+    return Math.max(0, Math.min(Math.max(a0.x, a1.x), Math.max(b0.x, b1.x)) - Math.max(Math.min(a0.x, a1.x), Math.min(b0.x, b1.x)));
+  }
+
+  const aVertical = Math.abs(a0.x - a1.x) < eps;
+  const bVertical = Math.abs(b0.x - b1.x) < eps;
+  if (aVertical && bVertical && Math.abs(a0.x - b0.x) < eps) {
+    return Math.max(0, Math.min(Math.max(a0.y, a1.y), Math.max(b0.y, b1.y)) - Math.max(Math.min(a0.y, a1.y), Math.min(b0.y, b1.y)));
+  }
+  return 0;
+}
+
+function overlappingConnectionIds(points: Point[], occupiedRoutes: OccupiedRoute[]): string[] {
+  const overlaps = new Set<string>();
+  for (let i = 0; i < points.length - 1; i++) {
+    const a0 = points[i]!;
+    const a1 = points[i + 1]!;
+    for (const occupied of occupiedRoutes) {
+      for (let j = 0; j < occupied.points.length - 1; j++) {
+        if (collinearOverlapLength(a0, a1, occupied.points[j]!, occupied.points[j + 1]!) > MIN_COLLINEAR_OVERLAP) {
+          overlaps.add(occupied.edgeKey);
+          break;
+        }
+      }
+    }
+  }
+  return [...overlaps];
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -377,13 +390,13 @@ function routeClearsComponents(points: Point[], obstacles: Obstacle[]): string[]
  * caller must already have filtered to exclude the two connected
  * components' own rects).
  *
- * Strategy order: `straight` when the ports are already axis-aligned and the
- * direct segment is clear; otherwise `h-first`/`v-first` dogleg candidates
- * built from short ROUTE_STUB stubs off each port; otherwise `outer-channel`
- * candidates that go around the outside of the bounding box of all
- * obstacles; if every candidate still crosses something, falls back to the
- * `h-first` candidate and reports the real crossings so validation can flag
- * `edge-crosses-component`.
+ * Strategy order: `straight` when the ports are already axis-aligned, then
+ * `h-first`/`v-first` doglegs built from short ROUTE_STUB stubs, then several
+ * `outer-channel` lanes around the full component bounding box. Candidates
+ * are rejected when they cross a component or reuse a collinear segment of
+ * an existing route; a point crossing remains valid. If every candidate has
+ * a conflict, the remaining component/line conflicts are returned so
+ * validation can require a component-layout correction.
  */
 export function routeConnection(
   fromRect: Rect,
@@ -391,14 +404,12 @@ export function routeConnection(
   toRect: Rect,
   toPort: Point,
   obstacles: Obstacle[],
-  avoidRoutes: Point[][] = [],
+  occupiedRoutes: OccupiedRoute[] = [],
 ): Route {
+  const candidates: Array<{ points: Point[]; strategy: Route["strategy"] }> = [];
   const axisAligned = Math.abs(fromPort.x - toPort.x) < 0.01 || Math.abs(fromPort.y - toPort.y) < 0.01;
   if (axisAligned) {
-    const straightPoints = [fromPort, toPort];
-    if (routeClearsComponents(straightPoints, obstacles).length === 0 && !routeCrossesAny(straightPoints, avoidRoutes)) {
-      return { points: straightPoints, strategy: "straight", crossedComponentIds: [] };
-    }
+    candidates.push({ points: [fromPort, toPort], strategy: "straight" });
   }
 
   const fromSide = sideOfPoint(fromRect, fromPort);
@@ -422,55 +433,54 @@ export function routeConnection(
     stubTo,
     toPort,
   ]);
+  candidates.push({ points: hFirst, strategy: "h-first" }, { points: vFirst, strategy: "v-first" });
 
-  const hCrossed = routeClearsComponents(hFirst, obstacles);
-  if (hCrossed.length === 0 && !routeCrossesAny(hFirst, avoidRoutes)) {
-    return { points: hFirst, strategy: "h-first", crossedComponentIds: [] };
-  }
-  const vCrossed = routeClearsComponents(vFirst, obstacles);
-  if (vCrossed.length === 0 && !routeCrossesAny(vFirst, avoidRoutes)) {
-    return { points: vFirst, strategy: "v-first", crossedComponentIds: [] };
-  }
-
-  if (obstacles.length > 0) {
-    const bbox = boundingBoxOf(obstacles);
-    const horizontalChannels = new Set([
-      bbox.y - ROUTE_CHANNEL,
-      bbox.y + bbox.h + ROUTE_CHANNEL,
-      ...obstacles.flatMap((obstacle) => [obstacle.y - ROUTE_CHANNEL, obstacle.y + obstacle.h + ROUTE_CHANNEL]),
-    ]);
-    const verticalChannels = new Set([
-      bbox.x - ROUTE_CHANNEL,
-      bbox.x + bbox.w + ROUTE_CHANNEL,
-      ...obstacles.flatMap((obstacle) => [obstacle.x - ROUTE_CHANNEL, obstacle.x + obstacle.w + ROUTE_CHANNEL]),
-    ]);
-    const channelCandidates: Point[][] = [
-      ...[...horizontalChannels].map((channelY) => dedupePoints([
-        fromPort,
-        stubFrom,
-        { x: stubFrom.x, y: channelY },
-        { x: stubTo.x, y: channelY },
-        stubTo,
-        toPort,
-      ])),
-      ...[...verticalChannels].map((channelX) => dedupePoints([
-        fromPort,
-        stubFrom,
-        { x: channelX, y: stubFrom.y },
-        { x: channelX, y: stubTo.y },
-        stubTo,
-        toPort,
-      ])),
-    ].filter((candidate) => routeClearsComponents(candidate, obstacles).length === 0 && !routeCrossesAny(candidate, avoidRoutes));
-    if (channelCandidates.length > 0) {
-      const shortest = channelCandidates.reduce((best, candidate) =>
-        polylineLength(candidate) < polylineLength(best) ? candidate : best,
-      );
-      return { points: shortest, strategy: "outer-channel", crossedComponentIds: [] };
-    }
+  // Generate several independent outer lanes even when there are no third-
+  // party obstacles. That gives a later connection somewhere to go when its
+  // otherwise-valid straight/dogleg route would reuse an existing line.
+  const bbox = boundingBoxOf([fromRect, toRect, ...obstacles]);
+  for (let lane = 0; lane < ROUTE_CHANNEL_LANES; lane++) {
+    const channelOffset = ROUTE_CHANNEL + lane * ROUTE_CHANNEL_LANE_GAP;
+    const top = bbox.y - channelOffset;
+    const bottom = bbox.y + bbox.h + channelOffset;
+    const left = bbox.x - channelOffset;
+    const right = bbox.x + bbox.w + channelOffset;
+    candidates.push(
+      {
+        strategy: "outer-channel",
+        points: dedupePoints([fromPort, stubFrom, { x: stubFrom.x, y: top }, { x: stubTo.x, y: top }, stubTo, toPort]),
+      },
+      {
+        strategy: "outer-channel",
+        points: dedupePoints([fromPort, stubFrom, { x: stubFrom.x, y: bottom }, { x: stubTo.x, y: bottom }, stubTo, toPort]),
+      },
+      {
+        strategy: "outer-channel",
+        points: dedupePoints([fromPort, stubFrom, { x: left, y: stubFrom.y }, { x: left, y: stubTo.y }, stubTo, toPort]),
+      },
+      {
+        strategy: "outer-channel",
+        points: dedupePoints([fromPort, stubFrom, { x: right, y: stubFrom.y }, { x: right, y: stubTo.y }, stubTo, toPort]),
+      },
+    );
   }
 
-  return { points: hFirst, strategy: "h-first", crossedComponentIds: hCrossed };
+  const evaluated = candidates.map((candidate) => ({
+    ...candidate,
+    crossedComponentIds: routeClearsComponents(candidate.points, obstacles),
+    overlappedConnectionIds: overlappingConnectionIds(candidate.points, occupiedRoutes),
+  }));
+  const clear = evaluated.find(
+    (candidate) => candidate.crossedComponentIds.length === 0 && candidate.overlappedConnectionIds.length === 0,
+  );
+  if (clear) return clear;
+
+  // If geometry makes a perfect route impossible, preserve component
+  // avoidance first and surface the remaining line overlap to validation so
+  // the authoring loop can move components instead of silently stacking it.
+  const componentClear = evaluated.find((candidate) => candidate.crossedComponentIds.length === 0);
+  if (componentClear) return componentClear;
+  return evaluated[0]!;
 }
 
 /**
@@ -492,9 +502,24 @@ export function shortenRouteEnd(points: Point[], distance: number): Point[] {
 
 /**
  * Builds an SVG path `d` string with quadratic-curve corner rounding at each
- * interior vertex. A corner is left sharp (drawn as a plain `L`) if either
- * adjacent segment is shorter than `radius`, so tiny doglegs don't produce
- * self-intersecting curves.
+ * interior vertex. A corner is left sharp (drawn as a plain `L`) if its
+ * effective radius (see below) rounds down to ~0, so tiny doglegs don't
+ * produce self-intersecting curves.
+ *
+ * When two interior corners are close together (their connecting segment
+ * shorter than `2 * radius`), each corner's "before"/"after" point would
+ * otherwise be computed independently at a full `radius` from that shared
+ * segment -- which, once the segment is shorter than `2 * radius`, makes the
+ * two points cross and the path double back on itself for a few pixels
+ * before curving on toward its actual direction. That's most visible right
+ * before a connection's endpoint, where it reads as the arrowhead not lining
+ * up with the curve. To prevent it, a corner's radius on a given side is
+ * capped to half that side's segment length, but *only* when the point on
+ * the other end of that segment is itself an interior corner that will also
+ * round (and thus also wants a share of the same segment) -- a corner next
+ * to the path's un-rounded start/end point still gets the full `radius`, so
+ * ordinary routes (where the near-endpoint segment is comfortably longer
+ * than `radius` but not necessarily `2 * radius`) are unaffected.
  */
 export function roundedPath(points: Point[], radius: number): string {
   if (points.length === 0) return "";
@@ -509,12 +534,17 @@ export function roundedPath(points: Point[], radius: number): string {
     const next = points[i + 1]!;
     const dPrev = dist(prev, curr);
     const dNext = dist(curr, next);
-    if (dPrev < radius || dNext < radius) {
+    const prevIsCorner = i - 1 >= 1;
+    const nextIsCorner = i + 1 <= points.length - 2;
+    const maxFromPrev = prevIsCorner ? dPrev / 2 : dPrev;
+    const maxFromNext = nextIsCorner ? dNext / 2 : dNext;
+    const effectiveRadius = Math.min(radius, maxFromPrev, maxFromNext);
+    if (effectiveRadius < 0.01) {
       d += ` L ${fmt(curr)}`;
       continue;
     }
-    const before = pointAt(prev, curr, radius);
-    const after = pointAt(next, curr, radius);
+    const before = pointAt(prev, curr, effectiveRadius);
+    const after = pointAt(next, curr, effectiveRadius);
     d += ` L ${fmt(before)} Q ${fmt(curr)} ${fmt(after)}`;
   }
   d += ` L ${fmt(points[points.length - 1]!)}`;
@@ -530,15 +560,9 @@ function pointAt(from: Point, to: Point, distance: number): Point {
   return { x: to.x + dx * t, y: to.y + dy * t };
 }
 
-function polylineLength(points: Point[]): number {
-  let total = 0;
-  for (let i = 1; i < points.length; i++) total += dist(points[i - 1]!, points[i]!);
-  return total;
-}
-
-function pointAlongPolyline(points: Point[], fraction: number): Point {
-  if (points.length === 0) return { x: 0, y: 0 };
-  if (points.length === 1) return points[0]!;
+function pointOnPolyline(points: Point[], fraction: number): { point: Point; direction: Point } {
+  if (points.length === 0) return { point: { x: 0, y: 0 }, direction: { x: 1, y: 0 } };
+  if (points.length === 1) return { point: points[0]!, direction: { x: 1, y: 0 } };
   const lengths: number[] = [];
   let total = 0;
   for (let i = 1; i < points.length; i++) {
@@ -553,11 +577,69 @@ function pointAlongPolyline(points: Point[], fraction: number): Point {
       const t = segLen === 0 ? 0 : target / segLen;
       const a = points[i]!;
       const b = points[i + 1]!;
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      return {
+        point: { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t },
+        direction: { x: b.x - a.x, y: b.y - a.y },
+      };
     }
     target -= segLen;
   }
-  return points[Math.floor(points.length / 2)]!;
+  const last = points[points.length - 1]!;
+  const previous = points[points.length - 2]!;
+  return { point: last, direction: { x: last.x - previous.x, y: last.y - previous.y } };
+}
+
+function expandRect(rect: Rect, amount: number): Rect {
+  return { x: rect.x - amount, y: rect.y - amount, w: rect.w + amount * 2, h: rect.h + amount * 2 };
+}
+
+function rectFitsViewBox(rect: Rect, viewBox: [number, number], margin = 4): boolean {
+  return rect.x >= margin && rect.y >= margin && rect.x + rect.w <= viewBox[0] - margin && rect.y + rect.h <= viewBox[1] - margin;
+}
+
+function connectionLabelCandidates(points: Point[], width: number): Rect[] {
+  const candidates: Rect[] = [];
+  for (const fraction of LABEL_ROUTE_FRACTIONS) {
+    const { point, direction } = pointOnPolyline(points, fraction);
+    const horizontal = Math.abs(direction.x) >= Math.abs(direction.y);
+    for (const offset of LABEL_ROUTE_OFFSETS) {
+      if (horizontal) {
+        candidates.push(
+          { x: point.x - width / 2, y: point.y - LABEL_HEIGHT - offset, w: width, h: LABEL_HEIGHT },
+          { x: point.x - width / 2, y: point.y + offset, w: width, h: LABEL_HEIGHT },
+        );
+      } else {
+        candidates.push(
+          { x: point.x + offset, y: point.y - LABEL_HEIGHT / 2, w: width, h: LABEL_HEIGHT },
+          { x: point.x - width - offset, y: point.y - LABEL_HEIGHT / 2, w: width, h: LABEL_HEIGHT },
+        );
+      }
+    }
+  }
+  return candidates;
+}
+
+function placeConnectionLabel(
+  points: Point[],
+  width: number,
+  placedConnectionLabels: Rect[],
+  componentRects: Rect[],
+  viewBox: [number, number],
+): Rect {
+  const candidates = connectionLabelCandidates(points, width);
+  const inBounds = candidates.filter((candidate) => rectFitsViewBox(candidate, viewBox));
+  const available = inBounds.filter((candidate) =>
+    placedConnectionLabels.every((placed) => !rectsIntersect(expandRect(candidate, LABEL_GAP), placed)),
+  );
+  const fullyClear = available.find((candidate) =>
+    componentRects.every((component) => !rectsIntersect(expandRect(candidate, LABEL_GAP / 2), component)),
+  );
+
+  // Relationship-to-relationship separation has priority. If a very tight
+  // canvas makes every candidate touch a component, the late label paint
+  // layer still keeps the text readable; it must not stack on another
+  // relationship label.
+  return fullyClear ?? available[0] ?? inBounds[0] ?? candidates[0]!;
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +681,36 @@ export function labelMaskWidth(text: string, fontSize = 13): number {
   return labelDisplayWidth(text, fontSize) + 8;
 }
 
+/**
+ * Max display width (px, same scale as `labelDisplayWidth`) a connection
+ * label is allowed before `truncateLabelForDisplay` starts trimming it. Sized
+ * against `labelDisplayWidth`'s default fontSize (13) so a handful of Latin
+ * words -- or a shorter CJK phrase -- fit before truncation kicks in.
+ */
+export const MAX_CONNECTION_LABEL_WIDTH = 96;
+
+/**
+ * Trims characters off the end of `label` and appends "…" until the
+ * estimated display width (via `labelDisplayWidth`, ellipsis included) fits
+ * within `maxWidth`. Returns the original label unchanged when it already
+ * fits. Both renderer and validator (if either grows a use for this) MUST
+ * call this same function so they can't disagree about what got truncated.
+ */
+export function truncateLabelForDisplay(label: string, maxWidth: number): { display: string; truncated: boolean } {
+  if (labelDisplayWidth(label) <= maxWidth) {
+    return { display: label, truncated: false };
+  }
+  const ellipsis = "…";
+  const chars = [...label];
+  for (let n = chars.length - 1; n > 0; n--) {
+    const candidate = chars.slice(0, n).join("") + ellipsis;
+    if (labelDisplayWidth(candidate) <= maxWidth) {
+      return { display: candidate, truncated: true };
+    }
+  }
+  return { display: ellipsis, truncated: true };
+}
+
 // ---------------------------------------------------------------------------
 // Layout: the single shared function renderer + validator both call
 // ---------------------------------------------------------------------------
@@ -609,7 +721,8 @@ export type SystemMapLayout = {
   labelRects: Map<string, Rect>;
 };
 
-const LABEL_HEIGHT = 16;
+export const LABEL_HEIGHT = 16;
+export const LABEL_TEXT_BASELINE = 12;
 
 export function calculateSystemMapLayout(doc: SystemMapDocument): SystemMapLayout {
   const componentRects = new Map<string, Rect>();
@@ -623,7 +736,7 @@ export function calculateSystemMapLayout(doc: SystemMapDocument): SystemMapLayou
     const fromRect = componentRects.get(conn.from);
     const toRect = componentRects.get(conn.to);
     if (!fromRect || !toRect) {
-      routes.set(edgeKey, { points: [], strategy: "straight", crossedComponentIds: [] });
+      routes.set(edgeKey, { points: [], strategy: "straight", crossedComponentIds: [], overlappedConnectionIds: [] });
       return;
     }
     const fromPort = portPoints.get(`${edgeKey}#from`) ?? { x: fromRect.x, y: fromRect.y };
@@ -631,9 +744,16 @@ export function calculateSystemMapLayout(doc: SystemMapDocument): SystemMapLayou
     const obstacles: Obstacle[] = doc.components
       .filter((c) => c.id !== conn.from && c.id !== conn.to)
       .map((c) => ({ id: c.id, ...componentRect(c) }));
-    const routed = routeConnection(fromRect, fromPort, toRect, toPort, obstacles, [...routes.values()].map((route) => route.points));
+    const occupiedRoutes = [...routes].map(([occupiedEdgeKey, route]) => ({ edgeKey: occupiedEdgeKey, points: route.points }));
+    const routed = routeConnection(fromRect, fromPort, toRect, toPort, obstacles, occupiedRoutes);
     const points = shortenRouteEnd(routed.points, ARROW_SHORTEN_DISTANCE);
-    routes.set(edgeKey, { points, strategy: routed.strategy, crossedComponentIds: routed.crossedComponentIds });
+    const finalOverlaps = overlappingConnectionIds(points, occupiedRoutes);
+    routes.set(edgeKey, {
+      points,
+      strategy: routed.strategy,
+      crossedComponentIds: routed.crossedComponentIds,
+      overlappedConnectionIds: finalOverlaps,
+    });
   });
 
   const labelRects = new Map<string, Rect>();
@@ -646,24 +766,18 @@ export function calculateSystemMapLayout(doc: SystemMapDocument): SystemMapLayou
     const y = rect.y + rect.h - LABEL_HEIGHT - 6;
     labelRects.set(`component-sublabel:${c.id}`, { x, y, w: width, h: LABEL_HEIGHT });
   }
+  const placedConnectionLabels: Rect[] = [];
+  const allComponentRects = [...componentRects.values()];
+  const viewBox = doc.viewBox ?? DEFAULT_SYSTEM_MAP_VIEW_BOX;
   doc.connections.forEach((conn, i) => {
     if (!conn.label) return;
     const edgeKey = edgeKeyFor(conn, i);
     const route = routes.get(edgeKey);
     if (!route || route.points.length === 0) return;
     const width = labelMaskWidth(conn.label);
-    const otherRoutes = [...routes.entries()].filter(([key]) => key !== edgeKey).map(([, value]) => value.points);
-    const occupiedLabels = [...labelRects.values()];
-    const candidates = [0.5, 0.4, 0.6, 0.3, 0.7].map((fraction) => {
-      const point = pointAlongPolyline(route.points, fraction);
-      return { x: point.x - width / 2, y: point.y - LABEL_HEIGHT / 2, w: width, h: LABEL_HEIGHT };
-    });
-    const chosen = candidates.find((candidate) =>
-      ![...componentRects.values()].some((rect) => rectsIntersect(candidate, rect)) &&
-      !occupiedLabels.some((rect) => rectsIntersect(candidate, rect)) &&
-      !otherRoutes.some((points) => routeIntersectsRect(points, candidate)),
-    ) ?? candidates[0]!;
-    labelRects.set(`connection-label:${edgeKey}`, chosen);
+    const labelRect = placeConnectionLabel(route.points, width, placedConnectionLabels, allComponentRects, viewBox);
+    labelRects.set(`connection-label:${edgeKey}`, labelRect);
+    placedConnectionLabels.push(labelRect);
   });
 
   return { componentRects, routes, labelRects };
@@ -673,9 +787,9 @@ export function calculateSystemMapLayout(doc: SystemMapDocument): SystemMapLayou
 // Geometry diagnostics
 // ---------------------------------------------------------------------------
 
-export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
+export function checkSystemMapGeometry(doc: SystemMapDocument): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  const viewBox = doc.viewBox ?? DEFAULT_ARCHITECTURE_VIEW_BOX;
+  const viewBox = doc.viewBox ?? DEFAULT_SYSTEM_MAP_VIEW_BOX;
   const { componentRects, routes, labelRects } = calculateSystemMapLayout(doc);
   const componentIds = new Set(doc.components.map((c) => c.id));
 
@@ -683,7 +797,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     const rect = componentRects.get(c.id)!;
     if (rect.w <= 0 || rect.h <= 0) {
       diagnostics.push({
-        code: "system-map/invalid-size",
+        code: "architecture-view/invalid-size",
         severity: "error",
         message: `Component "${c.id}" has non-positive size [${rect.w}, ${rect.h}].`,
         subject: c.id,
@@ -694,7 +808,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     }
     if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > viewBox[0] || rect.y + rect.h > viewBox[1]) {
       diagnostics.push({
-        code: "system-map/out-of-bounds",
+        code: "architecture-view/out-of-bounds",
         severity: "error",
         message: `Component "${c.id}" extends outside the viewBox [${viewBox[0]}, ${viewBox[1]}].`,
         subject: c.id,
@@ -714,7 +828,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
       const gap = rectGap(a, b);
       if (gap < MIN_COMPONENT_GAP) {
         diagnostics.push({
-          code: "system-map/overlap",
+          code: "architecture-view/overlap",
           severity: "error",
           message: `Components "${idA}" and "${idB}" are ${
             gap <= 0 ? "overlapping" : `only ${gap.toFixed(1)}px apart`
@@ -731,7 +845,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     for (const wrapped of b.wraps) {
       if (!componentIds.has(wrapped)) {
         diagnostics.push({
-          code: "system-map/dangling-boundary-ref",
+          code: "architecture-view/dangling-boundary-ref",
           severity: "error",
           message: `Boundary "${b.label}" wraps unknown component id "${wrapped}".`,
           subject: wrapped,
@@ -746,7 +860,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     const edgeKey = edgeKeyFor(conn, i);
     if (!componentIds.has(conn.from)) {
       diagnostics.push({
-        code: "system-map/dangling-connection-ref",
+        code: "architecture-view/dangling-connection-ref",
         severity: "error",
         message: `Connection "${edgeKey}" references unknown "from" component id "${conn.from}".`,
         subject: edgeKey,
@@ -756,7 +870,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     }
     if (!componentIds.has(conn.to)) {
       diagnostics.push({
-        code: "system-map/dangling-connection-ref",
+        code: "architecture-view/dangling-connection-ref",
         severity: "error",
         message: `Connection "${edgeKey}" references unknown "to" component id "${conn.to}".`,
         subject: edgeKey,
@@ -775,7 +889,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
     if (count > 1) {
       const [a, b] = pair.split("|") as [string, string];
       diagnostics.push({
-        code: "system-map/duplicate-connection",
+        code: "architecture-view/duplicate-connection",
         severity: "warning",
         message: `${count} connections share the same endpoints "${a}" and "${b}".`,
         subject: `${a},${b}`,
@@ -793,8 +907,8 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
   for (const c of doc.components) {
     if (!connected.has(c.id)) {
       diagnostics.push({
-        code: "system-map/component-disconnected",
-        severity: "error",
+        code: "architecture-view/component-disconnected",
+        severity: "warning",
         message: `Component "${c.id}" has no connections.`,
         subject: c.id,
         supportedFixes: [`add at least one connection to/from "${c.id}", or remove it`],
@@ -805,7 +919,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
   for (const [edgeKey, route] of routes) {
     if (route.crossedComponentIds.length > 0) {
       diagnostics.push({
-        code: "system-map/edge-crosses-component",
+        code: "architecture-view/edge-crosses-component",
         severity: "error",
         message: `Connection "${edgeKey}" route crosses component(s) ${route.crossedComponentIds.join(", ")}.`,
         subject: edgeKey,
@@ -813,53 +927,17 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
         supportedFixes: [`reposition "${edgeKey}"'s endpoints or the crossed component(s) so the route can go around them`],
       });
     }
-    if (route.points.length >= 2) {
-      const routeLength = polylineLength(route.points);
-      const directLength = dist(route.points[0]!, route.points[route.points.length - 1]!);
-      const detourRatio = directLength > 0 ? routeLength / directLength : 1;
-      if (routeLength > 300 && detourRatio > 2) {
-        diagnostics.push({
-          code: "system-map/edge-excessive-detour",
-          severity: "error",
-          message: `Connection "${edgeKey}" takes an excessive detour (${detourRatio.toFixed(2)}x its direct distance).`,
-          subject: edgeKey,
-          evidence: { routeLength, directLength, detourRatio, strategy: route.strategy },
-          supportedFixes: ["reposition its endpoints or intervening components so the connection has a shorter clear channel"],
-        });
-      }
-    }
-  }
-
-  const routeEntries = [...routes.entries()];
-  for (let i = 0; i < routeEntries.length; i++) {
-    for (let j = i + 1; j < routeEntries.length; j++) {
-      const [keyA, routeA] = routeEntries[i]!;
-      const [keyB, routeB] = routeEntries[j]!;
-      if (routesIntersect(routeA.points, routeB.points)) {
-        diagnostics.push({
-          code: "system-map/edge-collision",
-          severity: "error",
-          message: `Connections "${keyA}" and "${keyB}" overlap or cross.`,
-          subject: `${keyA},${keyB}`,
-          supportedFixes: ["reposition the connected components so the two routes no longer overlap or cross"],
-        });
-      }
-    }
-  }
-
-  for (const [labelKey, labelRect] of labelRects) {
-    if (!labelKey.startsWith("connection-label:")) continue;
-    const ownEdgeKey = labelKey.slice("connection-label:".length);
-    for (const [edgeKey, route] of routes) {
-      if (edgeKey !== ownEdgeKey && routeIntersectsRect(route.points, labelRect)) {
-        diagnostics.push({
-          code: "system-map/edge-label-collision",
-          severity: "error",
-          message: `Connection "${edgeKey}" crosses label "${labelKey}".`,
-          subject: `${edgeKey},${labelKey}`,
-          supportedFixes: ["move the connected components or shorten the label so the route clears it"],
-        });
-      }
+    if (route.overlappedConnectionIds.length > 0) {
+      diagnostics.push({
+        code: "architecture-view/edge-overlap",
+        severity: "error",
+        message: `Connection "${edgeKey}" shares a collinear line segment with connection(s) ${route.overlappedConnectionIds.join(", ")}. Crossings are allowed, but connections must not reuse the same line.`,
+        subject: [edgeKey, ...route.overlappedConnectionIds].join(","),
+        evidence: { overlappedConnectionIds: route.overlappedConnectionIds, strategy: route.strategy },
+        supportedFixes: [
+          `move one or more endpoint components for "${edgeKey}" so the automatic router can assign separate lanes; a point crossing is allowed, but a shared horizontal/vertical run is not`,
+        ],
+      });
     }
   }
 
@@ -870,11 +948,11 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
       const entryB = labelEntries[j]!;
       if (rectsIntersect(entryA[1], entryB[1])) {
         diagnostics.push({
-          code: "system-map/label-collision",
-          severity: "warning",
+          code: "architecture-view/label-collision",
+          severity: "error",
           message: `Labels "${entryA[0]}" and "${entryB[0]}" overlap.`,
           subject: `${entryA[0]},${entryB[0]}`,
-          supportedFixes: [`shorten one of the labels, or move the components/connections apart`],
+          supportedFixes: [`shorten one of the labels or move its connected components so the automatic label placer has a free position`],
         });
       }
     }
@@ -887,7 +965,7 @@ export function checkGeometry(doc: SystemMapDocument): Diagnostic[] {
       const ratio = bbox.h / bbox.w;
       if (ratio < 0.15 || ratio > 1 / 0.15) {
         diagnostics.push({
-          code: "system-map/viewbox-balance",
+          code: "architecture-view/viewbox-balance",
           severity: "warning",
           message: `Component layout bounding box is extremely ${ratio < 0.15 ? "flat" : "tall"} (w=${bbox.w.toFixed(
             0,

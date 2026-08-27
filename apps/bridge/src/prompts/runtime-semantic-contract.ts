@@ -28,5 +28,5 @@ Prefer naming a responsibility for what it does, not for the framework/library/v
 - Do not invent an actor, runtime, responsibility, state, external, or interaction you have not actually seen evidence for. No unfounded guesses -- if you are not sure something exists, leave it out rather than fabricate it.
 - Every responsibility, state, external, and interaction needs at least one real \`sources[]\` citation (\`path\`, optionally \`line\`/\`endLine\`) pointing at code you actually read.
 - Do not think about coordinates, layout, boxes, or geometry at this stage. This document has no \`pos\`/\`size\` fields at all -- that is a later, separate stage.
-- Do not create separate or duplicate semantic entities to account for the simple vs. technical presentation split. There is exactly one semantic model; \`simple\`/\`technical\` differences are display-only and belong to a later stage, never to this one.`;
+- There is exactly one semantic model -- author it faithfully from repository evidence.`;
 }

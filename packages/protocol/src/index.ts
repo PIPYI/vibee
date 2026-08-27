@@ -1020,20 +1020,6 @@ export type SystemMapSource = {
 /** RuntimeSemanticDocument 엔티티의 역할 */
 export type SystemMapSemanticRole = "actor" | "responsibility" | "state" | "external";
 
-export type SystemMapAudience = "simple" | "technical";
-
-/** 청중별 표현 재정의. 의미론적 정체성, 위상, 기하학을 바꾸면 안 된다. */
-export type PresentationOverride = {
-  label?: string;
-  sublabel?: string | null;
-  visibility?: "show" | "hide";
-};
-
-export type AudiencePresentation = {
-  simple?: PresentationOverride;
-  technical?: PresentationOverride;
-};
-
 export type SystemMapComponent = {
   id: string;
   type: SystemMapComponentType;
@@ -1041,7 +1027,6 @@ export type SystemMapComponent = {
   semanticRefs: string[];
   label: string;
   sublabel?: string;
-  presentation?: AudiencePresentation;
   pos: [number, number];
   size: [number, number];
   sources?: SystemMapSource[];
@@ -1052,7 +1037,6 @@ export type SystemMapBoundary = {
   kind: "runtime" | "region" | "security-group";
   semanticRefs?: string[];
   label: string;
-  presentation?: AudiencePresentation;
   wraps: string[];
   pad?: number;
 };
@@ -1063,7 +1047,6 @@ export type SystemMapConnection = {
   to: string;
   semanticRefs?: string[];
   label?: string;
-  presentation?: AudiencePresentation;
   variant?: "default" | "emphasis" | "security" | "dashed";
 };
 
@@ -1078,10 +1061,6 @@ export type SystemMapDocument = {
   title: string;
   viewBox?: [number, number];
   repository?: { url?: string; revision?: string };
-  presentation?: {
-    defaultAudience: "simple";
-    availableAudiences: SystemMapAudience[];
-  };
   components: SystemMapComponent[];
   boundaries: SystemMapBoundary[];
   connections: SystemMapConnection[];
