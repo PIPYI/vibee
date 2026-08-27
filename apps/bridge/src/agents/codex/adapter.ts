@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentEvent, ModelOption } from "@vibee/protocol";
 import { VIBEE_BRIDGE_TOKEN_ENV, VIBEE_BRIDGE_URL_ENV } from "@vibee/protocol";
 import { mcpServerEntryPath, nodeExecutable } from "../../platform.js";
 import type { AgentAdapter, StartTaskInput } from "../types.js";
-import { CodexAppServerClient, type ServerRequest } from "./app-server-client.js";
+import { CodexAppServerClient, type ServerRequest } from "./appServerClient.js";
 
 const execFileAsync = promisify(execFile);
 const MCP_SERVER_NAME = "vibee";
@@ -22,6 +24,8 @@ const APPROVAL_POLICY = {
 type RunningTask = {
   taskId: string;
   threadId: string;
+  projectPath: string;
+  exploredFiles: Set<string>;
   turnId?: string;
   emit: (event: AgentEvent) => void;
   settle: (outcome: "completed" | "interrupted" | "error", message?: string) => void;
@@ -31,6 +35,126 @@ type CodexModel = {
   id: string;
   displayName: string;
 };
+
+type CodexCommandAction =
+  | { type: "read"; path: string }
+  | { type: "listFiles"; path: string | null }
+  | { type: "search"; path: string | null }
+  | { type: "unknown" };
+
+type ThreadItem = {
+  type: string;
+  command?: string;
+  server?: string;
+  tool?: string;
+  commandActions?: CodexCommandAction[];
+};
+
+type RawResponseItem = {
+  type: string;
+  name?: string;
+  input?: string;
+};
+
+/** Returns only structured Codex read targets that stay inside the analyzed project. */
+export function exploredFilesFromCommandActions(
+  actions: readonly CodexCommandAction[] | undefined,
+  projectPath: string,
+): string[] {
+  const files = new Set<string>();
+  for (const action of actions ?? []) {
+    if (action.type !== "read") continue;
+    const absolutePath = path.resolve(projectPath, action.path);
+    const relativePath = path.relative(projectPath, absolutePath);
+    if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+      continue;
+    }
+    files.add(absolutePath);
+  }
+  return [...files];
+}
+
+function stringProperties(source: string, property: string): string[] {
+  const values: string[] = [];
+  const pattern = new RegExp(`(?:"${property}"|${property})\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`, "g");
+  for (const match of source.matchAll(pattern)) {
+    const literal = match[1];
+    if (!literal) continue;
+    try {
+      values.push(JSON.parse(literal) as string);
+    } catch {
+      // Ignore malformed code-mode input instead of evaluating model-authored JavaScript.
+    }
+  }
+  return values;
+}
+
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const character of command) {
+    if (escaped) {
+      word += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote) {
+      if (character === quote) quote = null;
+      else word += character;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/.test(character) || ";&|()".includes(character)) {
+      if (word) words.push(word);
+      word = "";
+    } else {
+      word += character;
+    }
+  }
+  if (word) words.push(word);
+  return words;
+}
+
+/** Extracts existing project files named in code-mode exec_command calls without evaluating their JavaScript. */
+export function exploredFilesFromExecInput(input: string, projectPath: string): string[] {
+  const bases = new Set([path.resolve(projectPath)]);
+  for (const workdir of stringProperties(input, "workdir")) {
+    const absoluteWorkdir = path.resolve(projectPath, workdir);
+    const relativeWorkdir = path.relative(projectPath, absoluteWorkdir);
+    if (relativeWorkdir !== ".." && !relativeWorkdir.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeWorkdir)) {
+      bases.add(absoluteWorkdir);
+    }
+  }
+
+  const files = new Set<string>();
+  for (const command of stringProperties(input, "cmd")) {
+    for (const word of shellWords(command)) {
+      if (!word || word.startsWith("-")) continue;
+      for (const base of bases) {
+        const absolutePath = path.resolve(base, word);
+        const relativePath = path.relative(projectPath, absolutePath);
+        if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+          continue;
+        }
+        try {
+          if (statSync(absolutePath).isFile()) files.add(absolutePath);
+        } catch {
+          // Shell words are only candidates; most are commands, flags, or search expressions.
+        }
+      }
+    }
+  }
+  return [...files];
+}
+
+export function mcpToolsFromExecInput(input: string): string[] {
+  const tools = new Set<string>();
+  for (const match of input.matchAll(/tools\.(mcp__vibee__[a-zA-Z0-9_]+)\s*\(/g)) {
+    if (match[1]) tools.add(match[1]);
+  }
+  return [...tools];
+}
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -70,7 +194,7 @@ export function createCodexAdapter(config: { bridgeUrl: string; bridgeToken: str
       threadId?: string;
       delta?: string;
       turn?: { id: string; status?: string; error?: { message?: string } };
-      item?: { type?: string; tool?: string };
+      item?: ThreadItem;
       error?: { message?: string };
     };
     const task = params.threadId ? tasksByThread.get(params.threadId) : undefined;
@@ -84,9 +208,10 @@ export function createCodexAdapter(config: { bridgeUrl: string; bridgeToken: str
         if (params.delta) task.emit({ type: "agent.message.delta", taskId: task.taskId, text: params.delta });
         break;
       case "item/started":
-        if (params.item?.type === "mcpToolCall" && params.item.tool) {
-          task.emit({ type: "mcp.tool.called", taskId: task.taskId, tool: params.item.tool });
-        }
+        if (params.item) emitItem(task, params.item);
+        break;
+      case "rawResponseItem/completed":
+        if (params.item) emitRawResponseItem(task, params.item);
         break;
       case "turn/completed": {
         const status = params.turn?.status ?? "completed";
@@ -99,6 +224,31 @@ export function createCodexAdapter(config: { bridgeUrl: string; bridgeToken: str
         task.settle("error", params.error?.message ?? "Codex reported an error");
         break;
     }
+  }
+
+  function emitItem(task: RunningTask, item: ThreadItem): void {
+    if (item.type === "mcpToolCall" && item.tool) {
+      task.emit({ type: "mcp.tool.called", taskId: task.taskId, tool: item.tool });
+      return;
+    }
+    if (item.type !== "commandExecution") return;
+    for (const filePath of exploredFilesFromCommandActions(item.commandActions, task.projectPath)) {
+      emitExploredFile(task, filePath);
+    }
+  }
+
+  function emitRawResponseItem(task: RunningTask, item: RawResponseItem): void {
+    if (item.type !== "custom_tool_call" || item.name !== "exec" || !item.input) return;
+    for (const filePath of exploredFilesFromExecInput(item.input, task.projectPath)) emitExploredFile(task, filePath);
+    for (const tool of mcpToolsFromExecInput(item.input)) {
+      task.emit({ type: "mcp.tool.called", taskId: task.taskId, tool });
+    }
+  }
+
+  function emitExploredFile(task: RunningTask, filePath: string): void {
+    if (task.exploredFiles.has(filePath)) return;
+    task.exploredFiles.add(filePath);
+    task.emit({ type: "agent.file.explored", taskId: task.taskId, path: filePath });
   }
 
   async function ensureClient(): Promise<CodexAppServerClient> {
@@ -116,12 +266,13 @@ export function createCodexAdapter(config: { bridgeUrl: string; bridgeToken: str
     starting = (async () => {
       const next = new CodexAppServerClient({
         args,
-        onNotification: handleNotification,
-        onRequest: handleRequest,
-        onExit: (message) => {
+        onNotification: (notification) => handleNotification(notification.method, notification.params),
+        onServerRequest: handleRequest,
+        onStderr: (chunk) => console.error(`[codex] ${chunk.trimEnd()}`),
+        onExit: (code, signal) => {
           client = null;
           starting = null;
-          failRunningTasks(message);
+          failRunningTasks(`Codex app-server exited (code=${code} signal=${signal})`);
         },
       });
       await next.start();
@@ -208,6 +359,8 @@ export function createCodexAdapter(config: { bridgeUrl: string; bridgeToken: str
           const task: RunningTask = {
             taskId: input.taskId,
             threadId: currentThreadId,
+            projectPath: input.projectPath,
+            exploredFiles: new Set(),
             emit,
             settle: (result, message) => {
               if (!tasksByThread.delete(currentThreadId)) return;

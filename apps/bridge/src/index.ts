@@ -78,9 +78,12 @@ app.use(express.json({ limit: "10mb" }));
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 const wsClients = new Set<WebSocket>();
+const MAX_BUFFERED_EVENTS = 500;
+const eventBuffer: AgentEvent[] = [];
 
 wss.on("connection", (socket) => {
   wsClients.add(socket);
+  for (const event of eventBuffer) socket.send(JSON.stringify(event));
   socket.on("close", () => wsClients.delete(socket));
 });
 
@@ -91,6 +94,9 @@ wss.on("connection", (socket) => {
  * watching the one active task.
  */
 function emit(event: AgentEvent): void {
+  if (event.type === "task.started") eventBuffer.length = 0;
+  eventBuffer.push(event);
+  if (eventBuffer.length > MAX_BUFFERED_EVENTS) eventBuffer.shift();
   const payload = JSON.stringify(event);
   for (const socket of wsClients) {
     if (socket.readyState === socket.OPEN) socket.send(payload);

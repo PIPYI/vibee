@@ -13,11 +13,9 @@ const RECONNECT_DELAY_MS = 2000;
  * That keeps a Windows browser + WSL bridge on the same reliable path as
  * the API proxy rather than making the browser reach the bridge directly.
  *
- * Reconnects on close with a fixed delay. Per the plan this is explicitly
- * MVP-scoped: no exponential backoff and no resync-on-reconnect (a missed
- * event during a drop is simply lost -- acceptable since the bridge only
- * ever runs one task at a time and the UI's own state machine tolerates a
- * gap by re-fetching GET /api/architecture-view on "committed").
+ * Reconnects on close with a fixed delay. The bridge replays its bounded
+ * current-task event buffer to each new connection, so events emitted while
+ * this socket is opening are not lost.
  *
  * Returns an unsubscribe function that closes the socket and stops
  * reconnect attempts.

@@ -13,12 +13,15 @@ type JsonRpcMessage = {
 };
 
 export type ServerRequest = { id: JsonRpcId; method: string; params: unknown };
+export type ServerNotification = { method: string; params: unknown };
 
-type Options = {
-  args: string[];
-  onNotification: (method: string, params: unknown) => void;
-  onRequest: (request: ServerRequest) => Promise<unknown>;
-  onExit: (message: string) => void;
+export type CodexAppServerClientOptions = {
+  command?: string;
+  args?: string[];
+  onNotification: (notification: ServerNotification) => void;
+  onServerRequest: (request: ServerRequest) => Promise<unknown>;
+  onStderr?: (chunk: string) => void;
+  onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
 };
 
 /** Minimal newline-delimited JSON-RPC client for `codex app-server`. */
@@ -31,29 +34,32 @@ export class CodexAppServerClient {
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
   >();
 
-  constructor(private readonly options: Options) {}
+  constructor(private readonly options: CodexAppServerClientOptions) {}
 
-  async start(): Promise<void> {
-    const child = spawn("codex", this.options.args, { stdio: ["pipe", "pipe", "pipe"] });
+  async start(): Promise<{ userAgent: string; codexHome: string }> {
+    const child = spawn(this.options.command ?? "codex", this.options.args ?? ["app-server"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     this.child = child;
 
     child.on("error", (error) => this.failAll(new Error(`Codex app-server failed to start: ${error.message}`)));
     child.on("exit", (code, signal) => {
       const message = `Codex app-server exited (code=${code} signal=${signal})`;
       this.failAll(new Error(message));
-      this.options.onExit(message);
+      this.options.onExit?.(code, signal);
     });
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => console.error(`[codex] ${chunk.trimEnd()}`));
+    child.stderr.on("data", (chunk: string) => this.options.onStderr?.(chunk));
 
     this.reader = createInterface({ input: child.stdout });
     this.reader.on("line", (line) => this.handleLine(line));
 
-    await this.request("initialize", {
+    const initialize = (await this.request("initialize", {
       clientInfo: { name: "vibee-bridge", title: "Vibee Bridge", version: "0.1.0" },
       capabilities: { experimentalApi: true, requestAttestation: false },
-    });
+    })) as { userAgent: string; codexHome: string };
     this.notify("initialized", {});
+    return initialize;
   }
 
   request(method: string, params: unknown): Promise<unknown> {
@@ -91,7 +97,7 @@ export class CodexAppServerClient {
     if (message.id !== undefined && message.method) {
       const request = { id: message.id, method: message.method, params: message.params };
       void this.options
-        .onRequest(request)
+        .onServerRequest(request)
         .then((result) => this.send({ jsonrpc: "2.0", id: request.id, result }))
         .catch((error: unknown) =>
           this.send({
@@ -103,7 +109,7 @@ export class CodexAppServerClient {
       return;
     }
 
-    if (message.method) this.options.onNotification(message.method, message.params);
+    if (message.method) this.options.onNotification({ method: message.method, params: message.params });
   }
 
   private send(message: JsonRpcMessage): void {
