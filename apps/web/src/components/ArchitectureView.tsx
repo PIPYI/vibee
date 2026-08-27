@@ -19,10 +19,15 @@ const ENTITY_ATTR: Record<SelectedArchitectureEntity["kind"], string> = {
   connection: "data-connection-id",
 };
 const SELECTED_CLASS = "av-selected";
+const HOVER_CLASS = "av-hover-active";
 
 function parseSemanticRefs(el: Element): string[] {
   const raw = el.getAttribute("data-semantic-refs");
   return raw ? raw.split(",") : [];
+}
+
+function connectionSelector(connectionId: string): string {
+  return `[data-connection-id="${CSS.escape(connectionId)}"]`;
 }
 
 export function ArchitectureView({ document: doc, svg, meta }: Props) {
@@ -44,9 +49,29 @@ export function ArchitectureView({ document: doc, svg, meta }: Props) {
     container.querySelectorAll(`.${SELECTED_CLASS}`).forEach((el) => el.classList.remove(SELECTED_CLASS));
     if (!selected) return;
     const attr = ENTITY_ATTR[selected.kind];
-    const match = container.querySelector(`[${attr}="${CSS.escape(selected.id)}"]`);
-    match?.classList.add(SELECTED_CLASS);
+    container.querySelectorAll(`[${attr}="${CSS.escape(selected.id)}"]`).forEach((el) => el.classList.add(SELECTED_CLASS));
   }, [selected, svg]);
+
+  function setConnectionHover(connectionId: string, active: boolean) {
+    const container = mountRef.current;
+    if (!container) return;
+    const connectionParts = [...container.querySelectorAll(connectionSelector(connectionId))];
+    connectionParts.forEach((part) => part.classList.toggle(HOVER_CLASS, active));
+
+    const connection = connectionParts[0];
+    const fromId = connection?.getAttribute("data-edge-from");
+    const toId = connection?.getAttribute("data-edge-to");
+    if (fromId) {
+      container
+        .querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)
+        ?.classList.toggle(HOVER_CLASS, active);
+    }
+    if (toId) {
+      container
+        .querySelector(`[data-component-id="${CSS.escape(toId)}"]`)
+        ?.classList.toggle(HOVER_CLASS, active);
+    }
+  }
 
   function handleMountClick(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element;
@@ -72,32 +97,11 @@ export function ArchitectureView({ document: doc, svg, meta }: Props) {
 
     // Clear previous hover
     if (hoveredConnectionRef.current) {
-      const prevConnection = mountRef.current?.querySelector(
-        `[data-connection-id="${CSS.escape(hoveredConnectionRef.current)}"]`
-      );
-      if (prevConnection) {
-        prevConnection.classList.remove("av-hover-active");
-        const fromId = prevConnection.getAttribute("data-edge-from");
-        const toId = prevConnection.getAttribute("data-edge-to");
-        if (fromId) {
-          mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.remove("av-hover-active");
-        }
-        if (toId) {
-          mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.remove("av-hover-active");
-        }
-      }
+      setConnectionHover(hoveredConnectionRef.current, false);
     }
 
     // Apply new hover
-    connection.classList.add("av-hover-active");
-    const fromId = connection.getAttribute("data-edge-from");
-    const toId = connection.getAttribute("data-edge-to");
-    if (fromId) {
-      mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.add("av-hover-active");
-    }
-    if (toId) {
-      mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.add("av-hover-active");
-    }
+    setConnectionHover(connectionId, true);
 
     hoveredConnectionRef.current = connectionId;
   }
@@ -105,33 +109,15 @@ export function ArchitectureView({ document: doc, svg, meta }: Props) {
   function handleMountMouseOut(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element;
     const connection = target.closest("[data-connection-id]");
-    if (!connection || connection !== target.closest("[data-connection-id]")) return;
+    if (!connection) return;
 
-    // Check if we're leaving the connection entirely
     const relatedTarget = e.relatedTarget as Element | null;
-    const connectionElement = mountRef.current?.querySelector(
-      `[data-connection-id="${CSS.escape(hoveredConnectionRef.current || "")}"]`
-    );
+    const connectionId = connection.getAttribute("data-connection-id");
+    const relatedConnectionId = relatedTarget?.closest?.("[data-connection-id]")?.getAttribute("data-connection-id");
+    if (!connectionId || relatedConnectionId === connectionId || hoveredConnectionRef.current !== connectionId) return;
 
-    if (!relatedTarget || !connectionElement?.contains(relatedTarget)) {
-      if (hoveredConnectionRef.current) {
-        const prevConnection = mountRef.current?.querySelector(
-          `[data-connection-id="${CSS.escape(hoveredConnectionRef.current)}"]`
-        );
-        if (prevConnection) {
-          prevConnection.classList.remove("av-hover-active");
-          const fromId = prevConnection.getAttribute("data-edge-from");
-          const toId = prevConnection.getAttribute("data-edge-to");
-          if (fromId) {
-            mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.remove("av-hover-active");
-          }
-          if (toId) {
-            mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.remove("av-hover-active");
-          }
-        }
-        hoveredConnectionRef.current = null;
-      }
-    }
+    setConnectionHover(connectionId, false);
+    hoveredConnectionRef.current = null;
   }
 
   return (

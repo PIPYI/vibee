@@ -19,7 +19,7 @@ const convergingDoc: ArchitectureViewDocument = {
   ],
   boundaries: [],
   connections: [
-    { id: "a-hub", from: "a", to: "hub" },
+    { id: "a-hub", from: "a", to: "hub", label: "A to hub" },
     { id: "b-hub", from: "b", to: "hub" },
     { id: "c-hub", from: "c", to: "hub" },
   ],
@@ -30,12 +30,14 @@ test("rendered SVG contains exactly one <defs> block", () => {
   assert.equal(countOccurrences(svg, "<defs>"), 1);
 });
 
-test("component groups are drawn after connection groups (z-order)", () => {
+test("connection paths stay below components while connection labels stay above them (z-order)", () => {
   const svg = renderArchitectureViewSvg(convergingDoc);
   const lastComponentGroup = svg.lastIndexOf('<g class="av-component');
-  const lastConnectionGroup = svg.lastIndexOf('<g class="av-connection');
-  assert.ok(lastComponentGroup > -1 && lastConnectionGroup > -1);
-  assert.ok(lastComponentGroup > lastConnectionGroup);
+  const lastConnectionPath = svg.lastIndexOf('class="av-connection av-connection-path-layer');
+  const connectionLabelLayer = svg.indexOf('class="av-connection av-connection-label-layer');
+  assert.ok(lastComponentGroup > -1 && lastConnectionPath > -1 && connectionLabelLayer > -1);
+  assert.ok(lastConnectionPath < lastComponentGroup);
+  assert.ok(lastComponentGroup < connectionLabelLayer);
 });
 
 test("legend only lists types actually present in the document", () => {
@@ -145,6 +147,7 @@ test("runtime boundaries get a numbered '실행 그룹N' badge instead of the ol
   assert.ok(svg.includes("실행 그룹1"));
   assert.ok(!svg.includes("RUNTIME"));
   assert.ok(svg.includes("kind-runtime"));
+  assert.match(svg, /\.av-boundary\.kind-runtime rect \{[^}]*stroke-dasharray: 8 6;[^}]*stroke-opacity: 0\.55;/);
 });
 
 test("multiple runtime boundaries are numbered in array order", () => {
@@ -191,6 +194,8 @@ test("short connection labels render as a single text element, unchanged", () =>
   assert.ok(svg.includes(">place order<"));
   assert.ok(!svg.includes('class="av-connection-label-short"'));
   assert.ok(!svg.includes('class="av-connection-label-full"'));
+  assert.ok(!svg.includes("av-connection-label-bg"));
+  assert.ok(svg.includes("paint-order: stroke fill"));
 });
 
 test("long connection labels render both a truncated and a full text element", () => {
@@ -216,5 +221,13 @@ test("long connection labels render both a truncated and a full text element", (
   assert.ok(svg.includes('class="av-connection-label-short"'));
   assert.ok(svg.includes('class="av-connection-label-full"'));
   assert.ok(svg.includes("…"));
-  assert.ok(svg.includes("av-connection-label-bg--truncatable"));
+  assert.ok(!svg.includes("av-connection-label-bg"));
+});
+
+test("hover uses a distinct edge color and arrowheads inherit the hovered path stroke", () => {
+  const svg = renderArchitectureViewSvg(sampleDoc);
+  assert.ok(svg.includes("--av-edge-emphasis: #2563eb"));
+  assert.ok(svg.includes("--av-edge-hover: #e11d48"));
+  assert.ok(svg.includes("fill=\"context-stroke\""));
+  assert.match(svg, /\.av-connection\.av-hover-active path\.av-connection-path \{ stroke: var\(--av-edge-hover\)/);
 });

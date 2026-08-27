@@ -8,8 +8,6 @@ import {
   ROUNDED_CORNER_RADIUS,
   calculateArchitectureLayout,
   labelDisplayWidth,
-  labelMaskWidth,
-  LABEL_HEIGHT,
   MAX_CONNECTION_LABEL_WIDTH,
   roundedPath,
   truncateLabelForDisplay,
@@ -65,17 +63,18 @@ function escapeAttr(text: string): string {
  *   1. <style> (CSS custom properties + light-mode palette + semantic classes)
  *   2. one <defs> with exactly 4 markers (default/emphasis/security/dashed)
  *   3. boundary frames
- *   4. connections
+ *   4. connection paths
  *   5. components
- *   6. legend (only types actually present)
- *   7. title text
+ *   6. connection labels (kept above paths, arrowheads, and components)
+ *   7. legend (only types actually present)
+ *   8. title text
  */
 export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options?: RenderOptions): string {
   const selectedSemanticRef = options?.selectedSemanticRef;
 
   const [vbW, vbH] = doc.viewBox ?? DEFAULT_ARCHITECTURE_VIEW_BOX;
   const layout = calculateArchitectureLayout(doc);
-  const { componentRects, routes } = layout;
+  const { componentRects, routes, labelRects } = layout;
 
   const usedTypes = [...new Set(doc.components.map((c) => c.type))];
 
@@ -85,9 +84,11 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
   const boundaries = doc.boundaries
     .map((b, i) => renderBoundary(b, componentRects, selectedSemanticRef, runtimeBoundaryNumbers.get(i)))
     .join("\n");
-  const connections = doc.connections
-    .map((conn, i) => renderConnection(conn, i, routes, selectedSemanticRef))
-    .join("\n");
+  const renderedConnections = doc.connections.map((conn, i) =>
+    renderConnection(conn, i, routes, labelRects, selectedSemanticRef),
+  );
+  const connectionPaths = renderedConnections.map((connection) => connection.path).join("\n");
+  const connectionLabels = renderedConnections.map((connection) => connection.label).filter(Boolean).join("\n");
   const components = doc.components
     .map((c) => renderComponent(c, componentRects.get(c.id)!, selectedSemanticRef))
     .join("\n");
@@ -99,8 +100,9 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
     style,
     defs,
     `<g class="av-boundaries">${boundaries}</g>`,
-    `<g class="av-connections">${connections}</g>`,
+    `<g class="av-connections">${connectionPaths}</g>`,
     `<g class="av-components">${components}</g>`,
+    `<g class="av-connection-labels">${connectionLabels}</g>`,
     legend,
     title,
     `</svg>`,
@@ -119,6 +121,7 @@ svg.av-root {
   --av-text-muted: #475569;
   --av-edge: #64748b;
   --av-edge-emphasis: #2563eb;
+  --av-edge-hover: #e11d48;
   --av-edge-security: #b45309;
   --av-boundary-border: #94a3b8;
   ${typeVars}
@@ -127,15 +130,13 @@ svg.av-root {
 }
 svg.av-root .av-boundary rect { fill: none; stroke: var(--av-boundary-border); stroke-width: 1.5; stroke-dasharray: 6 4; }
 svg.av-root .av-boundary text { fill: var(--av-text-muted); font-size: 11px; font-weight: 600; }
-svg.av-root .av-boundary.kind-runtime rect { stroke-dasharray: none; stroke-width: 2; }
+svg.av-root .av-boundary.kind-runtime rect { stroke-dasharray: 8 6; stroke-width: 1.5; stroke-opacity: 0.55; }
 svg.av-root .av-boundary .av-boundary-badge { fill: var(--av-edge-emphasis); font-weight: 700; letter-spacing: 0.04em; }
 svg.av-root .av-connection path.av-connection-path { fill: none; stroke: var(--av-edge); stroke-width: 1.75; }
 svg.av-root .av-connection.variant-emphasis path.av-connection-path { stroke: var(--av-edge-emphasis); stroke-width: 2.25; }
 svg.av-root .av-connection.variant-security path.av-connection-path { stroke: var(--av-edge-security); stroke-width: 1.75; }
 svg.av-root .av-connection.variant-dashed path.av-connection-path { stroke-dasharray: 5 4; }
-svg.av-root .av-connection text { fill: var(--av-text-muted); font-size: 11px; }
-svg.av-root .av-connection-label-bg { fill: var(--av-bg); opacity: 0.85; }
-svg.av-root .av-connection-label-bg--truncatable { width: var(--av-label-w0); x: var(--av-label-x0); transition: width 150ms ease, x 150ms ease; }
+svg.av-root .av-connection text { fill: var(--av-text-muted); font-size: 11px; paint-order: stroke fill; stroke: rgba(248, 250, 252, 0.72); stroke-width: 2px; stroke-linejoin: round; }
 svg.av-root .av-connection-label-short { opacity: 1; transition: opacity 150ms ease; }
 svg.av-root .av-connection-label-full { opacity: 0; transition: opacity 150ms ease; }
 svg.av-root .av-component rect.av-component-box { fill: var(--av-surface); stroke: var(--av-border); stroke-width: 1.5; }
@@ -145,13 +146,12 @@ svg.av-root .av-component .av-label { fill: var(--av-text); font-size: 13px; fon
 svg.av-root .av-component .av-sublabel { fill: var(--av-text-muted); font-size: 11px; }
 svg.av-root .av-component { transition: transform 150ms ease; transform-box: fill-box; transform-origin: center; }
 svg.av-root .av-component.av-hover-active { transform: scale(1.06); }
-svg.av-root .av-component.av-hover-active rect.av-component-box { stroke: var(--av-edge-emphasis); stroke-width: 2.5; }
-svg.av-root .av-connection.av-hover-active path.av-connection-path { stroke: var(--av-edge-emphasis); stroke-width: 2.75; }
+svg.av-root .av-component.av-hover-active rect.av-component-box { stroke: var(--av-edge-hover); stroke-width: 2.5; }
+svg.av-root .av-connection.av-hover-active path.av-connection-path { stroke: var(--av-edge-hover); stroke-width: 2.75; }
 svg.av-root .av-connection.av-hover-active text { font-weight: 700; }
 svg.av-root .av-connection.av-hover-active .av-connection-label-short { opacity: 0; }
 svg.av-root .av-connection.av-hover-active .av-connection-label-full { opacity: 1; }
-svg.av-root .av-connection.av-hover-active .av-connection-label-bg--truncatable { width: var(--av-label-w1); x: var(--av-label-x1); }
-svg.av-root .av-selected rect.av-component-box, svg.av-root .av-boundary.av-selected rect { stroke: var(--av-edge-emphasis); stroke-width: 2.5; }
+svg.av-root .av-selected rect.av-component-box, svg.av-root .av-boundary.av-selected rect { stroke: var(--av-edge-emphasis); stroke-width: 2.5; stroke-opacity: 1; }
 svg.av-root .av-connection.av-selected path.av-connection-path { stroke: var(--av-edge-emphasis); }
 svg.av-root .av-legend text { fill: var(--av-text-muted); font-size: 11px; }
 svg.av-root .av-title { fill: var(--av-text); font-size: 16px; font-weight: 700; }
@@ -175,9 +175,7 @@ function accentColor(type: ArchitectureViewComponentType): string {
 
 function renderDefs(): string {
   const markers = VARIANTS.map((variant) => {
-    const strokeVar =
-      variant === "emphasis" ? "var(--av-edge-emphasis)" : variant === "security" ? "var(--av-edge-security)" : "var(--av-edge)";
-    return `<marker id="av-arrow-${variant}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${strokeVar}"/></marker>`;
+    return `<marker id="av-arrow-${variant}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>`;
   }).join("");
   return `<defs>${markers}</defs>`;
 }
@@ -239,17 +237,19 @@ function renderConnection(
   conn: ArchitectureViewDocument["connections"][number],
   index: number,
   routes: Map<string, { points: { x: number; y: number }[]; strategy: string; crossedComponentIds: string[] }>,
+  labelRects: Map<string, Rect>,
   selectedSemanticRef?: string,
-): string {
+): { path: string; label: string } {
   const edgeKey = conn.id ?? `connection-${index}`;
   const route = routes.get(edgeKey);
-  if (!route || route.points.length < 2) return "";
+  if (!route || route.points.length < 2) return { path: "", label: "" };
   const variant: Variant = (conn.variant as Variant) ?? "default";
   const d = roundedPath(route.points, ROUNDED_CORNER_RADIUS);
   const fromAttr = escapeAttr(conn.from);
   const toAttr = escapeAttr(conn.to);
   const idAttr = conn.id ? ` data-connection-id="${escapeAttr(conn.id)}"` : "";
   const selectedClass = isSelected(conn.semanticRefs, selectedSemanticRef) ? " av-selected" : "";
+  const sharedAttrs = `${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}`;
   // Invisible wide-stroke hit-area path, drawn first so it sits *under* the
   // visible path in paint order but still receives pointer events across a
   // generous width -- the visible stroke is only ~1.75-2.25px, too thin to
@@ -259,28 +259,24 @@ function renderConnection(
   const pathEl = `<path class="av-connection-path" d="${d}" marker-end="url(#av-arrow-${variant})"/>`;
   let labelEl = "";
   if (conn.label) {
-    const mid = route.points[Math.floor(route.points.length / 2)]!;
-    const rectY = mid.y - LABEL_HEIGHT / 2;
+    const labelRect = labelRects.get(`connection-label:${edgeKey}`);
+    const mid = labelRect
+      ? { x: labelRect.x + labelRect.w / 2, y: labelRect.y + labelRect.h / 2 }
+      : route.points[Math.floor(route.points.length / 2)]!;
     const { display, truncated } = truncateLabelForDisplay(conn.label, MAX_CONNECTION_LABEL_WIDTH);
     if (!truncated) {
-      const width = labelMaskWidth(conn.label);
-      const rectX = mid.x - width / 2;
-      const labelBgEl = `<rect class="av-connection-label-bg" x="${rectX}" y="${rectY}" width="${width}" height="${LABEL_HEIGHT}"/>`;
-      const textEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
-      labelEl = labelBgEl + textEl;
+      labelEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
     } else {
-      const widthShort = labelMaskWidth(display);
-      const widthFull = labelMaskWidth(conn.label);
-      const xShort = mid.x - widthShort / 2;
-      const xFull = mid.x - widthFull / 2;
-      const bgStyle = `--av-label-w0:${widthShort}px;--av-label-x0:${xShort}px;--av-label-w1:${widthFull}px;--av-label-x1:${xFull}px`;
-      const labelBgEl = `<rect class="av-connection-label-bg av-connection-label-bg--truncatable" x="${xShort}" y="${rectY}" width="${widthShort}" height="${LABEL_HEIGHT}" style="${bgStyle}"/>`;
       const shortTextEl = `<text class="av-connection-label-short" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(display)}</text>`;
       const fullTextEl = `<text class="av-connection-label-full" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
-      labelEl = labelBgEl + shortTextEl + fullTextEl;
+      labelEl = shortTextEl + fullTextEl;
     }
   }
-  return `<g class="av-connection variant-${variant}${selectedClass}"${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}>${hitAreaEl}${pathEl}${labelEl}</g>`;
+  const pathGroup = `<g class="av-connection av-connection-path-layer variant-${variant}${selectedClass}"${sharedAttrs}>${hitAreaEl}${pathEl}</g>`;
+  const labelGroup = labelEl
+    ? `<g class="av-connection av-connection-label-layer variant-${variant}${selectedClass}"${sharedAttrs}>${labelEl}</g>`
+    : "";
+  return { path: pathGroup, label: labelGroup };
 }
 
 function renderComponent(c: ArchitectureViewComponent, rect: Rect, selectedSemanticRef?: string): string {
