@@ -15,7 +15,7 @@ import {
 } from "@vibee/architecture-view";
 import { generateBridgeToken, resolveBridgeUrl, resolvePort } from "./bridge-config.js";
 import { createClaudeAdapter } from "./agents/claude/adapter.js";
-import { codexAdapter } from "./agents/codex/adapter.js";
+import { createCodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter } from "./agents/types.js";
 import { buildArchitectureViewPrompt } from "./prompt.js";
 import {
@@ -42,6 +42,7 @@ const bridgeUrl = resolveBridgeUrl(port);
 const bridgeToken = generateBridgeToken();
 
 const claudeAdapter = createClaudeAdapter({ bridgeUrl, bridgeToken });
+const codexAdapter = createCodexAdapter({ bridgeUrl, bridgeToken });
 
 function adapterFor(agent: AgentId): AgentAdapter {
   return agent === "claude" ? claudeAdapter : codexAdapter;
@@ -392,18 +393,13 @@ app.get("/api/architecture-view", (req, res) => {
   }
 
   // Rendered on every read (not cached) so a renderer improvement
-  // retroactively benefits already-committed projects. Both audience
-  // profiles are rendered from the one stored canonical document and
-  // returned together (docs/v2_plan.md §14.6/§18): tab switching in the web
-  // UI must not trigger a new analysis or a new fetch, so both SVGs need to
-  // already be in hand. BREAKING CHANGE from V1's `{ document, svg, meta }`
-  // response shape -- see the bridge stage's final report for the exact new
-  // shape the web app needs to consume.
-  const svgByAudience = {
-    simple: renderArchitectureViewSvg(stored.document, { audience: "simple" }),
-    technical: renderArchitectureViewSvg(stored.document, { audience: "technical" }),
-  };
-  res.status(200).json({ document: stored.document, svgByAudience, meta: stored.meta });
+  // retroactively benefits already-committed projects. The SVG is rendered
+  // from the one stored canonical document (docs/v2_plan.md §14.6/§18).
+  // BREAKING CHANGE from V1's `{ document, svg, meta }` response shape --
+  // see the bridge stage's final report for the exact new shape the web app
+  // needs to consume.
+  const svg = renderArchitectureViewSvg(stored.document);
+  res.status(200).json({ document: stored.document, svg, meta: stored.meta });
 });
 
 app.get("/api/models", (req, res) => {

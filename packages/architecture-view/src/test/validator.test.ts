@@ -128,7 +128,7 @@ test("edge-crosses-component: a connection whose target is fully walled in is an
 
 test("label-collision: two connection labels that land on top of each other is a warning", () => {
   const d = doc({
-    components: [comp({ id: "a", pos: [0, 0], size: [80, 200] }), comp({ id: "b", pos: [300, 0], size: [80, 200] })],
+    components: [comp({ id: "a", pos: [0, 0], size: [80, 36] }), comp({ id: "b", pos: [300, 0], size: [80, 36] })],
     connections: [
       { id: "e1", from: "a", to: "b", label: "x" },
       { id: "e2", from: "a", to: "b", label: "x" },

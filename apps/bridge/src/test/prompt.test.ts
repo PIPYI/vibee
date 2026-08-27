@@ -57,7 +57,7 @@ test("the prompt explains the no-git-revision case when none is given", () => {
 });
 
 // docs/v2_plan.md §12.4: the following concepts/phrases must always be
-// present in the assembled prompt.
+// present in the assembled prompt (updated to remove audience-specific concepts).
 test("the prompt covers every §12.4 regression-test concept", () => {
   const prompt = buildArchitectureViewPrompt("/tmp/some-project", "abc123");
 
@@ -70,7 +70,4 @@ test("the prompt covers every §12.4 regression-test concept", () => {
   assert.match(prompt, /actors? (are|is|placed) (never inside|outside)|outside every runtime boundary/i);
   assert.match(prompt, /source of truth/i);
   assert.match(prompt, /exactly one canonical architecture/i);
-  assert.match(prompt, /simple and technical share the same semantic identity/i);
-  assert.match(prompt, /hide technical jargon by default/i);
-  assert.match(prompt, /no profile-specific topology generation/i);
 });

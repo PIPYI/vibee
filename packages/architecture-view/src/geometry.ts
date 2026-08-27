@@ -12,7 +12,7 @@ import type { Diagnostic } from "@vibee/protocol";
 export const DEFAULT_ARCHITECTURE_VIEW_BOX: [number, number] = [1200, 760];
 export const MIN_COMPONENT_GAP = 24;
 export const PORT_INSET = 16;
-export const MAX_PORT_SPACING = 14;
+export const MAX_PORT_SPACING = 20;
 export const ROUTE_STUB = 24;
 export const ROUTE_CHANNEL = 40;
 export const ROUTE_EDGE_INSET = 12;
@@ -460,9 +460,24 @@ export function shortenRouteEnd(points: Point[], distance: number): Point[] {
 
 /**
  * Builds an SVG path `d` string with quadratic-curve corner rounding at each
- * interior vertex. A corner is left sharp (drawn as a plain `L`) if either
- * adjacent segment is shorter than `radius`, so tiny doglegs don't produce
- * self-intersecting curves.
+ * interior vertex. A corner is left sharp (drawn as a plain `L`) if its
+ * effective radius (see below) rounds down to ~0, so tiny doglegs don't
+ * produce self-intersecting curves.
+ *
+ * When two interior corners are close together (their connecting segment
+ * shorter than `2 * radius`), each corner's "before"/"after" point would
+ * otherwise be computed independently at a full `radius` from that shared
+ * segment -- which, once the segment is shorter than `2 * radius`, makes the
+ * two points cross and the path double back on itself for a few pixels
+ * before curving on toward its actual direction. That's most visible right
+ * before a connection's endpoint, where it reads as the arrowhead not lining
+ * up with the curve. To prevent it, a corner's radius on a given side is
+ * capped to half that side's segment length, but *only* when the point on
+ * the other end of that segment is itself an interior corner that will also
+ * round (and thus also wants a share of the same segment) -- a corner next
+ * to the path's un-rounded start/end point still gets the full `radius`, so
+ * ordinary routes (where the near-endpoint segment is comfortably longer
+ * than `radius` but not necessarily `2 * radius`) are unaffected.
  */
 export function roundedPath(points: Point[], radius: number): string {
   if (points.length === 0) return "";
@@ -477,12 +492,17 @@ export function roundedPath(points: Point[], radius: number): string {
     const next = points[i + 1]!;
     const dPrev = dist(prev, curr);
     const dNext = dist(curr, next);
-    if (dPrev < radius || dNext < radius) {
+    const prevIsCorner = i - 1 >= 1;
+    const nextIsCorner = i + 1 <= points.length - 2;
+    const maxFromPrev = prevIsCorner ? dPrev / 2 : dPrev;
+    const maxFromNext = nextIsCorner ? dNext / 2 : dNext;
+    const effectiveRadius = Math.min(radius, maxFromPrev, maxFromNext);
+    if (effectiveRadius < 0.01) {
       d += ` L ${fmt(curr)}`;
       continue;
     }
-    const before = pointAt(prev, curr, radius);
-    const after = pointAt(next, curr, radius);
+    const before = pointAt(prev, curr, effectiveRadius);
+    const after = pointAt(next, curr, effectiveRadius);
     d += ` L ${fmt(before)} Q ${fmt(curr)} ${fmt(after)}`;
   }
   d += ` L ${fmt(points[points.length - 1]!)}`;
@@ -561,6 +581,36 @@ export function labelMaskWidth(text: string, fontSize = 13): number {
   return labelDisplayWidth(text, fontSize) + 8;
 }
 
+/**
+ * Max display width (px, same scale as `labelDisplayWidth`) a connection
+ * label is allowed before `truncateLabelForDisplay` starts trimming it. Sized
+ * against `labelDisplayWidth`'s default fontSize (13) so a handful of Latin
+ * words -- or a shorter CJK phrase -- fit before truncation kicks in.
+ */
+export const MAX_CONNECTION_LABEL_WIDTH = 96;
+
+/**
+ * Trims characters off the end of `label` and appends "…" until the
+ * estimated display width (via `labelDisplayWidth`, ellipsis included) fits
+ * within `maxWidth`. Returns the original label unchanged when it already
+ * fits. Both renderer and validator (if either grows a use for this) MUST
+ * call this same function so they can't disagree about what got truncated.
+ */
+export function truncateLabelForDisplay(label: string, maxWidth: number): { display: string; truncated: boolean } {
+  if (labelDisplayWidth(label) <= maxWidth) {
+    return { display: label, truncated: false };
+  }
+  const ellipsis = "…";
+  const chars = [...label];
+  for (let n = chars.length - 1; n > 0; n--) {
+    const candidate = chars.slice(0, n).join("") + ellipsis;
+    if (labelDisplayWidth(candidate) <= maxWidth) {
+      return { display: candidate, truncated: true };
+    }
+  }
+  return { display: ellipsis, truncated: true };
+}
+
 // ---------------------------------------------------------------------------
 // Layout: the single shared function renderer + validator both call
 // ---------------------------------------------------------------------------
@@ -571,7 +621,7 @@ export type ArchitectureLayout = {
   labelRects: Map<string, Rect>;
 };
 
-const LABEL_HEIGHT = 16;
+export const LABEL_HEIGHT = 16;
 
 export function calculateArchitectureLayout(doc: ArchitectureViewDocument): ArchitectureLayout {
   const componentRects = new Map<string, Rect>();

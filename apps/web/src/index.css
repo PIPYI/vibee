@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --fg: #1a1a1a;
   --bg: #ffffff;
@@ -10,20 +10,6 @@
   --error-border: #f5b5ac;
   --warning-bg: #fff8e1;
   --warning-border: #f0d878;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #eaeaea;
-    --bg: #121212;
-    --muted: #999999;
-    --border: #333333;
-    --accent: #60a5fa;
-    --error-bg: #3a1f1c;
-    --error-border: #8a3f36;
-    --warning-bg: #3a331a;
-    --warning-border: #8a7a36;
-  }
 }
 
 * {

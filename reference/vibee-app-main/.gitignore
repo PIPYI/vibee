@@ -1,0 +1,12 @@
+# 에이전트 harness 파일은 추적하지 않는다. 저장소를 옮길 때 따라오지 않으므로,
+# 규칙이 필요하면 각 PC에서 다시 두어야 한다.
+CLAUDE.md
+AGENTS.md
+
+# Windows "mark of the web" streams, materialized as files when copying into WSL
+*:Zone.Identifier
+
+node_modules/
+dist/
+
+.DS_Store

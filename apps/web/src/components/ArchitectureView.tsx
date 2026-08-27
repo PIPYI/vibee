@@ -1,29 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { ArchitectureAudience, ArchitectureViewDocument } from "@vibee/protocol";
-import { ArchitectureAudienceTabs } from "./ArchitectureAudienceTabs.tsx";
+import type { ArchitectureViewDocument } from "@vibee/protocol";
 import { ArchitectureInspector, type SelectedArchitectureEntity } from "./ArchitectureInspector.tsx";
 
 type Meta = { committedAt: string; gitRevision?: string; taskId: string };
 
 type Props = {
   document: ArchitectureViewDocument;
-  svgByAudience: { simple: string; technical: string };
+  svg: string;
   meta: Meta;
 };
-
-type ThemeChoice = "system" | "light" | "dark";
-
-function nextTheme(current: ThemeChoice): ThemeChoice {
-  if (current === "system") return "light";
-  if (current === "light") return "dark";
-  return "system";
-}
-
-function themeButtonLabel(choice: ThemeChoice): string {
-  if (choice === "system") return "테마: 시스템 기본값";
-  if (choice === "light") return "테마: 라이트 모드";
-  return "테마: 다크 모드";
-}
 
 // The exact attribute/class names render.ts embeds in its SVG output (see
 // packages/architecture-view/src/render.ts) -- verified against that file
@@ -40,42 +25,19 @@ function parseSemanticRefs(el: Element): string[] {
   return raw ? raw.split(",") : [];
 }
 
-export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) {
+export function ArchitectureView({ document: doc, svg, meta }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const [theme, setTheme] = useState<ThemeChoice>("system");
-  // audience/selected are local to this component (not lifted to App.tsx):
+  const hoveredConnectionRef = useRef<string | null>(null);
+  // selected is local to this component (not lifted to App.tsx):
   // ArchitectureView only ever mounts for phase "viewing", so it naturally
-  // unmounts (and these reset) when the app goes back to "idle" for a new
-  // analysis, while switching tabs or clicking entities within one viewing
-  // session never re-triggers a mount -- exactly the reset semantics
-  // docs/v2_plan.md 14.6/18 asks for, with no extra state-lifting needed.
-  const [audience, setAudience] = useState<ArchitectureAudience>("simple");
+  // unmounts (and this resets) when the app goes back to "idle" for a new
+  // analysis, while clicking entities within one viewing session never
+  // re-triggers a mount -- exactly the reset semantics we need.
   const [selected, setSelected] = useState<SelectedArchitectureEntity | null>(null);
-
-  const currentSvg = audience === "simple" ? svgByAudience.simple : svgByAudience.technical;
-
-  // Flips data-theme directly on the already-mounted <svg class="av-root">
-  // element -- no re-fetch, no re-render of the SVG string itself. This is
-  // meant to exercise render.ts's CSS-custom-property theme design (light
-  // default + prefers-color-scheme + [data-theme] override) end to end.
-  useEffect(() => {
-    const root = mountRef.current?.querySelector("svg.av-root");
-    if (!root) return;
-    if (theme === "system") {
-      root.removeAttribute("data-theme");
-    } else {
-      root.setAttribute("data-theme", theme);
-    }
-  }, [theme, currentSvg]);
 
   // Re-applies the selection highlight to whichever DOM node currently
   // carries the selected entity's id -- this must re-run whenever the
-  // mounted SVG string changes (audience switch swaps in a whole fresh DOM
-  // tree) or the selection itself changes (a new click). If the selected
-  // entity is `visibility: "hide"` in this audience, render.ts never emits
-  // a matching node here, so the querySelector below simply finds nothing
-  // and no highlight is drawn -- the inspector (driven by `selected`
-  // independently of the DOM) still shows the entity's info.
+  // mounted SVG string changes or the selection itself changes (a new click).
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -84,7 +46,7 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
     const attr = ENTITY_ATTR[selected.kind];
     const match = container.querySelector(`[${attr}="${CSS.escape(selected.id)}"]`);
     match?.classList.add(SELECTED_CLASS);
-  }, [selected, currentSvg]);
+  }, [selected, svg]);
 
   function handleMountClick(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element;
@@ -100,6 +62,78 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
     }
   }
 
+  function handleMountMouseOver(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as Element;
+    const connection = target.closest("[data-connection-id]");
+    if (!connection) return;
+
+    const connectionId = connection.getAttribute("data-connection-id");
+    if (!connectionId || connectionId === hoveredConnectionRef.current) return;
+
+    // Clear previous hover
+    if (hoveredConnectionRef.current) {
+      const prevConnection = mountRef.current?.querySelector(
+        `[data-connection-id="${CSS.escape(hoveredConnectionRef.current)}"]`
+      );
+      if (prevConnection) {
+        prevConnection.classList.remove("av-hover-active");
+        const fromId = prevConnection.getAttribute("data-edge-from");
+        const toId = prevConnection.getAttribute("data-edge-to");
+        if (fromId) {
+          mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.remove("av-hover-active");
+        }
+        if (toId) {
+          mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.remove("av-hover-active");
+        }
+      }
+    }
+
+    // Apply new hover
+    connection.classList.add("av-hover-active");
+    const fromId = connection.getAttribute("data-edge-from");
+    const toId = connection.getAttribute("data-edge-to");
+    if (fromId) {
+      mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.add("av-hover-active");
+    }
+    if (toId) {
+      mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.add("av-hover-active");
+    }
+
+    hoveredConnectionRef.current = connectionId;
+  }
+
+  function handleMountMouseOut(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as Element;
+    const connection = target.closest("[data-connection-id]");
+    if (!connection || connection !== target.closest("[data-connection-id]")) return;
+
+    // Check if we're leaving the connection entirely
+    const relatedTarget = e.relatedTarget as Element | null;
+    const connectionElement = mountRef.current?.querySelector(
+      `[data-connection-id="${CSS.escape(hoveredConnectionRef.current || "")}"]`
+    );
+
+    if (!relatedTarget || !connectionElement?.contains(relatedTarget)) {
+      if (hoveredConnectionRef.current) {
+        const prevConnection = mountRef.current?.querySelector(
+          `[data-connection-id="${CSS.escape(hoveredConnectionRef.current)}"]`
+        );
+        if (prevConnection) {
+          prevConnection.classList.remove("av-hover-active");
+          const fromId = prevConnection.getAttribute("data-edge-from");
+          const toId = prevConnection.getAttribute("data-edge-to");
+          if (fromId) {
+            mountRef.current?.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.remove("av-hover-active");
+          }
+          if (toId) {
+            mountRef.current?.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.remove("av-hover-active");
+          }
+        }
+        hoveredConnectionRef.current = null;
+      }
+    }
+  }
+
   return (
     <div className="architecture-view">
       <header className="architecture-view-header">
@@ -110,12 +144,7 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
             {meta.gitRevision && <> · 리비전 {meta.gitRevision.slice(0, 12)}</>}
           </p>
         </div>
-        <button type="button" onClick={() => setTheme(nextTheme(theme))}>
-          {themeButtonLabel(theme)}
-        </button>
       </header>
-
-      <ArchitectureAudienceTabs audience={audience} onChange={setAudience} />
 
       {/* svg is a trusted, server-rendered string produced by
           @vibee/architecture-view's own renderer in this same repo (not
@@ -125,15 +154,15 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
         ref={mountRef}
         className="svg-mount"
         onClick={handleMountClick}
-        dangerouslySetInnerHTML={{ __html: currentSvg }}
+        onMouseOver={handleMountMouseOver}
+        onMouseOut={handleMountMouseOut}
+        dangerouslySetInnerHTML={{ __html: svg }}
       />
 
       {selected && (
         <ArchitectureInspector
-          audience={audience}
           document={doc}
           entity={selected}
-          onViewTechnical={() => setAudience("technical")}
         />
       )}
 

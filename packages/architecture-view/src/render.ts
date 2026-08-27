@@ -1,5 +1,4 @@
 import type {
-  ArchitectureAudience,
   ArchitectureViewComponent,
   ArchitectureViewComponentType,
   ArchitectureViewDocument,
@@ -9,28 +8,29 @@ import {
   ROUNDED_CORNER_RADIUS,
   calculateArchitectureLayout,
   labelDisplayWidth,
+  labelMaskWidth,
+  LABEL_HEIGHT,
+  MAX_CONNECTION_LABEL_WIDTH,
   roundedPath,
+  truncateLabelForDisplay,
   type Rect,
 } from "./geometry.js";
-import { applyAudiencePresentation, resolveVisibility } from "./presentation.js";
 
 export type RenderOptions = {
-  audience?: ArchitectureAudience;
-  theme?: "light" | "dark";
   /** When set, matching components/boundaries/connections get an `av-selected` class hook. */
   selectedSemanticRef?: string;
 };
 
-type TypeMeta = { sigil: string; name: string };
+type TypeMeta = { sigil: string; name: string; nameKo: string };
 
 const TYPE_META: Record<ArchitectureViewComponentType, TypeMeta> = {
-  frontend: { sigil: "FE", name: "Frontend" },
-  backend: { sigil: "BE", name: "Backend" },
-  database: { sigil: "DB", name: "Database" },
-  cloud: { sigil: "CL", name: "Cloud" },
-  security: { sigil: "SEC", name: "Security" },
-  messagebus: { sigil: "MQ", name: "Message bus" },
-  external: { sigil: "EX", name: "External" },
+  frontend: { sigil: "FE", name: "Frontend", nameKo: "프론트엔드" },
+  backend: { sigil: "BE", name: "Backend", nameKo: "백엔드" },
+  database: { sigil: "DB", name: "Database", nameKo: "데이터베이스" },
+  cloud: { sigil: "CL", name: "Cloud", nameKo: "클라우드" },
+  security: { sigil: "SEC", name: "Security", nameKo: "보안" },
+  messagebus: { sigil: "MQ", name: "Message bus", nameKo: "메시지 버스" },
+  external: { sigil: "EX", name: "External", nameKo: "외부" },
 };
 
 const VARIANTS = ["default", "emphasis", "security", "dashed"] as const;
@@ -56,53 +56,46 @@ function escapeAttr(text: string): string {
  * cannot disagree with `checkGeometry`'s notion of the same document's
  * geometry.
  *
- * `options.audience` (default `"simple"`) selects which
- * `presentation.simple`/`presentation.technical` overrides apply -- see
- * `applyAudiencePresentation`. Geometry is computed over the *projected*
- * document, but projection never touches `pos`/`size`/`wraps`/`from`/`to`,
- * so canonical layout never shifts between audiences; only display label
- * text (and therefore label-collision boxes) can differ. An element whose
- * resolved visibility for that audience is `"hide"` is skipped at draw time
- * only -- it still occupies its canonical position for layout purposes.
+ * Every component/boundary/connection renders its own canonical
+ * `label`/`sublabel` directly -- there is no per-audience projection or
+ * visibility toggle (see docs/v4_plan.md §4.1); everything in the document
+ * always renders.
  *
  * Draw order (fixed, load-bearing):
- *   1. <style> (CSS custom properties + light/dark theme + semantic classes)
+ *   1. <style> (CSS custom properties + light-mode palette + semantic classes)
  *   2. one <defs> with exactly 4 markers (default/emphasis/security/dashed)
  *   3. boundary frames
  *   4. connections
  *   5. components
- *   6. legend (only types actually present and visible)
+ *   6. legend (only types actually present)
  *   7. title text
  */
 export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options?: RenderOptions): string {
-  const audience: ArchitectureAudience = options?.audience ?? "simple";
   const selectedSemanticRef = options?.selectedSemanticRef;
-  const projected = applyAudiencePresentation(doc, audience);
 
-  const [vbW, vbH] = projected.viewBox ?? DEFAULT_ARCHITECTURE_VIEW_BOX;
-  const layout = calculateArchitectureLayout(projected);
+  const [vbW, vbH] = doc.viewBox ?? DEFAULT_ARCHITECTURE_VIEW_BOX;
+  const layout = calculateArchitectureLayout(doc);
   const { componentRects, routes } = layout;
 
-  const visibleComponents = projected.components.filter((c) => resolveVisibility(c, audience) === "show");
-  const usedTypes = [...new Set(visibleComponents.map((c) => c.type))];
+  const usedTypes = [...new Set(doc.components.map((c) => c.type))];
 
   const style = renderStyle(usedTypes);
   const defs = renderDefs();
-  const boundaries = projected.boundaries
-    .map((b) => (resolveVisibility(b, audience) === "hide" ? "" : renderBoundary(b, componentRects, selectedSemanticRef)))
+  const runtimeBoundaryNumbers = computeRuntimeBoundaryNumbers(doc.boundaries);
+  const boundaries = doc.boundaries
+    .map((b, i) => renderBoundary(b, componentRects, selectedSemanticRef, runtimeBoundaryNumbers.get(i)))
     .join("\n");
-  const connections = projected.connections
-    .map((conn, i) => (resolveVisibility(conn, audience) === "hide" ? "" : renderConnection(conn, i, routes, selectedSemanticRef)))
+  const connections = doc.connections
+    .map((conn, i) => renderConnection(conn, i, routes, selectedSemanticRef))
     .join("\n");
-  const components = visibleComponents
+  const components = doc.components
     .map((c) => renderComponent(c, componentRects.get(c.id)!, selectedSemanticRef))
     .join("\n");
   const legend = renderLegend(usedTypes, vbW, vbH);
-  const title = `<text class="av-title" x="24" y="34">${escapeXml(projected.title)}</text>`;
-  const themeAttr = options?.theme ? ` data-theme="${options.theme}"` : "";
+  const title = `<text class="av-title" x="24" y="34">${escapeXml(doc.title)}</text>`;
 
   return [
-    `<svg class="av-root" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" height="100%"${themeAttr}>`,
+    `<svg class="av-root" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${vbW} ${vbH}" width="100%" height="100%">`,
     style,
     defs,
     `<g class="av-boundaries">${boundaries}</g>`,
@@ -116,7 +109,6 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
 
 function renderStyle(usedTypes: ArchitectureViewComponentType[]): string {
   const typeVars = usedTypes.map((t) => `--av-accent-${t}: ${accentColor(t)};`).join(" ");
-  const typeVarsDark = usedTypes.map((t) => `--av-accent-${t}: ${accentColorDark(t)};`).join(" ");
 
   return `<style>
 svg.av-root {
@@ -133,49 +125,34 @@ svg.av-root {
   background: var(--av-bg);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-@media (prefers-color-scheme: dark) {
-  svg.av-root:not([data-theme="light"]) {
-    --av-bg: #0b1220;
-    --av-surface: #111827;
-    --av-border: #334155;
-    --av-text: #e2e8f0;
-    --av-text-muted: #94a3b8;
-    --av-edge: #94a3b8;
-    --av-edge-emphasis: #60a5fa;
-    --av-edge-security: #f59e0b;
-    --av-boundary-border: #475569;
-    ${typeVarsDark}
-  }
-}
-svg.av-root[data-theme="dark"] {
-  --av-bg: #0b1220;
-  --av-surface: #111827;
-  --av-border: #334155;
-  --av-text: #e2e8f0;
-  --av-text-muted: #94a3b8;
-  --av-edge: #94a3b8;
-  --av-edge-emphasis: #60a5fa;
-  --av-edge-security: #f59e0b;
-  --av-boundary-border: #475569;
-  ${typeVarsDark}
-}
 svg.av-root .av-boundary rect { fill: none; stroke: var(--av-boundary-border); stroke-width: 1.5; stroke-dasharray: 6 4; }
 svg.av-root .av-boundary text { fill: var(--av-text-muted); font-size: 11px; font-weight: 600; }
 svg.av-root .av-boundary.kind-runtime rect { stroke-dasharray: none; stroke-width: 2; }
 svg.av-root .av-boundary .av-boundary-badge { fill: var(--av-edge-emphasis); font-weight: 700; letter-spacing: 0.04em; }
-svg.av-root .av-connection path { fill: none; stroke: var(--av-edge); stroke-width: 1.75; }
-svg.av-root .av-connection.variant-emphasis path { stroke: var(--av-edge-emphasis); stroke-width: 2.25; }
-svg.av-root .av-connection.variant-security path { stroke: var(--av-edge-security); stroke-width: 1.75; }
-svg.av-root .av-connection.variant-dashed path { stroke-dasharray: 5 4; }
+svg.av-root .av-connection path.av-connection-path { fill: none; stroke: var(--av-edge); stroke-width: 1.75; }
+svg.av-root .av-connection.variant-emphasis path.av-connection-path { stroke: var(--av-edge-emphasis); stroke-width: 2.25; }
+svg.av-root .av-connection.variant-security path.av-connection-path { stroke: var(--av-edge-security); stroke-width: 1.75; }
+svg.av-root .av-connection.variant-dashed path.av-connection-path { stroke-dasharray: 5 4; }
 svg.av-root .av-connection text { fill: var(--av-text-muted); font-size: 11px; }
 svg.av-root .av-connection-label-bg { fill: var(--av-bg); opacity: 0.85; }
+svg.av-root .av-connection-label-bg--truncatable { width: var(--av-label-w0); x: var(--av-label-x0); transition: width 150ms ease, x 150ms ease; }
+svg.av-root .av-connection-label-short { opacity: 1; transition: opacity 150ms ease; }
+svg.av-root .av-connection-label-full { opacity: 0; transition: opacity 150ms ease; }
 svg.av-root .av-component rect.av-component-box { fill: var(--av-surface); stroke: var(--av-border); stroke-width: 1.5; }
 svg.av-root .av-component--actor rect.av-component-box { stroke-dasharray: 4 3; }
 svg.av-root .av-component .av-sigil { font-size: 10px; font-weight: 700; fill: #fff; }
 svg.av-root .av-component .av-label { fill: var(--av-text); font-size: 13px; font-weight: 600; }
 svg.av-root .av-component .av-sublabel { fill: var(--av-text-muted); font-size: 11px; }
+svg.av-root .av-component { transition: transform 150ms ease; transform-box: fill-box; transform-origin: center; }
+svg.av-root .av-component.av-hover-active { transform: scale(1.06); }
+svg.av-root .av-component.av-hover-active rect.av-component-box { stroke: var(--av-edge-emphasis); stroke-width: 2.5; }
+svg.av-root .av-connection.av-hover-active path.av-connection-path { stroke: var(--av-edge-emphasis); stroke-width: 2.75; }
+svg.av-root .av-connection.av-hover-active text { font-weight: 700; }
+svg.av-root .av-connection.av-hover-active .av-connection-label-short { opacity: 0; }
+svg.av-root .av-connection.av-hover-active .av-connection-label-full { opacity: 1; }
+svg.av-root .av-connection.av-hover-active .av-connection-label-bg--truncatable { width: var(--av-label-w1); x: var(--av-label-x1); }
 svg.av-root .av-selected rect.av-component-box, svg.av-root .av-boundary.av-selected rect { stroke: var(--av-edge-emphasis); stroke-width: 2.5; }
-svg.av-root .av-connection.av-selected path { stroke: var(--av-edge-emphasis); }
+svg.av-root .av-connection.av-selected path.av-connection-path { stroke: var(--av-edge-emphasis); }
 svg.av-root .av-legend text { fill: var(--av-text-muted); font-size: 11px; }
 svg.av-root .av-title { fill: var(--av-text); font-size: 16px; font-weight: 700; }
 ${usedTypes.map((t) => `svg.av-root .av-component--${t} .av-sigil-bg { fill: var(--av-accent-${t}); }`).join("\n")}
@@ -192,19 +169,6 @@ function accentColor(type: ArchitectureViewComponentType): string {
     security: "#b45309",
     messagebus: "#db2777",
     external: "#64748b",
-  };
-  return colors[type];
-}
-
-function accentColorDark(type: ArchitectureViewComponentType): string {
-  const colors: Record<ArchitectureViewComponentType, string> = {
-    frontend: "#22d3ee",
-    backend: "#a78bfa",
-    database: "#34d399",
-    cloud: "#60a5fa",
-    security: "#fbbf24",
-    messagebus: "#f472b6",
-    external: "#94a3b8",
   };
   return colors[type];
 }
@@ -226,10 +190,28 @@ function isSelected(refs: string[] | undefined, selectedSemanticRef: string | un
   return !!selectedSemanticRef && !!refs && refs.includes(selectedSemanticRef);
 }
 
+/**
+ * Numbers boundaries with `kind === "runtime"` sequentially (1, 2, 3, ...) in
+ * their array order. Keyed by index into `boundaries` rather than `id` since
+ * `id` is optional on `ArchitectureViewBoundary`.
+ */
+function computeRuntimeBoundaryNumbers(boundaries: ArchitectureViewDocument["boundaries"]): Map<number, number> {
+  const numbers = new Map<number, number>();
+  let n = 0;
+  boundaries.forEach((b, i) => {
+    if (b.kind === "runtime") {
+      n += 1;
+      numbers.set(i, n);
+    }
+  });
+  return numbers;
+}
+
 function renderBoundary(
   boundary: ArchitectureViewDocument["boundaries"][number],
   componentRects: Map<string, Rect>,
   selectedSemanticRef?: string,
+  runtimeNumber?: number,
 ): string {
   const rects = boundary.wraps.map((id) => componentRects.get(id)).filter((r): r is Rect => !!r);
   if (rects.length === 0) return "";
@@ -241,14 +223,13 @@ function renderBoundary(
   const kindClass = boundary.kind === "security-group" ? "kind-security-group" : boundary.kind === "runtime" ? "kind-runtime" : "kind-region";
   const idAttr = boundary.id ? ` data-boundary-id="${escapeAttr(boundary.id)}"` : "";
   const selectedClass = isSelected(boundary.semanticRefs, selectedSemanticRef) ? " av-selected" : "";
-  // Runtime boundaries get a small uppercase badge before the label so they
-  // read as "an actual runtime" at a glance, distinct from a plain grouping
-  // region or a security-group.
-  const badgeEl =
-    boundary.kind === "runtime"
-      ? `<text class="av-boundary-badge" x="${minX + 10}" y="${minY - 8}">RUNTIME · </text>`
-      : "";
-  const labelX = boundary.kind === "runtime" ? minX + 10 + labelDisplayWidth("RUNTIME · ", 11) : minX + 10;
+  // Runtime boundaries get a small badge before the label so they read as
+  // "an actual runtime" at a glance, distinct from a plain grouping region or
+  // a security-group. Numbered by order of appearance among runtime
+  // boundaries (see docs/v4_plan.md §4.6).
+  const badgeText = boundary.kind === "runtime" ? `실행 그룹${runtimeNumber} · ` : "";
+  const badgeEl = badgeText ? `<text class="av-boundary-badge" x="${minX + 10}" y="${minY - 8}">${escapeXml(badgeText)}</text>` : "";
+  const labelX = badgeText ? minX + 10 + labelDisplayWidth(badgeText, 11) : minX + 10;
   return `<g class="av-boundary ${kindClass}${selectedClass}"${idAttr}${semanticRefsAttr(boundary.semanticRefs)}><rect x="${minX}" y="${minY}" width="${
     maxX - minX
   }" height="${maxY - minY}" rx="10" ry="10"/>${badgeEl}<text x="${labelX}" y="${minY - 8}">${escapeXml(boundary.label)}</text></g>`;
@@ -269,13 +250,37 @@ function renderConnection(
   const toAttr = escapeAttr(conn.to);
   const idAttr = conn.id ? ` data-connection-id="${escapeAttr(conn.id)}"` : "";
   const selectedClass = isSelected(conn.semanticRefs, selectedSemanticRef) ? " av-selected" : "";
-  const pathEl = `<path d="${d}" marker-end="url(#av-arrow-${variant})"/>`;
+  // Invisible wide-stroke hit-area path, drawn first so it sits *under* the
+  // visible path in paint order but still receives pointer events across a
+  // generous width -- the visible stroke is only ~1.75-2.25px, too thin to
+  // reliably hover. Purely a hit target: no fill/visible stroke, and it must
+  // not carry the arrow marker.
+  const hitAreaEl = `<path class="av-connection-hitarea" d="${d}" stroke="transparent" stroke-width="14" fill="none"/>`;
+  const pathEl = `<path class="av-connection-path" d="${d}" marker-end="url(#av-arrow-${variant})"/>`;
   let labelEl = "";
   if (conn.label) {
     const mid = route.points[Math.floor(route.points.length / 2)]!;
-    labelEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+    const rectY = mid.y - LABEL_HEIGHT / 2;
+    const { display, truncated } = truncateLabelForDisplay(conn.label, MAX_CONNECTION_LABEL_WIDTH);
+    if (!truncated) {
+      const width = labelMaskWidth(conn.label);
+      const rectX = mid.x - width / 2;
+      const labelBgEl = `<rect class="av-connection-label-bg" x="${rectX}" y="${rectY}" width="${width}" height="${LABEL_HEIGHT}"/>`;
+      const textEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+      labelEl = labelBgEl + textEl;
+    } else {
+      const widthShort = labelMaskWidth(display);
+      const widthFull = labelMaskWidth(conn.label);
+      const xShort = mid.x - widthShort / 2;
+      const xFull = mid.x - widthFull / 2;
+      const bgStyle = `--av-label-w0:${widthShort}px;--av-label-x0:${xShort}px;--av-label-w1:${widthFull}px;--av-label-x1:${xFull}px`;
+      const labelBgEl = `<rect class="av-connection-label-bg av-connection-label-bg--truncatable" x="${xShort}" y="${rectY}" width="${widthShort}" height="${LABEL_HEIGHT}" style="${bgStyle}"/>`;
+      const shortTextEl = `<text class="av-connection-label-short" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(display)}</text>`;
+      const fullTextEl = `<text class="av-connection-label-full" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+      labelEl = labelBgEl + shortTextEl + fullTextEl;
+    }
   }
-  return `<g class="av-connection variant-${variant}${selectedClass}"${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}>${pathEl}${labelEl}</g>`;
+  return `<g class="av-connection variant-${variant}${selectedClass}"${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}>${hitAreaEl}${pathEl}${labelEl}</g>`;
 }
 
 function renderComponent(c: ArchitectureViewComponent, rect: Rect, selectedSemanticRef?: string): string {
@@ -311,13 +316,15 @@ function renderLegend(usedTypes: ArchitectureViewComponentType[], vbW: number, v
   const swatchSize = 10;
   const rowHeight = 18;
   const startY = vbH - usedTypes.length * rowHeight - 12;
-  const startX = vbW - 160;
+  const labels = usedTypes.map((t) => `${TYPE_META[t].name} · ${TYPE_META[t].nameKo}`);
+  const maxLabelWidth = labels.reduce((max, label) => Math.max(max, labelDisplayWidth(label, 11)), 0);
+  const startX = vbW - (swatchSize + 8 + maxLabelWidth + 16);
   const rows = usedTypes
     .map((t, i) => {
       const y = startY + i * rowHeight;
       return `<rect class="av-legend-swatch--${t}" x="${startX}" y="${y}" width="${swatchSize}" height="${swatchSize}" rx="2" ry="2"/><text x="${
         startX + swatchSize + 8
-      }" y="${y + swatchSize}">${escapeXml(TYPE_META[t].name)}</text>`;
+      }" y="${y + swatchSize}">${escapeXml(labels[i]!)}</text>`;
     })
     .join("");
   return `<g class="av-legend">${rows}</g>`;
@@ -325,9 +332,8 @@ function renderLegend(usedTypes: ArchitectureViewComponentType[], vbW: number, v
 
 /**
  * Wraps `renderArchitectureViewSvg` in a self-contained HTML shell: the SVG,
- * a dark/light theme toggle button that flips `data-theme` on the SVG
- * element, and `doc.cards[]` rendered as real HTML (so their text is
- * selectable, unlike SVG <text>).
+ * and `doc.cards[]` rendered as real HTML (so their text is selectable,
+ * unlike SVG <text>).
  */
 export function renderArchitectureViewStandaloneHtml(doc: ArchitectureViewDocument): string {
   const svg = renderArchitectureViewSvg(doc);
@@ -346,10 +352,8 @@ export function renderArchitectureViewStandaloneHtml(doc: ArchitectureViewDocume
 <meta charset="utf-8"/>
 <title>${escapeXml(doc.title)}</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root { color-scheme: light; }
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 24px; background: canvas; color: canvastext; }
-  .av-toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
-  .av-toolbar button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #94a3b8; background: transparent; color: inherit; cursor: pointer; }
   .av-diagram { width: 100%; }
   .av-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 24px; }
   .av-card { border: 1px solid #94a3b8; border-radius: 10px; padding: 14px 16px; }
@@ -358,20 +362,8 @@ export function renderArchitectureViewStandaloneHtml(doc: ArchitectureViewDocume
 </style>
 </head>
 <body>
-<div class="av-toolbar"><button id="av-theme-toggle" type="button">Toggle theme</button></div>
 <div class="av-diagram">${svg}</div>
 <div class="av-cards">${cards}</div>
-<script>
-(function () {
-  var btn = document.getElementById("av-theme-toggle");
-  var svgEl = document.querySelector("svg.av-root");
-  if (!btn || !svgEl) return;
-  btn.addEventListener("click", function () {
-    var current = svgEl.getAttribute("data-theme");
-    svgEl.setAttribute("data-theme", current === "dark" ? "light" : "dark");
-  });
-})();
-</script>
 </body>
 </html>`;
 }

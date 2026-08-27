@@ -113,25 +113,6 @@ const sourceInputSchema = z
   })
   .passthrough();
 
-// V2: per-audience display override (see PresentationOverride in
-// @vibee/protocol). Same permissive, field-shaped-but-unconstrained style as
-// everything else here -- e.g. `visibility` is a plain string, not an enum,
-// because the real enum check happens in the ajv schema on the bridge side.
-const presentationOverrideInputSchema = z
-  .object({
-    label: z.string().optional(),
-    sublabel: z.string().optional(),
-    visibility: z.string().optional(),
-  })
-  .passthrough();
-
-const audiencePresentationInputSchema = z
-  .object({
-    simple: presentationOverrideInputSchema.optional(),
-    technical: presentationOverrideInputSchema.optional(),
-  })
-  .passthrough();
-
 const componentInputSchema = z
   .object({
     id: z.string().optional(),
@@ -144,7 +125,6 @@ const componentInputSchema = z
     semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
     sublabel: z.string().optional(),
-    presentation: audiencePresentationInputSchema.optional(),
     pos: z.array(z.number()).optional(),
     size: z.array(z.number()).optional(),
     sources: z.array(sourceInputSchema).optional(),
@@ -157,7 +137,6 @@ const boundaryInputSchema = z
     kind: z.string().optional(),
     semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
-    presentation: audiencePresentationInputSchema.optional(),
     wraps: z.array(z.string()).optional(),
     pad: z.number().optional(),
   })
@@ -170,7 +149,6 @@ const connectionInputSchema = z
     to: z.string().optional(),
     semanticRefs: z.array(z.string()).optional(),
     label: z.string().optional(),
-    presentation: audiencePresentationInputSchema.optional(),
     variant: z.string().optional(),
   })
   .passthrough();
@@ -202,13 +180,6 @@ const documentInputSchema = z
     viewBox: z.array(z.number()).optional(),
     repository: z
       .object({ url: z.string().optional(), revision: z.string().optional() })
-      .passthrough()
-      .optional(),
-    presentation: z
-      .object({
-        defaultAudience: z.string().optional(),
-        availableAudiences: z.array(z.string()).optional(),
-      })
       .passthrough()
       .optional(),
     components: z.array(componentInputSchema).optional(),

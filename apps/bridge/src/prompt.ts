@@ -3,7 +3,6 @@ import { architectureViewSchemaBlock, runtimeSemanticSchemaBlock } from "./promp
 import { runtimeSemanticContract } from "./prompts/runtime-semantic-contract.js";
 import { runtimeSemanticExamples } from "./prompts/runtime-semantic-examples.js";
 import { architectureCompositionContract } from "./prompts/architecture-composition-contract.js";
-import { audiencePresentationContract } from "./prompts/audience-presentation-contract.js";
 import { correctionContract } from "./prompts/correction-contract.js";
 
 // V2 (docs/v2_plan.md §12): the prompt is assembled from role-scoped modules
@@ -28,6 +27,14 @@ ${revisionSection}
 
 This analysis produces a **runtime architecture**: not a file/framework inventory, but a map of who interacts with the system, what runtimes exist, what each runtime is responsible for, and how those responsibilities interact. It is built in two stages: first a repository-evidence-only semantic model, then one canonical visual composition of that model.
 
+## Output language
+
+All human-readable free text you author in both stages must be written in natural, concise Korean (한국어):
+- **Stage 1 semantic model:** actor names, descriptions, runtime unit names, responsibility labels, state names, external entity names, and all interaction/connection labels.
+- **Stage 2 architecture document:** component/boundary/connection \`label\` and \`sublabel\` fields, \`title\`, card \`title\` and \`items[]\` entries.
+- The example JSON snippets shown below are provided in English to demonstrate structural and grammatical conventions (e.g., how \`label\`/\`sublabel\` are split, actor placement patterns, etc.). **Do not copy their wording verbatim.** You must author genuine, original labels in Korean.
+- **Exception:** \`sources[]\` file \`path\` values and any code identifiers or technical names quoted verbatim from the codebase must remain as-is (not translated).
+
 ## Step 0: Explore first
 
 Before writing anything, explore the repository using your native Read, Grep, and Glob tools. Understand the macro structure: what runtime units exist (frontend app, backend/API service, database, background workers, external integrations, etc.), who/what interacts with them, and how they are wired together at runtime.
@@ -49,8 +56,6 @@ ${architectureCompositionContract()}
 The document you author for this stage must validate against this exact JSON Schema:
 
 ${architectureViewSchemaBlock()}
-
-${audiencePresentationContract()}
 
 ## Architecture authoring rules
 
