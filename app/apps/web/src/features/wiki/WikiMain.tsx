@@ -139,7 +139,7 @@ export function WikiMain(state: WikiFeatureState) {
             </svg>
           </div>
           <h3 style={{ margin: "0 0 6px", fontSize: 16, color: "var(--text)" }}>프로젝트 위키</h3>
-          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13.5, maxWidth: 420 }}>
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13.5, whiteSpace: "nowrap" }}>
             왼쪽 패널에서 프로젝트 경로를 입력하고 키워드 후보를 찾은 뒤 항목을 선택하세요.
           </p>
         </div>

@@ -107,7 +107,9 @@ export function DesignMain(state: DesignFeatureState) {
         </div>
         <h3 style={{ margin: "0 0 6px", fontSize: 16, color: "var(--text)" }}>설계 인터뷰 시작 대기</h3>
         <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13.5, maxWidth: 400 }}>
-          왼쪽 패널에서 프로젝트 절대 경로를 입력하고 인터뷰를 시작하세요. 설계 초안이 나오면 여기에 실시간으로 표시됩니다.
+          왼쪽 패널에서 프로젝트 절대 경로를 입력하고 인터뷰를 시작하세요.
+          <br />
+          설계 초안이 나오면 여기에 실시간으로 표시됩니다.
         </p>
       </div>
     );
