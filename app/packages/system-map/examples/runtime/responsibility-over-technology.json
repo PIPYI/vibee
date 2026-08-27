@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "title": "Responsibility label vs implementation sublabel",
+  "viewBox": [560, 320],
+  "components": [
+    {
+      "id": "orderProcessing",
+      "type": "backend",
+      "semanticRole": "responsibility",
+      "semanticRefs": ["resp-order-processing"],
+      "label": "Order Processing",
+      "sublabel": "Express · PostgreSQL",
+      "pos": [180, 120],
+      "size": [200, 90]
+    }
+  ],
+  "boundaries": [],
+  "connections": []
+}

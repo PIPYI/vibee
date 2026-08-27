@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibee.dev/schemas/runtime-semantic.schema.json",
+  "title": "RuntimeSemanticDocument",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "title", "actors", "runtimes", "responsibilities", "states", "externals", "interactions"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" },
+        "revision": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" }
+      }
+    },
+    "actors": {
+      "type": "array",
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/actor" }
+    },
+    "runtimes": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/runtimeUnit" }
+    },
+    "responsibilities": {
+      "type": "array",
+      "maxItems": 24,
+      "items": { "$ref": "#/$defs/responsibility" }
+    },
+    "states": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/state" }
+    },
+    "externals": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/external" }
+    },
+    "interactions": {
+      "type": "array",
+      "maxItems": 40,
+      "items": { "$ref": "#/$defs/interaction" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$" },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "label": { "type": "string" }
+      }
+    },
+    "implementationHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["framework", "library", "protocol", "vendor", "database", "queue", "runtime", "other"] }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "sources": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    },
+    "runtimeUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "kind", "sources"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["mobile", "web", "desktop-renderer", "desktop-main", "server", "worker", "cli", "embedded", "other"]
+        },
+        "implementationHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/implementationHint" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    },
+    "responsibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runtimeId", "label", "sources"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "runtimeId": { "type": "string" },
+        "label": { "type": "string", "minLength": 1 },
+        "implementationHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/implementationHint" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "sources"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "runtimeId": { "type": "string" },
+        "label": { "type": "string", "minLength": 1 },
+        "implementationHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/implementationHint" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    },
+    "external": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "sources"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["api", "auth", "storage", "database", "queue", "service", "other"] },
+        "implementationHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/implementationHint" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to", "label", "sources"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "label": { "type": "string" },
+        "kind": { "enum": ["user-action", "request", "event", "auth", "state-read", "state-write", "other"] },
+        "implementationHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/implementationHint" }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/sourceRef" }
+        }
+      }
+    }
+  }
+}

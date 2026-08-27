@@ -64,11 +64,22 @@ import {
   buildDriftVerifyPrompt,
   buildInterviewPrompt,
   buildReviewPrompt,
+  buildSystemMapPrompt,
   buildWikiKeywordsPrompt,
   buildWikiPrompt,
   renderResolutionPrompt,
   renderRetryResolutionPrompt,
 } from "./prompt.js";
+import type { SystemMapDocument, RuntimeSemanticDocument } from "@vci/protocol";
+import { hasError } from "@vci/protocol";
+import {
+  calculateSystemMapLayout,
+  renderSystemMapSvg,
+  validateSystemMap,
+  validateRuntimeSemantics,
+  type SystemMapLayout,
+} from "@vci/system-map";
+import { MAX_SYSTEM_MAP_ATTEMPTS, MAX_RUNTIME_SEMANTIC_ATTEMPTS } from "./state.js";
 import {
   condenseTranscript,
   countOccurrences,
@@ -901,6 +912,255 @@ app.post("/internal/architecture", requireToken, async (req: Request, res: Respo
 });
 
 /**
+ * 시스템 맵: agent가 코드를 읽고 런타임 아키텍처를 SVG로 그려서 커밋한다.
+ * 한 turn 안에서 submit_runtime_semantics → validate_system_map(반복 가능) →
+ * submit_system_map 세 MCP tool을 순서대로 호출한다. Wiki·Architecture와
+ * 상태를 공유하지 않는다.
+ */
+app.post("/api/system-map", async (req: Request, res: Response) => {
+  const body = req.body as StartArchitectureRequest;
+  const adapter = adapters.get(body?.agent ?? "");
+  if (!adapter) {
+    const supported = [...adapters.keys()].join(", ");
+    res.status(400).json({ error: `Unsupported agent: ${body?.agent}. Supported agents: ${supported}.` });
+    return;
+  }
+  if (state.getActiveTaskId()) {
+    res.status(409).json({ error: "A task is still running." });
+    return;
+  }
+
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(body.projectPath);
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const ready = await adapter.checkReady();
+  if (!ready.installed || ready.authenticated === false) {
+    res.status(412).json({ error: ready.message ?? "Agent is not ready." });
+    return;
+  }
+
+  const gitRevision = await resolveGitRevision(projectPath);
+  state.startSystemMap();
+  adapter.resetSession(projectPath, "system-map");
+
+  const taskId = randomUUID();
+  const label = "system map";
+  state.patchAppContext({ projectPath, prompt: label, selectedItem: null });
+  state.createTask({
+    taskId,
+    agent: adapter.id,
+    projectPath,
+    prompt: label,
+    selectedItem: null,
+    status: "starting",
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+    startedAt: new Date().toISOString(),
+    mcpCalls: [],
+  });
+
+  res.json({ taskId });
+
+  void runTask(adapter, taskId, projectPath, buildSystemMapPrompt(projectPath, gitRevision), "system-map", {
+    model: body.model || undefined,
+    effort: body.effort || undefined,
+  });
+});
+
+app.post("/internal/submit-runtime-semantics", requireToken, async (req: Request, res: Response) => {
+  if (!state.getActiveTaskId()) {
+    res.json({
+      diagnostics: [
+        {
+          code: "runtime-semantic/no-active-task",
+          severity: "error",
+          message: "There is no active analysis task to submit runtime semantics against.",
+        },
+      ],
+    });
+    return;
+  }
+
+  const { overLimit } = state.recordSystemMapSemanticAttempt();
+  if (overLimit) {
+    res.json({
+      diagnostics: [
+        {
+          code: "runtime-semantic/submit-limit",
+          severity: "error",
+          message: `submit_runtime_semantics round-trip limit (${MAX_RUNTIME_SEMANTIC_ATTEMPTS}) reached -- stop and report the remaining diagnostics instead of continuing.`,
+        },
+      ],
+    });
+    return;
+  }
+
+  const projectPath = state.getAppContext().projectPath;
+  const diagnostics = validateRuntimeSemantics(req.body, { projectPath });
+  if (hasError(diagnostics)) {
+    res.json({ diagnostics });
+    return;
+  }
+
+  const { revision } = state.commitSystemMapSemanticRevision(req.body as RuntimeSemanticDocument);
+  noteMcpEndpointHit("submit_runtime_semantics");
+  res.json({ diagnostics: [], semanticRevision: revision });
+});
+
+app.post("/internal/validate-system-map", requireToken, (req: Request, res: Response) => {
+  if (!state.getActiveTaskId()) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/no-active-task",
+          severity: "error",
+          message: "There is no active analysis task to validate against.",
+        },
+      ],
+    });
+    return;
+  }
+
+  const { count, overLimit } = state.recordSystemMapAttempt();
+  const attemptsRemaining = Math.max(0, MAX_SYSTEM_MAP_ATTEMPTS - count);
+  if (overLimit) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/validate-limit",
+          severity: "error",
+          message: `Validate/submit round-trip limit (${MAX_SYSTEM_MAP_ATTEMPTS}) reached -- stop and report the remaining diagnostics instead of continuing.`,
+        },
+      ],
+      attemptsRemaining: 0,
+    });
+    return;
+  }
+
+  const { semanticRevision, document } = splitSemanticRevision(req.body);
+  const semanticDocument =
+    typeof semanticRevision === "number" ? state.getSystemMapSemanticRevision(semanticRevision) : undefined;
+  if (!semanticDocument) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/missing-semantic-revision",
+          severity: "error",
+          message:
+            "This document has no valid semanticRevision. Call submit_runtime_semantics first, then pass the semanticRevision it returns as a top-level field alongside this architecture document.",
+        },
+      ],
+      attemptsRemaining,
+    });
+    return;
+  }
+
+  const projectPath = state.getAppContext().projectPath;
+  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument, simpleAudienceLanguage: "ko" });
+  const hasSchemaDiagnostics = diagnostics.some((d) => d.code === "architecture-view/schema");
+  if (!hasSchemaDiagnostics) {
+    const layout = calculateSystemMapLayout(document as SystemMapDocument);
+    res.json({ diagnostics, layout: serializeLayout(layout), attemptsRemaining });
+    return;
+  }
+  res.json({ diagnostics, attemptsRemaining });
+});
+
+app.post("/internal/submit-system-map", requireToken, async (req: Request, res: Response) => {
+  if (!state.getActiveTaskId()) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/no-active-task",
+          severity: "error",
+          message: "There is no active analysis task to submit against.",
+        },
+      ],
+    });
+    return;
+  }
+
+  const { count, overLimit } = state.recordSystemMapAttempt();
+  const attemptsRemaining = Math.max(0, MAX_SYSTEM_MAP_ATTEMPTS - count);
+  if (overLimit) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/validate-limit",
+          severity: "error",
+          message: `Validate/submit round-trip limit (${MAX_SYSTEM_MAP_ATTEMPTS}) reached -- stop and report the remaining diagnostics instead of continuing.`,
+        },
+      ],
+      attemptsRemaining: 0,
+    });
+    return;
+  }
+
+  const { semanticRevision, document } = splitSemanticRevision(req.body);
+  const semanticDocument =
+    typeof semanticRevision === "number" ? state.getSystemMapSemanticRevision(semanticRevision) : undefined;
+  if (!semanticDocument) {
+    res.json({
+      diagnostics: [
+        {
+          code: "architecture-view/missing-semantic-revision",
+          severity: "error",
+          message:
+            "This document has no valid semanticRevision. Call submit_runtime_semantics first, then pass the semanticRevision it returns as a top-level field alongside this architecture document.",
+        },
+      ],
+      attemptsRemaining,
+    });
+    return;
+  }
+
+  const projectPath = state.getAppContext().projectPath;
+  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument, simpleAudienceLanguage: "ko" });
+  if (hasError(diagnostics)) {
+    res.json({ diagnostics, attemptsRemaining });
+    return;
+  }
+
+  const taskId = state.getActiveTaskId() as string;
+  const gitRevision = await resolveGitRevision(projectPath);
+  const documentWithSources = inheritSystemMapSources(document as SystemMapDocument, semanticDocument);
+  try {
+    await writeSystemMap(projectPath, documentWithSources, { gitRevision, taskId });
+  } catch (error) {
+    res.status(500).json({ error: `시스템 맵 저장 실패: ${asMessage(error)}` });
+    return;
+  }
+
+  noteMcpEndpointHit("submit_system_map");
+  state.emit({ type: "system-map.committed", taskId });
+  res.json({ committed: true });
+});
+
+app.get("/api/system-map", async (req: Request, res: Response) => {
+  let projectPath: string;
+  try {
+    projectPath = await canonicalizeProjectPath(String(req.query["projectPath"] ?? ""));
+  } catch (error) {
+    res.status(400).json({ error: asMessage(error) });
+    return;
+  }
+
+  const stored = await readSystemMap(projectPath);
+  if (!stored) {
+    res.status(404).json({ error: "no system map has been committed for this project yet" });
+    return;
+  }
+
+  const svg = renderSystemMapSvg(stored.document, { audience: "simple" });
+  res.json({ document: stored.document, svg, meta: stored.meta });
+});
+
+/**
  * 위키 후보 키워드. agent가 고른다 — 빈도는 낯섦과 반대 방향이라 기준이 될 수 없다.
  * 위키 패널을 열 때 한 번이고, 키워드마다가 아니다.
  */
@@ -1253,7 +1513,7 @@ async function clearGeneratedArtifacts(projectPath: string): Promise<string[]> {
     await rm(path, { force: true });
     removed.push(name);
   }
-  for (const name of ["design.json", REVIEW_LOG, "architecture.json", "architecture.md"]) {
+  for (const name of ["design.json", REVIEW_LOG, "architecture.json", "architecture.md", "system-map.json"]) {
     const path = join(projectPath, name);
     try {
       await stat(path);
@@ -1363,6 +1623,90 @@ function openFindingsFrom(log: ReviewLog): DriftFinding[] {
     }
   }
   return open;
+}
+
+/** best-effort git revision 조회. git 저장소가 아니거나 git이 없어도 정상 케이스이므로 절대 throw하지 않는다. */
+async function resolveGitRevision(projectPath: string): Promise<string | undefined> {
+  try {
+    const output = await gitOutput(projectPath, ["rev-parse", "HEAD"]);
+    const revision = output.trim();
+    return revision.length > 0 ? revision : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** SystemMapLayout의 Map들은 JSON.stringify로 안 살아남으므로 일반 객체로 바꾼다. */
+function serializeLayout(layout: SystemMapLayout) {
+  return {
+    componentRects: Object.fromEntries(layout.componentRects),
+    routes: Object.fromEntries(layout.routes),
+    labelRects: Object.fromEntries(layout.labelRects),
+  };
+}
+
+/**
+ * MCP tool이 semanticRevision을 문서와 합쳐서 하나의 flat 객체로 보내므로, 여기서 분리한다.
+ * SystemMapDocument JSON Schema가 루트에 additionalProperties:false를 걸어 두므로 document에서는
+ * semanticRevision을 반드시 제거해야 한다.
+ */
+function splitSemanticRevision(body: unknown): { semanticRevision: unknown; document: unknown } {
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    const { semanticRevision, ...document } = body as Record<string, unknown>;
+    return { semanticRevision, document };
+  }
+  return { semanticRevision: undefined, document: body };
+}
+
+/** Stage 1(semantic) 근거를 매칭되는 시각 컴포넌트에 커밋 전에 이식한다. */
+function inheritSystemMapSources(
+  document: SystemMapDocument,
+  semanticDocument: RuntimeSemanticDocument,
+): SystemMapDocument {
+  const entitiesByRole = {
+    actor: semanticDocument.actors,
+    responsibility: semanticDocument.responsibilities,
+    state: semanticDocument.states,
+    external: semanticDocument.externals,
+  } as const;
+
+  return {
+    ...document,
+    components: document.components.map((component) => {
+      const inherited = component.semanticRefs.flatMap(
+        (ref) => entitiesByRole[component.semanticRole].find((entity) => entity.id === ref)?.sources ?? [],
+      );
+      const sources = new Map<string, (typeof inherited)[number]>();
+      for (const source of [...(component.sources ?? []), ...inherited]) {
+        sources.set(`${source.path}:${source.line ?? ""}:${source.endLine ?? ""}:${source.label ?? ""}`, source);
+      }
+      return sources.size > 0 ? { ...component, sources: [...sources.values()].slice(0, 3) } : component;
+    }),
+  };
+}
+
+type SystemMapMeta = { committedAt: string; gitRevision?: string; taskId: string };
+
+/** 프로젝트 루트의 system-map.json을 읽는다. 아직 커밋된 게 없으면(정상 상태) null. */
+async function readSystemMap(
+  projectPath: string,
+): Promise<{ document: SystemMapDocument; meta: SystemMapMeta } | null> {
+  try {
+    const raw = await readFile(join(projectPath, "system-map.json"), "utf8");
+    return JSON.parse(raw) as { document: SystemMapDocument; meta: SystemMapMeta };
+  } catch {
+    return null;
+  }
+}
+
+/** 프로젝트 루트에 system-map.json으로 커밋한다 (다른 산출물처럼 숨김 디렉터리 대신 루트, FINDINGS.md 참고). */
+async function writeSystemMap(
+  projectPath: string,
+  document: SystemMapDocument,
+  meta: { gitRevision?: string; taskId: string },
+): Promise<void> {
+  const fullMeta: SystemMapMeta = { ...meta, committedAt: new Date().toISOString() };
+  await writeFile(join(projectPath, "system-map.json"), JSON.stringify({ document, meta: fullMeta }, null, 2), "utf8");
 }
 
 /** 구조 점검은 이력 배열을 쌓지 않고 현재 snapshot을 덮어쓴다. 추세는 git이 남긴다. */

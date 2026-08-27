@@ -587,6 +587,7 @@ export type AgentEvent =
   | { type: "app.wiki.keywords"; taskId: string; keywords: WikiKeyword[] }
   | { type: "app.question"; taskId: string; question: PendingQuestion }
   | { type: "app.answer"; taskId: string; questionId: string; answer: string }
+  | { type: "system-map.committed"; taskId: string }
   | { type: "task.completed"; taskId: string }
   | { type: "task.interrupted"; taskId: string }
   | { type: "task.error"; taskId: string; message: string };
@@ -907,3 +908,201 @@ export type BridgeStateResponse = {
 };
 
 export type ErrorResponse = { error: string };
+
+// ---------- 시스템 맵 (vibee의 architecture-view/runtime-semantic 포팅) ----------
+
+/** 시스템 런타임의 근거. RuntimeSemanticDocument는 좌표를 갖지 않으며 audience별 표현도 없다. */
+export type SourceRef = {
+  path: string;
+  line?: number;
+  endLine?: number;
+  label?: string;
+};
+
+export type ImplementationHint = {
+  label: string;
+  kind?: "framework" | "library" | "protocol" | "vendor" | "database" | "queue" | "runtime" | "other";
+};
+
+export type RuntimeActor = {
+  id: string;
+  label: string;
+  sources?: SourceRef[];
+};
+
+export type RuntimeUnitKind =
+  | "mobile"
+  | "web"
+  | "desktop-renderer"
+  | "desktop-main"
+  | "server"
+  | "worker"
+  | "cli"
+  | "embedded"
+  | "other";
+
+export type RuntimeUnit = {
+  id: string;
+  label: string;
+  kind: RuntimeUnitKind;
+  implementationHints?: ImplementationHint[];
+  sources: SourceRef[];
+};
+
+export type RuntimeResponsibility = {
+  id: string;
+  runtimeId: string;
+  label: string;
+  implementationHints?: ImplementationHint[];
+  sources: SourceRef[];
+};
+
+export type RuntimeState = {
+  id: string;
+  runtimeId?: string;
+  label: string;
+  implementationHints?: ImplementationHint[];
+  sources: SourceRef[];
+};
+
+export type RuntimeExternal = {
+  id: string;
+  label: string;
+  kind?: "api" | "auth" | "storage" | "database" | "queue" | "service" | "other";
+  implementationHints?: ImplementationHint[];
+  sources: SourceRef[];
+};
+
+export type RuntimeInteractionKind = "user-action" | "request" | "event" | "auth" | "state-read" | "state-write" | "other";
+
+export type RuntimeInteraction = {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  kind?: RuntimeInteractionKind;
+  implementationHints?: ImplementationHint[];
+  sources: SourceRef[];
+};
+
+export type RuntimeSemanticDocument = {
+  schemaVersion: 1;
+  title: string;
+  repository?: {
+    url?: string;
+    revision?: string;
+  };
+  actors: RuntimeActor[];
+  runtimes: RuntimeUnit[];
+  responsibilities: RuntimeResponsibility[];
+  states: RuntimeState[];
+  externals: RuntimeExternal[];
+  interactions: RuntimeInteraction[];
+};
+
+/** 시스템 맵 컴포넌트 타입 */
+export type SystemMapComponentType =
+  | "frontend"
+  | "backend"
+  | "database"
+  | "cloud"
+  | "security"
+  | "messagebus"
+  | "external";
+
+export type SystemMapSource = {
+  path: string;
+  line?: number;
+  endLine?: number;
+  label?: string;
+};
+
+/** RuntimeSemanticDocument 엔티티의 역할 */
+export type SystemMapSemanticRole = "actor" | "responsibility" | "state" | "external";
+
+export type SystemMapAudience = "simple" | "technical";
+
+/** 청중별 표현 재정의. 의미론적 정체성, 위상, 기하학을 바꾸면 안 된다. */
+export type PresentationOverride = {
+  label?: string;
+  sublabel?: string | null;
+  visibility?: "show" | "hide";
+};
+
+export type AudiencePresentation = {
+  simple?: PresentationOverride;
+  technical?: PresentationOverride;
+};
+
+export type SystemMapComponent = {
+  id: string;
+  type: SystemMapComponentType;
+  semanticRole: SystemMapSemanticRole;
+  semanticRefs: string[];
+  label: string;
+  sublabel?: string;
+  presentation?: AudiencePresentation;
+  pos: [number, number];
+  size: [number, number];
+  sources?: SystemMapSource[];
+};
+
+export type SystemMapBoundary = {
+  id?: string;
+  kind: "runtime" | "region" | "security-group";
+  semanticRefs?: string[];
+  label: string;
+  presentation?: AudiencePresentation;
+  wraps: string[];
+  pad?: number;
+};
+
+export type SystemMapConnection = {
+  id?: string;
+  from: string;
+  to: string;
+  semanticRefs?: string[];
+  label?: string;
+  presentation?: AudiencePresentation;
+  variant?: "default" | "emphasis" | "security" | "dashed";
+};
+
+export type SystemMapCard = {
+  dot?: string;
+  title: string;
+  items: string[];
+};
+
+export type SystemMapDocument = {
+  schemaVersion: 2;
+  title: string;
+  viewBox?: [number, number];
+  repository?: { url?: string; revision?: string };
+  presentation?: {
+    defaultAudience: "simple";
+    availableAudiences: SystemMapAudience[];
+  };
+  components: SystemMapComponent[];
+  boundaries: SystemMapBoundary[];
+  connections: SystemMapConnection[];
+  cards?: SystemMapCard[];
+};
+
+/** 검증 진단 심각도 */
+export type DiagnosticSeverity = "error" | "warning";
+
+export type Diagnostic = {
+  code: string;
+  severity: DiagnosticSeverity;
+  message: string;
+  /** 예: 컴포넌트/연결 id */
+  subject?: string;
+  /** 구조화된 세부 사항 (예: 겹침 크기, 잘못된 rect) */
+  evidence?: unknown;
+  /** 사람이 읽을 수 있는 단문 힌트 문자열 */
+  supportedFixes?: string[];
+};
+
+export function hasError(diagnostics: Diagnostic[]): boolean {
+  return diagnostics.some((d) => d.severity === "error");
+}

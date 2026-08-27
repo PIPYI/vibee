@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "title": "Primary path with a branch",
+  "viewBox": [800, 320],
+  "components": [
+    {
+      "id": "traveler",
+      "type": "external",
+      "semanticRole": "actor",
+      "semanticRefs": ["actor-traveler"],
+      "label": "Traveler",
+      "pos": [40, 140],
+      "size": [140, 70]
+    },
+    {
+      "id": "orderProcessing",
+      "type": "backend",
+      "semanticRole": "responsibility",
+      "semanticRefs": ["resp-order-processing"],
+      "label": "Order Processing",
+      "pos": [280, 140],
+      "size": [180, 80]
+    },
+    {
+      "id": "orderHistory",
+      "type": "database",
+      "semanticRole": "state",
+      "semanticRefs": ["state-order-history"],
+      "label": "Order History",
+      "pos": [560, 40],
+      "size": [170, 70]
+    }
+  ],
+  "boundaries": [],
+  "connections": [
+    { "id": "traveler-to-order", "from": "traveler", "to": "orderProcessing", "label": "place order", "variant": "emphasis" },
+    { "id": "order-to-history", "from": "orderProcessing", "to": "orderHistory", "label": "log order", "variant": "default" }
+  ]
+}

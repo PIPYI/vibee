@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "title": "Actor placement",
+  "viewBox": [560, 320],
+  "components": [
+    {
+      "id": "traveler",
+      "type": "external",
+      "semanticRole": "actor",
+      "semanticRefs": ["actor-traveler"],
+      "label": "Traveler",
+      "pos": [40, 120],
+      "size": [140, 70]
+    },
+    {
+      "id": "orderProcessing",
+      "type": "backend",
+      "semanticRole": "responsibility",
+      "semanticRefs": ["resp-order-processing"],
+      "label": "Order Processing",
+      "pos": [340, 120],
+      "size": [180, 80]
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "serverRuntime",
+      "kind": "runtime",
+      "semanticRefs": ["runtime-server"],
+      "label": "Server Runtime",
+      "wraps": ["orderProcessing"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "id": "traveler-to-order", "from": "traveler", "to": "orderProcessing", "label": "place order" }
+  ]
+}

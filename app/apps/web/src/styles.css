@@ -1110,3 +1110,166 @@ button.secondary:disabled {
     transform: rotate(360deg);
   }
 }
+
+/* ---------- 시스템 맵 (vibee의 architecture-view 웹 UI 포팅) ---------- */
+
+.system-map-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.system-map-header button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.system-map-svg-mount {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.system-map-svg-mount svg.av-root {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.system-map-svg-mount [data-component-id],
+.system-map-svg-mount [data-boundary-id],
+.system-map-svg-mount [data-connection-id] {
+  cursor: pointer;
+}
+
+.system-map-inspector {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  background: var(--bg-card);
+}
+
+.system-map-inspector h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.system-map-inspector h3 {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 12px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.system-map-inspector p {
+  margin: 0;
+  color: var(--text);
+}
+
+.system-map-inspector-role {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.system-map-inspector-sources {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+}
+
+.system-map-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.system-map-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  background: var(--bg-card);
+}
+
+.system-map-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.system-map-card-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.system-map-card ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* ---------- Panel 접기/펼치기 ---------- */
+
+.body {
+  transition: grid-template-columns 0.18s ease;
+}
+
+.body.panel-collapsed {
+  grid-template-columns: 44px 1fr;
+}
+
+.panel {
+  position: relative;
+}
+
+.panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  align-self: flex-end;
+  flex-shrink: 0;
+}
+
+.body.panel-collapsed .panel-toggle {
+  align-self: center;
+}
+
+.panel-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-dark);
+}
+
+/* 접혔을 때는 패널 내용을 아예 렌더링하지 않는다(App.tsx) — 여기선 좁아진 44px 폭에서
+   버튼만 남긴 컬럼처럼 보이게 여백만 정리한다. */
+.body.panel-collapsed .panel {
+  padding: 12px 8px;
+  align-items: center;
+}
+
+/* 시스템 맵 뷰는 다른 기능들(글 위주 Design/Drift/Wiki)과 달리 다이어그램이 커질수록
+   좋으므로, .main > div의 기본 860px 폭 제한을 받지 않고 항상 .main 전체 폭을 쓴다 —
+   Panel을 접으면 .main이 넓어지고, 그만큼 다이어그램도 같이 커진다. */
+.main > div.system-map-view {
+  max-width: none;
+}

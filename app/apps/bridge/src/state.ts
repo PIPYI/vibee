@@ -20,9 +20,16 @@ import type {
   TranscriptMessage,
   WikiContext,
   WikiTranscript,
+  RuntimeSemanticDocument,
 } from "@vci/protocol";
 
 const MAX_BUFFERED_EVENTS = 500;
+
+// vibee 원본은 6이다. 이 앱은 MCP 서버 하나를 5개 기능이 공유해 모델이 무관한 tool(예:
+// get_app_context)에 곁눈질하느라 vibee 단독 환경보다 수렴이 느린 경향이 실측됐다 — 여유를
+// 더 준다 (2026-08-27, 실제 Claude/Codex 실행에서 6개 한도 소진 확인 후 조정).
+export const MAX_SYSTEM_MAP_ATTEMPTS = 9;
+export const MAX_RUNTIME_SEMANTIC_ATTEMPTS = 4;
 
 /** 초안 전체 대신 실어 보내는 요약 (AppContext.designDigest). */
 function digestDesign(design: DesignDoc): DesignDigest {
@@ -83,6 +90,10 @@ export class BridgeState {
   private wikiContext: WikiContext | null = null;
   private wikiTranscript: WikiTranscript | null = null;
   private wikiSource: TranscriptMessage[] = [];
+
+  private systemMapAttempts = 0;
+  private systemMapSemanticAttempts = 0;
+  private systemMapSemanticRevisions: RuntimeSemanticDocument[] = [];
 
   getAppContext(includeDesign = false): AppContext {
     return {
@@ -190,6 +201,38 @@ export class BridgeState {
 
   getArchitectureContext(): ArchitectureContext | null {
     return this.architectureContext;
+  }
+
+  // ---------- 시스템 맵 ----------
+
+  /** 새 시스템 맵 분석을 시작할 때 이전 시도/리비전을 모두 초기화한다. */
+  startSystemMap(): void {
+    this.systemMapAttempts = 0;
+    this.systemMapSemanticAttempts = 0;
+    this.systemMapSemanticRevisions = [];
+  }
+
+  recordSystemMapAttempt(): { count: number; overLimit: boolean } {
+    this.systemMapAttempts += 1;
+    return { count: this.systemMapAttempts, overLimit: this.systemMapAttempts > MAX_SYSTEM_MAP_ATTEMPTS };
+  }
+
+  recordSystemMapSemanticAttempt(): { count: number; overLimit: boolean } {
+    this.systemMapSemanticAttempts += 1;
+    return {
+      count: this.systemMapSemanticAttempts,
+      overLimit: this.systemMapSemanticAttempts > MAX_RUNTIME_SEMANTIC_ATTEMPTS,
+    };
+  }
+
+  /** 검증을 통과한 RuntimeSemanticDocument를 1부터 순번이 매겨지는 불변 리비전으로 커밋한다. */
+  commitSystemMapSemanticRevision(document: RuntimeSemanticDocument): { revision: number } {
+    this.systemMapSemanticRevisions.push(document);
+    return { revision: this.systemMapSemanticRevisions.length };
+  }
+
+  getSystemMapSemanticRevision(revision: number): RuntimeSemanticDocument | undefined {
+    return this.systemMapSemanticRevisions[revision - 1];
   }
 
   // ---------- 위키 ----------
