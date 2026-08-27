@@ -183,7 +183,7 @@ export default function App() {
   if (phase === "viewing" && viewingData) {
     return (
       <div className="viewing-screen">
-        <ArchitectureView document={viewingData.document} svgByAudience={viewingData.svgByAudience} meta={viewingData.meta} />
+        <ArchitectureView document={viewingData.document} svg={viewingData.svg} meta={viewingData.meta} />
         <button type="button" onClick={handleStartNewFromViewing}>
           새 프로젝트 분석 시작
         </button>

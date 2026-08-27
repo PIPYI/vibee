@@ -152,6 +152,15 @@ test("runtime boundaries get a visually distinct treatment (badge) from region/s
   assert.ok(svg.includes("kind-runtime"));
 });
 
+test("simple audience localizes renderer-owned badges, sigils, and legend labels", () => {
+  const svg = renderArchitectureViewSvg(audienceDoc, { audience: "simple" });
+  assert.ok(svg.includes("실행 환경 · "));
+  assert.ok(svg.includes(">서</text>"));
+  assert.ok(svg.includes(">서버</text>"));
+  assert.ok(!svg.includes(">RUNTIME · </text>"));
+  assert.ok(!svg.includes(">Backend</text>"));
+});
+
 test("data-semantic-refs is present on components/boundaries/connections that have semanticRefs", () => {
   const svg = renderArchitectureViewSvg(audienceDoc, { audience: "technical" });
   assert.ok(svg.includes('data-semantic-refs="actor-traveler"'));

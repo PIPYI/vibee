@@ -53,7 +53,7 @@ export function startArchitectureView(input: {
 
 export type ArchitectureViewResponse = {
   document: ArchitectureViewDocument;
-  svgByAudience: { simple: string; technical: string };
+  svg: string;
   meta: { committedAt: string; gitRevision?: string; taskId: string };
 };
 

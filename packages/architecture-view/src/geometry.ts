@@ -794,7 +794,7 @@ export function checkGeometry(doc: ArchitectureViewDocument): Diagnostic[] {
     if (!connected.has(c.id)) {
       diagnostics.push({
         code: "architecture-view/component-disconnected",
-        severity: "warning",
+        severity: "error",
         message: `Component "${c.id}" has no connections.`,
         subject: c.id,
         supportedFixes: [`add at least one connection to/from "${c.id}", or remove it`],

@@ -72,5 +72,10 @@ test("the prompt covers every §12.4 regression-test concept", () => {
   assert.match(prompt, /exactly one canonical architecture/i);
   assert.match(prompt, /simple and technical share the same semantic identity/i);
   assert.match(prompt, /hide technical jargon by default/i);
+  assert.match(prompt, /every visible simple-view text must be Korean/i);
+  assert.match(prompt, /English-only phrase/i);
   assert.match(prompt, /no profile-specific topology generation/i);
+  assert.match(prompt, /every component kept on the canvas must retain at least one evidence-backed connection/i);
+  assert.match(prompt, /do not stop merely because the total error count stayed the same/i);
+  assert.match(prompt, /changed .*code.*subject.* set means the previous fix made progress/i);
 });

@@ -95,7 +95,7 @@ test("duplicate-connection: two connections sharing endpoints is a warning", () 
   assert.equal(hit?.severity, "warning");
 });
 
-test("component-disconnected: a component with no connections is a warning", () => {
+test("component-disconnected: a component with no connections is an error", () => {
   const d = doc({
     components: [comp({ id: "a", pos: [0, 0] }), comp({ id: "b", pos: [300, 0] }), comp({ id: "c", pos: [600, 0] })],
     connections: [{ from: "a", to: "b" }],
@@ -103,7 +103,7 @@ test("component-disconnected: a component with no connections is a warning", () 
   const diagnostics = checkGeometry(d);
   const hit = diagnostics.find((x) => x.code === "architecture-view/component-disconnected" && x.subject === "c");
   assert.ok(hit);
-  assert.equal(hit?.severity, "warning");
+  assert.equal(hit?.severity, "error");
 });
 
 test("edge-crosses-component: a connection whose target is fully walled in is an error", () => {
@@ -187,4 +187,36 @@ test("validateArchitectureView ignores an unrelated/stale repository.revision an
   });
   const diagnostics = validateArchitectureView(d, { projectPath: process.cwd() });
   assert.deepEqual(diagnostics.filter((x) => x.code === "architecture-view/citation-invalid"), []);
+});
+
+test("Korean simple audience validation rejects English-only visible text", () => {
+  const d = doc({
+    title: "테스트 구조",
+    components: [comp({ id: "uploader", label: "Store Uploaded Documents" })],
+  });
+  const diagnostics = validateArchitectureView(d, { projectPath: process.cwd(), simpleAudienceLanguage: "ko" });
+  const hit = diagnostics.find(
+    (x) => x.code === "architecture-view/simple-text-not-korean" && x.subject === "uploader",
+  );
+  assert.ok(hit);
+  assert.equal(hit.severity, "error");
+});
+
+test("Korean simple audience validation accepts a Korean override around a technical proper name", () => {
+  const d = doc({
+    title: "테스트 구조",
+    components: [
+      comp({
+        id: "openai",
+        label: "OpenAI Service",
+        sublabel: "Responses API",
+        presentation: { simple: { label: "OpenAI 답변 서비스", sublabel: null } },
+      }),
+    ],
+  });
+  const diagnostics = validateArchitectureView(d, { projectPath: process.cwd(), simpleAudienceLanguage: "ko" });
+  assert.deepEqual(
+    diagnostics.filter((x) => x.code === "architecture-view/simple-text-not-korean"),
+    [],
+  );
 });

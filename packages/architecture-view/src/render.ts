@@ -21,16 +21,16 @@ export type RenderOptions = {
   selectedSemanticRef?: string;
 };
 
-type TypeMeta = { sigil: string; name: string };
+type TypeMeta = { sigil: string; name: string; simpleSigil: string; simpleName: string };
 
 const TYPE_META: Record<ArchitectureViewComponentType, TypeMeta> = {
-  frontend: { sigil: "FE", name: "Frontend" },
-  backend: { sigil: "BE", name: "Backend" },
-  database: { sigil: "DB", name: "Database" },
-  cloud: { sigil: "CL", name: "Cloud" },
-  security: { sigil: "SEC", name: "Security" },
-  messagebus: { sigil: "MQ", name: "Message bus" },
-  external: { sigil: "EX", name: "External" },
+  frontend: { sigil: "FE", name: "Frontend", simpleSigil: "화", simpleName: "화면" },
+  backend: { sigil: "BE", name: "Backend", simpleSigil: "서", simpleName: "서버" },
+  database: { sigil: "DB", name: "Database", simpleSigil: "저", simpleName: "저장소" },
+  cloud: { sigil: "CL", name: "Cloud", simpleSigil: "클", simpleName: "클라우드" },
+  security: { sigil: "SEC", name: "Security", simpleSigil: "보", simpleName: "보안" },
+  messagebus: { sigil: "MQ", name: "Message bus", simpleSigil: "메", simpleName: "메시지 전달" },
+  external: { sigil: "EX", name: "External", simpleSigil: "외", simpleName: "외부" },
 };
 
 const VARIANTS = ["default", "emphasis", "security", "dashed"] as const;
@@ -89,7 +89,7 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
   const style = renderStyle(usedTypes);
   const defs = renderDefs();
   const boundaries = projected.boundaries
-    .map((b) => (resolveVisibility(b, audience) === "hide" ? "" : renderBoundary(b, componentRects, selectedSemanticRef)))
+    .map((b) => (resolveVisibility(b, audience) === "hide" ? "" : renderBoundary(b, componentRects, audience, selectedSemanticRef)))
     .join("\n");
   const connections = projected.connections
     .map((conn, i) =>
@@ -97,9 +97,9 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
     )
     .join("\n");
   const components = visibleComponents
-    .map((c) => renderComponent(c, componentRects.get(c.id)!, selectedSemanticRef))
+    .map((c) => renderComponent(c, componentRects.get(c.id)!, audience, selectedSemanticRef))
     .join("\n");
-  const legend = renderLegend(usedTypes, vbW, vbH);
+  const legend = renderLegend(usedTypes, vbW, vbH, audience);
   const title = `<text class="av-title" x="24" y="34">${escapeXml(projected.title)}</text>`;
   const themeAttr = options?.theme ? ` data-theme="${options.theme}"` : "";
 
@@ -231,6 +231,7 @@ function isSelected(refs: string[] | undefined, selectedSemanticRef: string | un
 function renderBoundary(
   boundary: ArchitectureViewDocument["boundaries"][number],
   componentRects: Map<string, Rect>,
+  audience: ArchitectureAudience,
   selectedSemanticRef?: string,
 ): string {
   const rects = boundary.wraps.map((id) => componentRects.get(id)).filter((r): r is Rect => !!r);
@@ -246,11 +247,12 @@ function renderBoundary(
   // Runtime boundaries get a small uppercase badge before the label so they
   // read as "an actual runtime" at a glance, distinct from a plain grouping
   // region or a security-group.
+  const runtimeBadge = audience === "simple" ? "실행 환경 · " : "RUNTIME · ";
   const badgeEl =
     boundary.kind === "runtime"
-      ? `<text class="av-boundary-badge" x="${minX + 10}" y="${minY - 8}">RUNTIME · </text>`
+      ? `<text class="av-boundary-badge" x="${minX + 10}" y="${minY - 8}">${runtimeBadge}</text>`
       : "";
-  const labelX = boundary.kind === "runtime" ? minX + 10 + labelDisplayWidth("RUNTIME · ", 11) : minX + 10;
+  const labelX = boundary.kind === "runtime" ? minX + 10 + labelDisplayWidth(runtimeBadge, 11) : minX + 10;
   return `<g class="av-boundary ${kindClass}${selectedClass}"${idAttr}${semanticRefsAttr(boundary.semanticRefs)}><rect x="${minX}" y="${minY}" width="${
     maxX - minX
   }" height="${maxY - minY}" rx="10" ry="10"/>${badgeEl}<text x="${labelX}" y="${minY - 8}">${escapeXml(boundary.label)}</text></g>`;
@@ -283,7 +285,7 @@ function renderConnection(
   return `<g class="av-connection variant-${variant}${selectedClass}"${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}>${pathEl}${labelEl}</g>`;
 }
 
-function renderComponent(c: ArchitectureViewComponent, rect: Rect, selectedSemanticRef?: string): string {
+function renderComponent(c: ArchitectureViewComponent, rect: Rect, audience: ArchitectureAudience, selectedSemanticRef?: string): string {
   const meta = TYPE_META[c.type];
   const sourcesAttr = c.sources && c.sources.length > 0 ? ` data-sources="${escapeAttr(JSON.stringify(c.sources))}"` : "";
   const isActor = c.semanticRole === "actor";
@@ -306,13 +308,13 @@ function renderComponent(c: ArchitectureViewComponent, rect: Rect, selectedSeman
   return `<g class="av-component av-component--${c.type}${roleClass}${selectedClass}" data-component-id="${escapeAttr(c.id)}"${sourcesAttr}${semanticRefsAttr(c.semanticRefs)}>
 <rect class="av-component-box" x="${rect.x}" y="${rect.y}" width="${rect.w}" height="${rect.h}" rx="${boxRx}" ry="${boxRx}"/>
 <rect class="av-sigil-bg" x="${sigilX}" y="${sigilY}" width="${sigilSize}" height="${sigilSize}" rx="4" ry="4"/>
-<text class="av-sigil" x="${sigilX + sigilSize / 2}" y="${sigilY + sigilSize / 2 + 3}" text-anchor="middle">${meta.sigil}</text>
+<text class="av-sigil" x="${sigilX + sigilSize / 2}" y="${sigilY + sigilSize / 2 + 3}" text-anchor="middle">${audience === "simple" ? meta.simpleSigil : meta.sigil}</text>
 <text class="av-label" x="${rect.x + rect.w / 2}" y="${labelY}" text-anchor="middle">${escapeXml(c.label)}</text>
 ${sublabelEl}
 </g>`;
 }
 
-function renderLegend(usedTypes: ArchitectureViewComponentType[], vbW: number, vbH: number): string {
+function renderLegend(usedTypes: ArchitectureViewComponentType[], vbW: number, vbH: number, audience: ArchitectureAudience): string {
   const swatchSize = 10;
   const rowHeight = 18;
   const startY = vbH - usedTypes.length * rowHeight - 12;
@@ -322,7 +324,7 @@ function renderLegend(usedTypes: ArchitectureViewComponentType[], vbW: number, v
       const y = startY + i * rowHeight;
       return `<rect class="av-legend-swatch--${t}" x="${startX}" y="${y}" width="${swatchSize}" height="${swatchSize}" rx="2" ry="2"/><text x="${
         startX + swatchSize + 8
-      }" y="${y + swatchSize}">${escapeXml(TYPE_META[t].name)}</text>`;
+      }" y="${y + swatchSize}">${escapeXml(audience === "simple" ? TYPE_META[t].simpleName : TYPE_META[t].name)}</text>`;
     })
     .join("");
   return `<g class="av-legend">${rows}</g>`;

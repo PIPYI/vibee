@@ -23,7 +23,7 @@ Composition rules:
 - Place actors outside every runtime boundary -- never inside a \`kind: "runtime"\` boundary's \`wraps\`.
 - Make the most important interaction path clearly readable. If one global primary story doesn't fit naturally, it is fine to have a clear primary story per runtime instead.
 - Put side branches near the responsibility they relate to.
-- Remove low-value edges rather than including every static relationship.
+- Remove low-value edges rather than including every static relationship, but every component kept on the canvas must retain at least one evidence-backed connection. Never fix a route/label collision by deleting an interaction if that leaves either endpoint disconnected; reposition components first, or remove an unsupported component together with its visual-only edges.
 - Leave \`cards\` off by default (an empty or omitted array) unless a group of connections genuinely needs plain-language explanation for a non-technical reader.
 - Every component, boundary, and connection you author must carry \`semanticRefs\` back into the semantic model -- an unreferenced or invented visual entity is not allowed.
 

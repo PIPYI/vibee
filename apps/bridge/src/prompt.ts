@@ -62,8 +62,8 @@ ${audiencePresentationContract()}
   - \`variant: "security"\` for connections that cross an authentication or secret boundary.
   - \`variant: "dashed"\` for asynchronous or inferred (not directly observed) connections.
   - Omit \`variant\` (or use \`"default"\`) for ordinary synchronous calls.
-- **Citations (\`sources[]\`) must be real.** Only cite a \`path\` (and optionally \`line\`/\`endLine\`) you actually saw with Read/Grep/Glob. Omitting \`sources\` entirely on a component is always safe. Never guess a line number to make a citation look more precise.
-- **Cards.** Up to 4 \`cards\` entries, each a short titled list of plain-language bullet points, for a non-technical reader. Cards default off -- only add them when a group of connections genuinely needs this extra explanation.
+- **Citations (\`sources[]\`) must be real.** Stage 1 evidence is inherited automatically onto matching visual components through \`semanticRefs\`. You may omit duplicate component \`sources\`; if you add any, only cite a real \`path\` (and optionally \`line\`/\`endLine\`) you actually saw. Never guess a line number.
+- **Cards.** Up to 4 \`cards\` entries, each a short Korean-titled list of Korean plain-language bullet points, for a non-technical reader. Cards default off -- only add them when a group of connections genuinely needs this extra explanation.
 
 ${correctionContract({ semanticAttempts: MAX_RUNTIME_SEMANTIC_ATTEMPTS, architectureAttempts: MAX_ARCHITECTURE_VIEW_ATTEMPTS })}`;
 }

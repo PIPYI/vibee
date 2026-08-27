@@ -169,28 +169,6 @@ code {
   margin: 4px 0 0;
 }
 
-.audience-tabs {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.audience-tab {
-  margin-top: 0;
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font-size: 0.9rem;
-}
-
-.audience-tab--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
 .svg-mount {
   margin-top: 16px;
   border: 1px solid var(--border);

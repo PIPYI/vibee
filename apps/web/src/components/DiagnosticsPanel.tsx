@@ -12,7 +12,7 @@ type Props = {
  * Judgment call (see the task's own framing): the bridge's happy-path
  * response, `GET /api/architecture-view`, does not carry any leftover
  * warnings from the successful submit that produced the committed document
- * -- its response shape is only `{ document, svgByAudience, meta }` (confirmed
+ * -- its response shape is only `{ document, svg, meta }` (confirmed
  * against apps/bridge/src/index.ts). There is no post-commit "warnings from the last
  * submit" data anywhere in the bridge's API for this component to display in
  * the happy path, and fabricating that data would misrepresent what the

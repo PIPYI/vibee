@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { ArchitectureAudience, ArchitectureViewDocument } from "@vibee/protocol";
-import { ArchitectureAudienceTabs } from "./ArchitectureAudienceTabs.tsx";
+import type { ArchitectureViewDocument } from "@vibee/protocol";
 import { ArchitectureInspector, type SelectedArchitectureEntity } from "./ArchitectureInspector.tsx";
 
 type Meta = { committedAt: string; gitRevision?: string; taskId: string };
 
 type Props = {
   document: ArchitectureViewDocument;
-  svgByAudience: { simple: string; technical: string };
+  svg: string;
   meta: Meta;
 };
 
@@ -40,19 +39,10 @@ function parseSemanticRefs(el: Element): string[] {
   return raw ? raw.split(",") : [];
 }
 
-export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) {
+export function ArchitectureView({ document: doc, svg, meta }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [theme, setTheme] = useState<ThemeChoice>("system");
-  // audience/selected are local to this component (not lifted to App.tsx):
-  // ArchitectureView only ever mounts for phase "viewing", so it naturally
-  // unmounts (and these reset) when the app goes back to "idle" for a new
-  // analysis, while switching tabs or clicking entities within one viewing
-  // session never re-triggers a mount -- exactly the reset semantics
-  // docs/v2_plan.md 14.6/18 asks for, with no extra state-lifting needed.
-  const [audience, setAudience] = useState<ArchitectureAudience>("simple");
   const [selected, setSelected] = useState<SelectedArchitectureEntity | null>(null);
-
-  const currentSvg = audience === "simple" ? svgByAudience.simple : svgByAudience.technical;
 
   // Flips data-theme directly on the already-mounted <svg class="av-root">
   // element -- no re-fetch, no re-render of the SVG string itself. This is
@@ -66,16 +56,10 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
     } else {
       root.setAttribute("data-theme", theme);
     }
-  }, [theme, currentSvg]);
+  }, [theme, svg]);
 
   // Re-applies the selection highlight to whichever DOM node currently
-  // carries the selected entity's id -- this must re-run whenever the
-  // mounted SVG string changes (audience switch swaps in a whole fresh DOM
-  // tree) or the selection itself changes (a new click). If the selected
-  // entity is `visibility: "hide"` in this audience, render.ts never emits
-  // a matching node here, so the querySelector below simply finds nothing
-  // and no highlight is drawn -- the inspector (driven by `selected`
-  // independently of the DOM) still shows the entity's info.
+  // carries the selected entity's id whenever the SVG or selection changes.
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -84,7 +68,7 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
     const attr = ENTITY_ATTR[selected.kind];
     const match = container.querySelector(`[${attr}="${CSS.escape(selected.id)}"]`);
     match?.classList.add(SELECTED_CLASS);
-  }, [selected, currentSvg]);
+  }, [selected, svg]);
 
   function handleMountClick(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as Element;
@@ -115,8 +99,6 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
         </button>
       </header>
 
-      <ArchitectureAudienceTabs audience={audience} onChange={setAudience} />
-
       {/* svg is a trusted, server-rendered string produced by
           @vibee/architecture-view's own renderer in this same repo (not
           third-party/untrusted input), so dangerouslySetInnerHTML is safe
@@ -125,15 +107,13 @@ export function ArchitectureView({ document: doc, svgByAudience, meta }: Props) 
         ref={mountRef}
         className="svg-mount"
         onClick={handleMountClick}
-        dangerouslySetInnerHTML={{ __html: currentSvg }}
+        dangerouslySetInnerHTML={{ __html: svg }}
       />
 
       {selected && (
         <ArchitectureInspector
-          audience={audience}
           document={doc}
           entity={selected}
-          onViewTechnical={() => setAudience("technical")}
         />
       )}
 

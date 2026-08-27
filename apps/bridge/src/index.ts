@@ -36,6 +36,7 @@ import {
   startSemanticAttemptCounter,
 } from "./state.js";
 import { readArchitectureView, writeArchitectureView } from "./store.js";
+import { inheritSemanticSources } from "./semantic-sources.js";
 
 const port = resolvePort();
 const bridgeUrl = resolveBridgeUrl(port);
@@ -301,7 +302,11 @@ app.post("/internal/validate-architecture-view", requireBridgeToken, (req, res) 
     return;
   }
 
-  const diagnostics = validateArchitectureView(document, { projectPath: active.projectPath, semanticDocument });
+  const diagnostics = validateArchitectureView(document, {
+    projectPath: active.projectPath,
+    semanticDocument,
+    simpleAudienceLanguage: "ko",
+  });
 
   const hasSchemaDiagnostics = diagnostics.some((d) => d.code === "architecture-view/schema");
   if (!hasSchemaDiagnostics) {
@@ -359,7 +364,11 @@ app.post("/internal/submit-architecture-view", requireBridgeToken, (req, res) =>
     return;
   }
 
-  const diagnostics = validateArchitectureView(document, { projectPath: active.projectPath, semanticDocument });
+  const diagnostics = validateArchitectureView(document, {
+    projectPath: active.projectPath,
+    semanticDocument,
+    simpleAudienceLanguage: "ko",
+  });
 
   if (hasError(diagnostics)) {
     res.status(200).json({ diagnostics });
@@ -371,7 +380,8 @@ app.post("/internal/submit-architecture-view", requireBridgeToken, (req, res) =>
   // validation above, which always checks the live working tree.
   const gitRevision = resolveGitRevision(active.projectPath);
   const metaInput = gitRevision !== undefined ? { gitRevision, taskId: active.taskId } : { taskId: active.taskId };
-  writeArchitectureView(active.projectPath, document as ArchitectureViewDocument, metaInput);
+  const documentWithSources = inheritSemanticSources(document as ArchitectureViewDocument, semanticDocument);
+  writeArchitectureView(active.projectPath, documentWithSources, metaInput);
   clearAttemptCounter(active.taskId);
 
   // Distinct from the agent turn's own "task.completed" (that marks the
@@ -398,19 +408,10 @@ app.get("/api/architecture-view", (req, res) => {
     return;
   }
 
-  // Rendered on every read (not cached) so a renderer improvement
-  // retroactively benefits already-committed projects. Both audience
-  // profiles are rendered from the one stored canonical document and
-  // returned together (docs/v2_plan.md §14.6/§18): tab switching in the web
-  // UI must not trigger a new analysis or a new fetch, so both SVGs need to
-  // already be in hand. BREAKING CHANGE from V1's `{ document, svg, meta }`
-  // response shape -- see the bridge stage's final report for the exact new
-  // shape the web app needs to consume.
-  const svgByAudience = {
-    simple: renderArchitectureViewSvg(stored.document, { audience: "simple" }),
-    technical: renderArchitectureViewSvg(stored.document, { audience: "technical" }),
-  };
-  res.status(200).json({ document: stored.document, svgByAudience, meta: stored.meta });
+  // Rendered on every read (not cached) so renderer improvements also apply
+  // to already-committed projects. The web app exposes the simple view only.
+  const svg = renderArchitectureViewSvg(stored.document, { audience: "simple" });
+  res.status(200).json({ document: stored.document, svg, meta: stored.meta });
 });
 
 app.get("/api/models", (req, res) => {
