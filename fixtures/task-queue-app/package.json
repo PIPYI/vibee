@@ -1,0 +1,13 @@
+{
+  "name": "task-queue-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Producer/worker queue system, fixture for vibee architecture analysis.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

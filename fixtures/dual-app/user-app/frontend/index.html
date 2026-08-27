@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>User - Listings</title>
+    <style>
+      body { font-family: sans-serif; max-width: 600px; margin: 40px auto; }
+      .status { padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+      .status.pending { background: #ffd700; color: #333; }
+      .status.approved { background: #90ee90; color: #333; }
+      .status.rejected { background: #ffcccb; color: #333; }
+      li { margin-bottom: 10px; }
+      form { display: flex; gap: 8px; margin-top: 16px; }
+      form input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Listings (User View)</h1>
+    <ul id="listings-list"></ul>
+    <form id="listing-form">
+      <input id="title-input" type="text" placeholder="Submit a new listing..." required />
+      <button type="submit">Submit</button>
+    </form>
+    <script src="/app.js"></script>
+  </body>
+</html>

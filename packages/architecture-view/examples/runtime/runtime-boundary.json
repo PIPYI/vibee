@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "title": "Two runtimes with different internal responsibilities",
+  "viewBox": [640, 320],
+  "components": [
+    {
+      "id": "travelerScreens",
+      "type": "frontend",
+      "semanticRole": "responsibility",
+      "semanticRefs": ["resp-traveler-screens"],
+      "label": "Traveler App Screens",
+      "pos": [40, 120],
+      "size": [180, 80]
+    },
+    {
+      "id": "orderProcessing",
+      "type": "backend",
+      "semanticRole": "responsibility",
+      "semanticRefs": ["resp-order-processing"],
+      "label": "Order Processing",
+      "pos": [380, 120],
+      "size": [180, 80]
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "mobileRuntime",
+      "kind": "runtime",
+      "semanticRefs": ["runtime-mobile"],
+      "label": "Traveler App Runtime",
+      "wraps": ["travelerScreens"],
+      "pad": 24
+    },
+    {
+      "id": "serverRuntime",
+      "kind": "runtime",
+      "semanticRefs": ["runtime-server"],
+      "label": "Server Runtime",
+      "wraps": ["orderProcessing"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "id": "app-to-server", "from": "travelerScreens", "to": "orderProcessing", "label": "place order", "variant": "default" }
+  ]
+}

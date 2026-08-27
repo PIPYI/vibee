@@ -1,0 +1,22 @@
+{
+  "name": "vibee",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "packages/protocol",
+    "packages/architecture-view",
+    "packages/mcp-server",
+    "apps/bridge",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "bridge": "npm run dev --workspace @vibee/bridge",
+    "web": "npm run dev --workspace @vibee/web"
+  }
+}

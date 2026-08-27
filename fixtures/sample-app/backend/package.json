@@ -1,0 +1,17 @@
+{
+  "name": "sample-app-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tiny Express + SQLite backend for the sample-app smoke-test fixture, not a vibee workspace package.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

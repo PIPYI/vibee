@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>sample-app notes</title>
+    <style>
+      body { font-family: sans-serif; max-width: 480px; margin: 40px auto; }
+      li { margin-bottom: 6px; }
+      #new-note-form { display: flex; gap: 8px; margin-top: 16px; }
+      #new-note-form input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Notes</h1>
+    <ul id="notes-list"></ul>
+    <form id="new-note-form">
+      <input id="note-text" type="text" placeholder="Write a note..." required />
+      <button type="submit">Add</button>
+    </form>
+    <script src="/app.js"></script>
+  </body>
+</html>

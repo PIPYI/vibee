@@ -1,0 +1,15 @@
+// Validate/fix/submit loop instructions, generalized from V1's single-tool
+// "Step 3" section (see git history of apps/bridge/src/prompt.ts) to cover
+// all three MCP tools now that the pipeline has two stages
+// (docs/v2_plan.md §9, §12). Takes the real cap numbers as parameters
+// instead of hardcoding them, so this text can never drift from the actual
+// server-side caps enforced in apps/bridge/src/state.ts.
+export function correctionContract(caps: { semanticAttempts: number; architectureAttempts: number }): string {
+  return `## Validate, fix, submit
+
+**Stage 1 -- submit_runtime_semantics.** Call it with your candidate RuntimeSemanticDocument. It validates schema, then referential integrity, then citations server-side, in one call -- there is no separate "validate" tool for this stage. If it returns any \`severity: "error"\` diagnostic, nothing is committed: use each diagnostic's \`subject\`/\`evidence\`/\`supportedFixes\` to make a targeted fix and call \`submit_runtime_semantics\` again. Once it returns \`{ diagnostics: [], semanticRevision }\`, remember that \`semanticRevision\` number -- you must pass it into both of the Stage 2 tool calls below. **Hard cap: \`submit_runtime_semantics\` costs at most ${caps.semanticAttempts} calls total.** If two consecutive attempts do not reduce the error count, stop iterating and report the remaining diagnostics honestly.
+
+**Stage 2 -- validate_architecture_view, then submit_architecture_view.** Both calls take the same document fields as before, PLUS a top-level \`semanticRevision\` field set to the number \`submit_runtime_semantics\` returned. Omitting it, or referencing a revision that was never committed, is rejected with a diagnostic telling you to call \`submit_runtime_semantics\` first -- it is not silently ignored. \`validate_architecture_view\` runs schema -> semantic mapping -> geometry -> citation checks in order (schema errors short-circuit the rest) and returns \`{ diagnostics, layout? }\`; \`layout\` (actual computed component/route/label coordinates) appears once there are zero schema-level diagnostics. For every diagnostic, use \`subject\`/\`evidence\`/\`supportedFixes\` to make a targeted fix -- never guess. Once \`validate_architecture_view\` returns zero \`severity: "error"\` diagnostics, call \`submit_architecture_view\` exactly once with the same document (including \`semanticRevision\`) to commit it; the bridge re-validates on submit and rejects (returning diagnostics instead of committing) if any error remains. **Hard cap: \`validate_architecture_view\` and \`submit_architecture_view\` together cost at most ${caps.architectureAttempts} calls total.** If two consecutive validate rounds do not reduce the error count, stop iterating and report the remaining diagnostics honestly instead of continuing to guess at fixes.
+
+If any tool call fails (network error, bridge error, or anything else), report that failure honestly in your final summary -- never fabricate a successful validation or submission result you did not actually receive.`;
+}

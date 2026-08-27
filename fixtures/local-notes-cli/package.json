@@ -1,0 +1,13 @@
+{
+  "name": "local-notes-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal local-first CLI note tracker with optional GitHub API sync, fixture for vibee analysis.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node cli.js"
+  }
+}
