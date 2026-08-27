@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Sidebar, type FeatureId } from "./components/Sidebar.js";
 import { TopBar } from "./components/TopBar.js";
+import { ResultPanel } from "./components/ResultPanel.js";
 import { ComingSoon } from "./features/ComingSoon.js";
 import { ArchitectureMain } from "./features/architecture/ArchitectureMain.js";
 import { ArchitecturePanel } from "./features/architecture/ArchitecturePanel.js";
@@ -30,6 +31,7 @@ export function App() {
   const drift = useDriftFeature();
   const architecture = useArchitectureFeature();
   const wiki = useWikiFeature();
+  const latestResultTask = design.tasks.filter((task) => task.result).at(-1);
 
   return (
     <div className="shell">
@@ -45,6 +47,8 @@ export function App() {
           {feature === "analysis" && <ComingSoon label={FEATURE_LABELS[feature]} />}
         </aside>
         <main className="main">
+          {design.connectionError && <div className="connection-banner">{design.connectionError}</div>}
+          {latestResultTask && <ResultPanel task={latestResultTask} />}
           {feature === "design" && <DesignMain {...design} />}
           {feature === "drift" && <DriftMain {...drift} />}
           {feature === "architecture" && <ArchitectureMain {...architecture} />}

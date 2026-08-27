@@ -18,6 +18,13 @@ export type { AgentEventEnvelope, AgentId, AgentReadiness, AppContext, DesignDoc
 export type HealthResponse = { ok: boolean; agents: AgentReadiness[] };
 export type StateResponse = { appContext: AppContext; activeTaskId: string | null; tasks: TaskState[] };
 export type NarrativeResponse = { markdown: string; gaps: string[] };
+export type EnvironmentResponse = {
+  platform: "macos" | "windows" | "wsl" | "linux";
+  architecture: string;
+  nodeVersion: string;
+  pathSeparator: "/" | "\\";
+  pathExample: string;
+};
 /** 생략하면 provider 기본값을 그대로 쓴다 — 화이트리스트로 거르지 않는다. */
 export type ModelSelection = { model?: string; effort?: string };
 
@@ -29,6 +36,10 @@ async function asJson<T>(response: Response): Promise<T> {
 
 export function getHealth(): Promise<HealthResponse> {
   return fetch("/api/health").then((response) => asJson<HealthResponse>(response));
+}
+
+export function getEnvironment(): Promise<EnvironmentResponse> {
+  return fetch("/api/environment").then((response) => asJson<EnvironmentResponse>(response));
 }
 
 export function getState(): Promise<StateResponse> {
@@ -43,7 +54,7 @@ export function startInterview(
   agent: AgentId,
   projectPath: string,
   selection: ModelSelection = {},
-): Promise<{ taskId: string }> {
+): Promise<{ taskId: string; projectPath: string }> {
   return fetch("/api/interview", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -56,7 +67,7 @@ export function sendInterviewMessage(
   projectPath: string,
   message: string,
   selection: ModelSelection = {},
-): Promise<{ taskId: string }> {
+): Promise<{ taskId: string; projectPath: string }> {
   return fetch("/api/interview/message", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -83,13 +94,17 @@ export function getNarrative(): Promise<NarrativeResponse> {
  * 경우가 흔하다. 재연결해도 놓친 이벤트를 따로 복구할 필요는 없다: bridge의 `subscribe`
  * (apps/bridge/src/state.ts)가 새 연결마다 현재 버퍼를 그대로 다시 보내주기 때문이다.
  */
-export function subscribeEvents(onEvent: (envelope: AgentEventEnvelope) => void): () => void {
+export function subscribeEvents(
+  onEvent: (envelope: AgentEventEnvelope) => void,
+  onConnectionChange?: (connected: boolean) => void,
+): () => void {
   const url = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/events`;
   let closed = false;
   let socket: WebSocket;
 
   const connect = () => {
     socket = new WebSocket(url);
+    socket.addEventListener("open", () => onConnectionChange?.(true));
     socket.addEventListener("message", (event) => {
       try {
         onEvent(JSON.parse(event.data as string) as AgentEventEnvelope);
@@ -98,7 +113,15 @@ export function subscribeEvents(onEvent: (envelope: AgentEventEnvelope) => void)
       }
     });
     socket.addEventListener("close", () => {
-      if (!closed) setTimeout(connect, 1000);
+      if (!closed) {
+        onConnectionChange?.(false);
+        setTimeout(() => {
+          if (!closed) connect();
+        }, 1000);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!closed) onConnectionChange?.(false);
     });
   };
   connect();

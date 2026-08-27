@@ -8,10 +8,11 @@ export function TopBar({ projectPath, tasks }: { projectPath: string; tasks: Tas
     completed: tasks.filter((task) => task.status === "completed").length,
   };
 
-  // 경로를 상위 디렉터리와 현재 프로젝트 폴더명으로 분리하여 가독성 증대
-  const pathParts = projectPath ? projectPath.split("/").filter(Boolean) : [];
-  const projectName = pathParts.length > 0 ? pathParts[pathParts.length - 1] : "";
-  const parentPath = pathParts.length > 1 ? `/${pathParts.slice(0, -1).join("/")}/` : "/";
+  // POSIX(`/Users/...`, `/mnt/c/...`)와 Windows(`C:\\Users\\...`) 경로를 모두 표시한다.
+  const trimmedPath = projectPath.replace(/[\\/]+$/, "");
+  const separatorIndex = Math.max(trimmedPath.lastIndexOf("/"), trimmedPath.lastIndexOf("\\"));
+  const projectName = trimmedPath.slice(separatorIndex + 1);
+  const parentPath = separatorIndex >= 0 ? trimmedPath.slice(0, separatorIndex + 1) : "";
 
   return (
     <header className="topbar">

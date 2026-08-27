@@ -35,13 +35,16 @@ export function DesignPanel(state: DesignFeatureState) {
       <div className="form-group">
         <label className="form-label">Model</label>
         <select value={state.model} onChange={(event) => state.onModelChange(event.target.value)} disabled={state.running}>
-          {state.models.length === 0 && <option value="">모델 불러오는 중…</option>}
+          {state.models.length === 0 && (
+            <option value="">{state.modelsLoading ? "모델 불러오는 중…" : "사용 가능한 모델 없음"}</option>
+          )}
           {state.models.map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
             </option>
           ))}
         </select>
+        {state.modelError && <div className="error-banner">모델 목록 오류: {state.modelError}</div>}
       </div>
 
       {(() => {
@@ -65,7 +68,7 @@ export function DesignPanel(state: DesignFeatureState) {
         <label className="form-label">Project 절대 경로</label>
         <input
           type="text"
-          placeholder="/path/to/your/project"
+          placeholder={state.pathExample}
           value={state.projectPath}
           onChange={(event) => state.setProjectPath(event.target.value)}
           disabled={state.running}
@@ -75,7 +78,7 @@ export function DesignPanel(state: DesignFeatureState) {
       {!started && (
         <button
           className="primary"
-          disabled={state.busy || state.running || !state.projectPath.trim()}
+          disabled={state.busy || state.running || !state.projectPath.trim() || !state.model}
           onClick={() => void state.onStart()}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

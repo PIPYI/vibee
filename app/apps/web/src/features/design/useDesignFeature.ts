@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   exportDesign,
+  getEnvironment,
   getHealth,
   getModels,
   getNarrative,
@@ -28,9 +29,12 @@ export function useDesignFeature() {
   const [agents, setAgents] = useState<AgentReadiness[]>([]);
   const [agent, setAgent] = useState<AgentId>("codex");
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [pathExample, setPathExample] = useState("/path/to/your/project");
   const [answer, setAnswer] = useState("");
   const [tasks, setTasks] = useState<TaskState[]>([]);
   const [contextProjectPath, setContextProjectPath] = useState("");
@@ -49,12 +53,17 @@ export function useDesignFeature() {
   const [gaps, setGaps] = useState<string[]>([]);
   const [exportResult, setExportResult] = useState<ExportDesignResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refreshState = useCallback(async () => {
     const state = await getState();
     setTasks(state.tasks);
-    setContextProjectPath(state.appContext.interview.projectPath ?? "");
+    const interviewProjectPath = state.appContext.interview.projectPath ?? "";
+    setContextProjectPath(interviewProjectPath);
+    // macOS의 /var -> /private/var 같은 심볼릭 링크 정규화 뒤에도 같은 프로젝트로 인식한다.
+    // 사용자가 아직 다른 경로를 입력하지 않은 초기 로드에서는 마지막 인터뷰 경로도 복구한다.
+    setProjectPath((current) => current || interviewProjectPath);
     setDesign(state.appContext.designDigest);
     setPending(state.appContext.interview.pending);
     setExchanges(
@@ -67,25 +76,35 @@ export function useDesignFeature() {
     }
   }, []);
 
+  const refreshModels = useCallback(async () => {
+    setModel("");
+    setEffort("");
+    setModelsLoading(true);
+    setModelError(null);
+    try {
+      const response = await getModels(agent);
+      // Claude는 "default"라는 alias 항목을 실제 모델(sonnet 등)과 별도로 신고한다.
+      // Codex처럼 구체적인 모델 이름만 고르게 한다 — alias는 그중 하나를 가리킬 뿐이다.
+      const availableModels = response.models.filter((item) => item.id !== "default");
+      setModels(availableModels);
+      const chosen = availableModels.find((item) => item.isDefault) ?? availableModels[0];
+      if (chosen) {
+        setModel(chosen.id);
+        setEffort(chosen.defaultEffort ?? chosen.efforts[0]?.id ?? "");
+      }
+    } catch (cause) {
+      setModels([]);
+      setModelError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [agent]);
+
   // agent를 바꾸면 그 provider가 신고하는 모델 목록을 다시 받아 기본값으로 맞춘다.
   // 하드코딩하지 않는 이유는 §8과 같다 — CLI를 업데이트하면 목록도 effort 집합도 바뀐다.
   useEffect(() => {
-    setModel("");
-    setEffort("");
-    getModels(agent)
-      .then((response) => {
-        // Claude는 "default"라는 alias 항목을 실제 모델(sonnet 등)과 별도로 신고한다.
-        // Codex처럼 구체적인 모델 이름만 고르게 한다 — alias는 그중 하나를 가리킬 뿐이다.
-        const models = response.models.filter((item) => item.id !== "default");
-        setModels(models);
-        const chosen = models.find((item) => item.isDefault) ?? models[0];
-        if (chosen) {
-          setModel(chosen.id);
-          setEffort(chosen.defaultEffort ?? chosen.efforts[0]?.id ?? "");
-        }
-      })
-      .catch(() => setModels([]));
-  }, [agent]);
+    void refreshModels();
+  }, [refreshModels]);
 
   const onModelChange = useCallback(
     (id: string) => {
@@ -98,9 +117,13 @@ export function useDesignFeature() {
 
   useEffect(() => {
     getHealth()
-      .then((health) => setAgents(health.agents))
-      .catch(() => undefined);
-    refreshState().catch(() => undefined);
+      .then((health) => {
+        setAgents(health.agents);
+        setConnectionError(null);
+      })
+      .catch(() => setConnectionError("브리지에 연결할 수 없습니다. npm run bridge가 실행 중인지 확인하세요."));
+    getEnvironment().then((environment) => setPathExample(environment.pathExample)).catch(() => undefined);
+    refreshState().catch(() => setConnectionError("브리지 상태를 불러오지 못했습니다."));
     const unsubscribe = subscribeEvents((envelope) => {
       const type = envelope.event.type;
       if (
@@ -110,13 +133,26 @@ export function useDesignFeature() {
         type === "app.question" ||
         type === "app.answer" ||
         type === "app.design" ||
+        type === "app.result" ||
         type === "task.started"
       ) {
         void refreshState();
       }
+    }, (connected) => {
+      if (connected) {
+        setConnectionError(null);
+        // bridge를 나중에 켜거나 재시작해도 페이지 새로고침 없이 준비 상태를 복구한다.
+        void getHealth()
+          .then((health) => setAgents(health.agents))
+          .catch(() => setConnectionError("브리지 준비 상태를 불러오지 못했습니다."));
+        void refreshModels();
+        void refreshState().catch(() => setConnectionError("브리지 상태를 불러오지 못했습니다."));
+      } else {
+        setConnectionError("브리지 실시간 연결이 끊겼습니다. 자동으로 다시 연결하는 중입니다…");
+      }
     });
     return unsubscribe;
-  }, [refreshState]);
+  }, [refreshModels, refreshState]);
 
   const running = tasks.some((task) => task.status === "running" || task.status === "starting");
 
@@ -133,7 +169,8 @@ export function useDesignFeature() {
     setError(null);
     setBusy(true);
     try {
-      await startInterview(agent, projectPath, { model: model || undefined, effort: effort || undefined });
+      const started = await startInterview(agent, projectPath, { model: model || undefined, effort: effort || undefined });
+      setProjectPath(started.projectPath);
       await refreshState();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -147,7 +184,8 @@ export function useDesignFeature() {
     setError(null);
     setBusy(true);
     try {
-      await sendInterviewMessage(agent, projectPath, answer, { model: model || undefined, effort: effort || undefined });
+      const sent = await sendInterviewMessage(agent, projectPath, answer, { model: model || undefined, effort: effort || undefined });
+      setProjectPath(sent.projectPath);
       setAnswer("");
       await refreshState();
     } catch (cause) {
@@ -175,12 +213,15 @@ export function useDesignFeature() {
     agent,
     setAgent,
     models,
+    modelsLoading,
+    modelError,
     model,
     onModelChange,
     effort,
     setEffort,
     projectPath,
     setProjectPath,
+    pathExample,
     answer,
     setAnswer,
     tasks,
@@ -191,6 +232,7 @@ export function useDesignFeature() {
     gaps,
     exportResult,
     error,
+    connectionError,
     busy,
     running,
     started,

@@ -33,7 +33,7 @@ import {
   type TranscriptMessage,
 } from "@vci/protocol";
 
-import { cliSpawnOptions } from "../../platform.js";
+import { cliSpawnOptions, resolveCliExecutable } from "../../platform.js";
 import { describeSession } from "../../prompt.js";
 import { READ_ONLY_TOOLS, needsReadTools } from "../types.js";
 import type { AgentAdapter, StartTaskInput, TaskMode, TaskOutcome } from "../types.js";
@@ -79,8 +79,17 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async checkReady(): Promise<AgentReadiness> {
     let version: string | undefined;
+    const command = await resolveCliExecutable("claude");
+    if (!command) {
+      return {
+        agent: "claude",
+        installed: false,
+        authenticated: false,
+        message: "Claude Code CLI를 찾지 못했습니다. Claude Code를 설치하거나 PATH를 확인해 주세요.",
+      };
+    }
     try {
-      const { stdout } = await execFileAsync("claude", ["--version"], cliSpawnOptions);
+      const { stdout } = await execFileAsync(command, ["--version"], cliSpawnOptions);
       version = stdout.trim();
     } catch {
       return {

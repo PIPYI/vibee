@@ -78,7 +78,7 @@ import {
   renderWikiMarkdown,
   wikiSlug,
 } from "./wiki.js";
-import { cliSpawnOptions } from "./platform.js";
+import { cliSpawnOptions, runtimeEnvironment } from "./platform.js";
 
 const log = (...args: unknown[]): void => console.log("[vci-bridge]", ...args);
 
@@ -86,11 +86,14 @@ const appRoot = appRootFromModule(import.meta.url);
 const config = loadBridgeConfig(appRoot);
 const state = new BridgeState();
 
-const codex = new CodexAdapter(log);
-const claude = new ClaudeAdapter(log, {
+const agentBridgeConfig = {
   mcpServerEntry: join(appRoot, "packages", "mcp-server", "dist", "index.js"),
   bridgeUrl: config.baseUrl,
   bridgeToken: config.token,
+};
+const codex = new CodexAdapter(log, agentBridgeConfig);
+const claude = new ClaudeAdapter(log, {
+  ...agentBridgeConfig,
 });
 const adapters = new Map<string, AgentAdapter>([
   ["codex", codex],
@@ -103,6 +106,10 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/api/health", async (_req: Request, res: Response) => {
   const readiness: AgentReadiness[] = [await codex.checkReady(), await claude.checkReady()];
   res.json({ ok: true, agents: readiness });
+});
+
+app.get("/api/environment", (_req: Request, res: Response) => {
+  res.json(runtimeEnvironment());
 });
 
 app.get("/api/state", (_req: Request, res: Response) => {
@@ -219,7 +226,7 @@ app.post("/api/interview", async (req: Request, res: Response) => {
     mcpCalls: [],
   });
 
-  res.json({ taskId, ...(cleared.length > 0 ? { cleared } : {}) });
+  res.json({ taskId, projectPath, ...(cleared.length > 0 ? { cleared } : {}) });
   void runTask(adapter, taskId, projectPath, buildInterviewPrompt(null), "interview", {
     model: body?.model || undefined,
     effort: body?.effort || undefined,
@@ -267,7 +274,7 @@ app.post("/api/interview/message", async (req: Request, res: Response) => {
   });
 
   state.emit({ type: "app.answer", taskId, questionId: recorded.question?.id ?? "", answer: body.message });
-  res.json({ taskId });
+  res.json({ taskId, projectPath });
 
   void runTask(adapter, taskId, projectPath, buildInterviewPrompt(body.message), "interview", {
     model: body.model || undefined,
@@ -353,7 +360,10 @@ app.post("/internal/results", requireToken, (req: Request, res: Response) => {
     return;
   }
   const taskId = noteMcpEndpointHit("show_result");
-  if (taskId) state.emit({ type: "app.result", taskId, result });
+  if (taskId) {
+    state.recordResult(taskId, result);
+    state.emit({ type: "app.result", taskId, result });
+  }
   else log("show_result arrived with no active task; ignoring for UI routing");
   res.json({ taskId });
 });
@@ -1501,6 +1511,8 @@ wss.on("connection", (socket) => {
 });
 
 server.listen(config.port, BRIDGE_HOST, () => {
+  const runtime = runtimeEnvironment();
+  log(`environment: ${runtime.platform}/${runtime.architecture}, Node ${runtime.nodeVersion}`);
   log(`listening on http://${BRIDGE_HOST}:${config.port}`);
   log(`events:   ws://${BRIDGE_HOST}:${config.port}/events`);
   log(`config:   ${config.configPath}`);
