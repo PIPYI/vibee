@@ -15,7 +15,7 @@ export function architectureCompositionContract(): string {
 
 The semantic model you just committed is the **source of truth** for this stage. Do not re-derive topology from scratch or re-interpret the repository as if Stage 1 had not happened -- every component/boundary/connection you author here must trace back to an actor/runtime/responsibility/state/external/interaction from that semantic model via \`semanticRefs\`.
 
-Author **exactly one canonical architecture document** (one graph, one layout, one set of \`pos\`/\`size\` coordinates). You are not authoring a "simple" layout and a "technical" layout -- there is only ever one canonical graph, with audience differences expressed purely through \`presentation\` overrides (see the audience-presentation rules below), never through a second graph.
+Author **exactly one canonical architecture document** (one graph, one layout, one set of \`pos\`/\`size\` coordinates). There is only ever one canonical graph.
 
 Composition rules:
 
@@ -23,7 +23,9 @@ Composition rules:
 - Place actors outside every runtime boundary -- never inside a \`kind: "runtime"\` boundary's \`wraps\`.
 - Make the most important interaction path clearly readable. If one global primary story doesn't fit naturally, it is fine to have a clear primary story per runtime instead.
 - Put side branches near the responsibility they relate to.
-- Remove low-value edges rather than including every static relationship, but every component kept on the canvas must retain at least one evidence-backed connection. Never fix a route/label collision by deleting an interaction if that leaves either endpoint disconnected; reposition components first, or remove an unsupported component together with its visual-only edges.
+- Connection lines may cross at a point, but must never share the same horizontal or vertical run. Leave enough space between components for the automatic router to assign separate lanes.
+- Keep connection labels short and give related routes enough surrounding space for the automatic label placer to keep every relationship label separate.
+- Remove low-value edges rather than including every static relationship.
 - Leave \`cards\` off by default (an empty or omitted array) unless a group of connections genuinely needs plain-language explanation for a non-technical reader.
 - Every component, boundary, and connection you author must carry \`semanticRefs\` back into the semantic model -- an unreferenced or invented visual entity is not allowed.
 

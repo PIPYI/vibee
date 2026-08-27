@@ -1061,8 +1061,8 @@ app.post("/internal/validate-system-map", requireToken, (req: Request, res: Resp
   }
 
   const projectPath = state.getAppContext().projectPath;
-  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument, simpleAudienceLanguage: "ko" });
-  const hasSchemaDiagnostics = diagnostics.some((d) => d.code === "architecture-view/schema");
+  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument });
+  const hasSchemaDiagnostics = diagnostics.some((d) => d.code === "system-map/schema");
   if (!hasSchemaDiagnostics) {
     const layout = calculateSystemMapLayout(document as SystemMapDocument);
     res.json({ diagnostics, layout: serializeLayout(layout), attemptsRemaining });
@@ -1120,7 +1120,7 @@ app.post("/internal/submit-system-map", requireToken, async (req: Request, res: 
   }
 
   const projectPath = state.getAppContext().projectPath;
-  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument, simpleAudienceLanguage: "ko" });
+  const diagnostics = validateSystemMap(document, { projectPath, semanticDocument });
   if (hasError(diagnostics)) {
     res.json({ diagnostics, attemptsRemaining });
     return;
@@ -1156,7 +1156,7 @@ app.get("/api/system-map", async (req: Request, res: Response) => {
     return;
   }
 
-  const svg = renderSystemMapSvg(stored.document, { audience: "simple" });
+  const svg = renderSystemMapSvg(stored.document);
   res.json({ document: stored.document, svg, meta: stored.meta });
 });
 
