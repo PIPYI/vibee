@@ -229,5 +229,6 @@ test("hover uses a distinct edge color and arrowheads inherit the hovered path s
   assert.ok(svg.includes("--av-edge-emphasis: #2563eb"));
   assert.ok(svg.includes("--av-edge-hover: #e11d48"));
   assert.ok(svg.includes("fill=\"context-stroke\""));
+  assert.ok(svg.includes('markerUnits="userSpaceOnUse"'));
   assert.match(svg, /\.av-connection\.av-hover-active path\.av-connection-path \{ stroke: var\(--av-edge-hover\)/);
 });

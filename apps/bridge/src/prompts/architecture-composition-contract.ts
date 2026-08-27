@@ -23,6 +23,8 @@ Composition rules:
 - Place actors outside every runtime boundary -- never inside a \`kind: "runtime"\` boundary's \`wraps\`.
 - Make the most important interaction path clearly readable. If one global primary story doesn't fit naturally, it is fine to have a clear primary story per runtime instead.
 - Put side branches near the responsibility they relate to.
+- Connection lines may cross at a point, but must never share the same horizontal or vertical run. Leave enough space between components for the automatic router to assign separate lanes.
+- Keep connection labels short and give related routes enough surrounding space for the automatic label placer to keep every relationship label separate.
 - Remove low-value edges rather than including every static relationship.
 - Leave \`cards\` off by default (an empty or omitted array) unless a group of connections genuinely needs plain-language explanation for a non-technical reader.
 - Every component, boundary, and connection you author must carry \`semanticRefs\` back into the semantic model -- an unreferenced or invented visual entity is not allowed.

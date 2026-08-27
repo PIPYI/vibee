@@ -4,6 +4,7 @@ import {
   ARROW_SHORTEN_DISTANCE,
   ROUNDED_CORNER_RADIUS,
   automaticPortSpread,
+  calculateArchitectureLayout,
   labelDisplayWidth,
   roundedPath,
   routeConnection,
@@ -52,6 +53,60 @@ test("routeConnection routes around an obstacle directly on the line between two
 
   assert.notEqual(route.strategy, "straight");
   assert.ok(!route.crossedComponentIds.includes("b"), "route should have gone around the obstacle, not through it");
+});
+
+test("routeConnection assigns a separate lane instead of reusing a collinear segment", () => {
+  const fromRect: Rect = { x: 0, y: 0, w: 100, h: 60 };
+  const toRect: Rect = { x: 300, y: 0, w: 100, h: 60 };
+  const route = routeConnection(
+    fromRect,
+    { x: 100, y: 30 },
+    toRect,
+    { x: 300, y: 30 },
+    [],
+    [{ edgeKey: "existing", points: [{ x: 150, y: 30 }, { x: 250, y: 30 }] }],
+  );
+
+  assert.equal(route.strategy, "outer-channel");
+  assert.deepEqual(route.overlappedConnectionIds, []);
+});
+
+test("routeConnection allows a point crossing because it is not a shared line", () => {
+  const fromRect: Rect = { x: 200, y: 0, w: 100, h: 60 };
+  const toRect: Rect = { x: 200, y: 300, w: 100, h: 60 };
+  const route = routeConnection(
+    fromRect,
+    { x: 250, y: 60 },
+    toRect,
+    { x: 250, y: 300 },
+    [],
+    [{ edgeKey: "horizontal", points: [{ x: 0, y: 180 }, { x: 500, y: 180 }] }],
+  );
+
+  assert.equal(route.strategy, "straight");
+  assert.deepEqual(route.overlappedConnectionIds, []);
+});
+
+test("connection labels are placed into separate rectangles when routes converge", () => {
+  const layout = calculateArchitectureLayout({
+    schemaVersion: 2,
+    title: "Label placement",
+    viewBox: [700, 400],
+    components: [
+      { id: "a", type: "backend", semanticRole: "responsibility", semanticRefs: ["a"], label: "A", pos: [20, 160], size: [100, 60] },
+      { id: "b", type: "backend", semanticRole: "responsibility", semanticRefs: ["b"], label: "B", pos: [300, 60], size: [100, 60] },
+      { id: "c", type: "backend", semanticRole: "responsibility", semanticRefs: ["c"], label: "C", pos: [300, 260], size: [100, 60] },
+    ],
+    boundaries: [],
+    connections: [
+      { id: "a-b", from: "a", to: "b", label: "첫 번째 관계" },
+      { id: "a-c", from: "a", to: "c", label: "두 번째 관계" },
+    ],
+  });
+  const first = layout.labelRects.get("connection-label:a-b")!;
+  const second = layout.labelRects.get("connection-label:a-c")!;
+  const intersects = first.x < second.x + second.w && first.x + first.w > second.x && first.y < second.y + second.h && first.y + first.h > second.y;
+  assert.equal(intersects, false);
 });
 
 test("labelDisplayWidth weighs CJK text wider per-character than latin text", () => {

@@ -70,4 +70,6 @@ test("the prompt covers every §12.4 regression-test concept", () => {
   assert.match(prompt, /actors? (are|is|placed) (never inside|outside)|outside every runtime boundary/i);
   assert.match(prompt, /source of truth/i);
   assert.match(prompt, /exactly one canonical architecture/i);
+  assert.match(prompt, /may cross at (one|a) point.*must not share a collinear/i);
+  assert.match(prompt, /every connection label.*separate position/i);
 });

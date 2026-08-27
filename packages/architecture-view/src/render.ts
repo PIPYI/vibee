@@ -8,10 +8,12 @@ import {
   ROUNDED_CORNER_RADIUS,
   calculateArchitectureLayout,
   labelDisplayWidth,
+  LABEL_TEXT_BASELINE,
   MAX_CONNECTION_LABEL_WIDTH,
   roundedPath,
   truncateLabelForDisplay,
   type Rect,
+  type Route,
 } from "./geometry.js";
 
 export type RenderOptions = {
@@ -175,7 +177,7 @@ function accentColor(type: ArchitectureViewComponentType): string {
 
 function renderDefs(): string {
   const markers = VARIANTS.map((variant) => {
-    return `<marker id="av-arrow-${variant}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>`;
+    return `<marker id="av-arrow-${variant}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>`;
   }).join("");
   return `<defs>${markers}</defs>`;
 }
@@ -236,7 +238,7 @@ function renderBoundary(
 function renderConnection(
   conn: ArchitectureViewDocument["connections"][number],
   index: number,
-  routes: Map<string, { points: { x: number; y: number }[]; strategy: string; crossedComponentIds: string[] }>,
+  routes: Map<string, Route>,
   labelRects: Map<string, Rect>,
   selectedSemanticRef?: string,
 ): { path: string; label: string } {
@@ -260,15 +262,15 @@ function renderConnection(
   let labelEl = "";
   if (conn.label) {
     const labelRect = labelRects.get(`connection-label:${edgeKey}`);
-    const mid = labelRect
-      ? { x: labelRect.x + labelRect.w / 2, y: labelRect.y + labelRect.h / 2 }
-      : route.points[Math.floor(route.points.length / 2)]!;
+    const position = labelRect
+      ? { x: labelRect.x + labelRect.w / 2, y: labelRect.y + LABEL_TEXT_BASELINE }
+      : { ...route.points[Math.floor(route.points.length / 2)]!, y: route.points[Math.floor(route.points.length / 2)]!.y - 4 };
     const { display, truncated } = truncateLabelForDisplay(conn.label, MAX_CONNECTION_LABEL_WIDTH);
     if (!truncated) {
-      labelEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+      labelEl = `<text x="${position.x}" y="${position.y}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
     } else {
-      const shortTextEl = `<text class="av-connection-label-short" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(display)}</text>`;
-      const fullTextEl = `<text class="av-connection-label-full" x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+      const shortTextEl = `<text class="av-connection-label-short" x="${position.x}" y="${position.y}" text-anchor="middle">${escapeXml(display)}</text>`;
+      const fullTextEl = `<text class="av-connection-label-full" x="${position.x}" y="${position.y}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
       labelEl = shortTextEl + fullTextEl;
     }
   }

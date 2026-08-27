@@ -126,7 +126,25 @@ test("edge-crosses-component: a connection whose target is fully walled in is an
   assert.equal(hit?.severity, "error");
 });
 
-test("label-collision: two connection labels that land on top of each other is a warning", () => {
+test("edge-overlap: shared collinear runs are errors even though point crossings are allowed", () => {
+  const d = doc({
+    components: [
+      comp({ id: "source", pos: [20, 100], size: [100, 20] }),
+      comp({ id: "upper", pos: [360, 20], size: [100, 20] }),
+      comp({ id: "lower", pos: [360, 200], size: [100, 20] }),
+    ],
+    connections: [
+      { id: "source-upper", from: "source", to: "upper" },
+      { id: "source-lower", from: "source", to: "lower" },
+    ],
+  });
+  const diagnostics = checkGeometry(d);
+  const hit = diagnostics.find((x) => x.code === "architecture-view/edge-overlap");
+  assert.ok(hit, `expected an edge-overlap diagnostic, got codes: ${codesOf(diagnostics).join(", ")}`);
+  assert.equal(hit?.severity, "error");
+});
+
+test("connection label placement separates labels that previously landed on top of each other", () => {
   const d = doc({
     components: [comp({ id: "a", pos: [0, 0], size: [80, 36] }), comp({ id: "b", pos: [300, 0], size: [80, 36] })],
     connections: [
@@ -136,8 +154,23 @@ test("label-collision: two connection labels that land on top of each other is a
   });
   const diagnostics = checkGeometry(d);
   const hit = diagnostics.find((x) => x.code === "architecture-view/label-collision");
+  assert.equal(hit, undefined, `expected automatic label separation, got codes: ${codesOf(diagnostics).join(", ")}`);
+});
+
+test("label-collision is an error when an extremely constrained canvas leaves no separate position", () => {
+  const veryLongLabel = "관계".repeat(300);
+  const d = doc({
+    viewBox: [400, 160],
+    components: [comp({ id: "a", pos: [0, 50], size: [80, 36] }), comp({ id: "b", pos: [300, 50], size: [80, 36] })],
+    connections: [
+      { id: "e1", from: "a", to: "b", label: veryLongLabel },
+      { id: "e2", from: "a", to: "b", label: veryLongLabel },
+    ],
+  });
+  const diagnostics = checkGeometry(d);
+  const hit = diagnostics.find((x) => x.code === "architecture-view/label-collision");
   assert.ok(hit, `expected a label-collision diagnostic, got codes: ${codesOf(diagnostics).join(", ")}`);
-  assert.equal(hit?.severity, "warning");
+  assert.equal(hit?.severity, "error");
 });
 
 test("viewbox-balance: an extremely flat single-row layout is a warning", () => {
