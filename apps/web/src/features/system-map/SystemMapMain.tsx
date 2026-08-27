@@ -1,20 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { AudiencePresentation, SystemMapDocument, SystemMapSource } from "@vci/protocol";
+import type { SystemMapDocument, SystemMapSource } from "@vci/protocol";
 import type { SystemMapFeatureState } from "./useSystemMapFeature.js";
-
-type ThemeChoice = "system" | "light" | "dark";
-
-function nextTheme(current: ThemeChoice): ThemeChoice {
-  if (current === "system") return "light";
-  if (current === "light") return "dark";
-  return "system";
-}
-
-function themeButtonLabel(choice: ThemeChoice): string {
-  if (choice === "system") return "테마: 시스템 기본값";
-  if (choice === "light") return "테마: 라이트 모드";
-  return "테마: 다크 모드";
-}
 
 // render.ts(@vci/system-map)가 SVG에 직접 심는 속성/클래스 이름과 정확히 맞춘 것 —
 // packages/system-map/src/render.ts를 직접 확인해서 가져왔다.
@@ -25,21 +11,15 @@ const ENTITY_ATTR: Record<SelectedEntity["kind"], string> = {
   connection: "data-connection-id",
 };
 const SELECTED_CLASS = "av-selected";
+const HOVER_CLASS = "av-hover-active";
 
 function parseSemanticRefs(el: Element): string[] {
   const raw = el.getAttribute("data-semantic-refs");
   return raw ? raw.split(",") : [];
 }
 
-function resolveSimpleLabel(entity: { label: string; presentation?: AudiencePresentation }): string {
-  return entity.presentation?.simple?.label ?? entity.label;
-}
-
-function resolveSimpleSublabel(entity: { sublabel?: string; presentation?: AudiencePresentation }): string | undefined {
-  const override = entity.presentation?.simple?.sublabel;
-  if (override === null) return undefined;
-  if (override !== undefined) return override;
-  return entity.sublabel;
+function connectionSelector(connectionId: string): string {
+  return `[data-connection-id="${CSS.escape(connectionId)}"]`;
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -59,16 +39,14 @@ function Inspector({ document: doc, entity }: { document: SystemMapDocument; ent
   if (entity.kind === "component") {
     const component = doc.components.find((c) => c.id === entity.id);
     if (!component) return null;
-    const label = resolveSimpleLabel(component);
-    const sublabel = resolveSimpleSublabel(component);
     return (
       <div className="system-map-inspector">
-        <h2>{label}</h2>
+        <h2>{component.label}</h2>
         <p className="system-map-inspector-role">{ROLE_LABELS[component.semanticRole] ?? component.semanticRole}</p>
-        {sublabel && (
+        {component.sublabel && (
           <>
-            <h3>역할</h3>
-            <p>{sublabel}</p>
+            <h3>구현</h3>
+            <p>{component.sublabel}</p>
           </>
         )}
         {component.sources && component.sources.length > 0 && (
@@ -90,7 +68,7 @@ function Inspector({ document: doc, entity }: { document: SystemMapDocument; ent
     if (!boundary) return null;
     return (
       <div className="system-map-inspector">
-        <h2>{resolveSimpleLabel(boundary)}</h2>
+        <h2>{boundary.label}</h2>
         <p className="system-map-inspector-role">{boundary.kind}</p>
       </div>
     );
@@ -98,10 +76,9 @@ function Inspector({ document: doc, entity }: { document: SystemMapDocument; ent
 
   const connection = doc.connections.find((c) => c.id === entity.id);
   if (!connection) return null;
-  const label = connection.presentation?.simple?.label ?? connection.label ?? `${connection.from} → ${connection.to}`;
   return (
     <div className="system-map-inspector">
-      <h2>{label}</h2>
+      <h2>{connection.label ?? `${connection.from} → ${connection.to}`}</h2>
       <p className="system-map-inspector-role">
         {connection.from} → {connection.to}
       </p>
@@ -111,19 +88,10 @@ function Inspector({ document: doc, entity }: { document: SystemMapDocument; ent
 
 export function SystemMapMain(state: SystemMapFeatureState) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const [theme, setTheme] = useState<ThemeChoice>("system");
+  const hoveredConnectionRef = useRef<string | null>(null);
   const [selected, setSelected] = useState<SelectedEntity | null>(null);
 
   const svg = state.result?.svg ?? "";
-
-  // theme 선택을 이미 마운트된 <svg class="av-root">에 직접 반영한다 — SVG 문자열을
-  // 다시 만들지 않는다(render.ts가 CSS 커스텀 프로퍼티로 라이트/다크를 이미 지원한다).
-  useEffect(() => {
-    const root = mountRef.current?.querySelector("svg.av-root");
-    if (!root) return;
-    if (theme === "system") root.removeAttribute("data-theme");
-    else root.setAttribute("data-theme", theme);
-  }, [theme, svg]);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -131,8 +99,7 @@ export function SystemMapMain(state: SystemMapFeatureState) {
     container.querySelectorAll(`.${SELECTED_CLASS}`).forEach((el) => el.classList.remove(SELECTED_CLASS));
     if (!selected) return;
     const attr = ENTITY_ATTR[selected.kind];
-    const match = container.querySelector(`[${attr}="${CSS.escape(selected.id)}"]`);
-    match?.classList.add(SELECTED_CLASS);
+    container.querySelectorAll(`[${attr}="${CSS.escape(selected.id)}"]`).forEach((el) => el.classList.add(SELECTED_CLASS));
   }, [selected, svg]);
 
   useEffect(() => {
@@ -173,6 +140,45 @@ export function SystemMapMain(state: SystemMapFeatureState) {
     }
   }
 
+  // 연결선에 마우스를 올리면 그 선과 양 끝 컴포넌트를 같이 강조한다 — render.ts가 이미
+  // .av-hover-active용 스타일(선 두께, 라벨 말줄임→전체 텍스트 전환, 컴포넌트 확대)을
+  // SVG 자체에 심어 두었으니, 여기서는 클래스만 토글하면 된다.
+  function setConnectionHover(connectionId: string, active: boolean) {
+    const container = mountRef.current;
+    if (!container) return;
+    const connectionParts = [...container.querySelectorAll(connectionSelector(connectionId))];
+    connectionParts.forEach((part) => part.classList.toggle(HOVER_CLASS, active));
+
+    const connection = connectionParts[0];
+    const fromId = connection?.getAttribute("data-edge-from");
+    const toId = connection?.getAttribute("data-edge-to");
+    if (fromId) container.querySelector(`[data-component-id="${CSS.escape(fromId)}"]`)?.classList.toggle(HOVER_CLASS, active);
+    if (toId) container.querySelector(`[data-component-id="${CSS.escape(toId)}"]`)?.classList.toggle(HOVER_CLASS, active);
+  }
+
+  function handleMountMouseOver(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as Element;
+    const connection = target.closest("[data-connection-id]");
+    if (!connection) return;
+    const connectionId = connection.getAttribute("data-connection-id");
+    if (!connectionId || connectionId === hoveredConnectionRef.current) return;
+    if (hoveredConnectionRef.current) setConnectionHover(hoveredConnectionRef.current, false);
+    setConnectionHover(connectionId, true);
+    hoveredConnectionRef.current = connectionId;
+  }
+
+  function handleMountMouseOut(e: React.MouseEvent<HTMLDivElement>) {
+    const target = e.target as Element;
+    const connection = target.closest("[data-connection-id]");
+    if (!connection) return;
+    const relatedTarget = e.relatedTarget as Element | null;
+    const connectionId = connection.getAttribute("data-connection-id");
+    const relatedConnectionId = relatedTarget?.closest?.("[data-connection-id]")?.getAttribute("data-connection-id");
+    if (!connectionId || relatedConnectionId === connectionId || hoveredConnectionRef.current !== connectionId) return;
+    setConnectionHover(connectionId, false);
+    hoveredConnectionRef.current = null;
+  }
+
   return (
     <div className="system-map-view">
       <div className="system-map-header">
@@ -183,14 +189,18 @@ export function SystemMapMain(state: SystemMapFeatureState) {
             {meta.gitRevision && <> · 리비전 {meta.gitRevision.slice(0, 12)}</>}
           </p>
         </div>
-        <button type="button" onClick={() => setTheme(nextTheme(theme))}>
-          {themeButtonLabel(theme)}
-        </button>
       </div>
 
       {/* svg는 이 저장소 안의 @vci/system-map 렌더러가 만든 신뢰된 문자열이라
           dangerouslySetInnerHTML이 안전하다 (외부/사용자 입력이 아님). */}
-      <div ref={mountRef} className="system-map-svg-mount" onClick={handleMountClick} dangerouslySetInnerHTML={{ __html: svg }} />
+      <div
+        ref={mountRef}
+        className="system-map-svg-mount"
+        onClick={handleMountClick}
+        onMouseOver={handleMountMouseOver}
+        onMouseOut={handleMountMouseOut}
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
 
       {selected && <Inspector document={doc} entity={selected} />}
 

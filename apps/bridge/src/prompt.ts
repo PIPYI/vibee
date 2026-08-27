@@ -9,7 +9,6 @@ import { architectureViewSchemaBlock, runtimeSemanticSchemaBlock } from "./promp
 import { runtimeSemanticContract } from "./prompts/runtime-semantic-contract.js";
 import { runtimeSemanticExamples } from "./prompts/runtime-semantic-examples.js";
 import { architectureCompositionContract } from "./prompts/architecture-composition-contract.js";
-import { audiencePresentationContract } from "./prompts/audience-presentation-contract.js";
 import { correctionContract } from "./prompts/correction-contract.js";
 
 /**
@@ -117,6 +116,14 @@ ${revisionSection}
 
 This analysis produces a **runtime architecture**: not a file/framework inventory, but a map of who interacts with the system, what runtimes exist, what each runtime is responsible for, and how those responsibilities interact. It is built in two stages: first a repository-evidence-only semantic model, then one canonical visual composition of that model.
 
+## Output language
+
+All human-readable free text you author in both stages must be written in natural, concise Korean (한국어):
+- **Stage 1 semantic model:** actor names, descriptions, runtime unit names, responsibility labels, state names, external entity names, and all interaction/connection labels.
+- **Stage 2 architecture document:** component/boundary/connection \`label\`/\`sublabel\` fields, \`title\`, card \`title\` and \`items[]\` entries.
+- The example JSON snippets shown below are provided in English to demonstrate structural and grammatical conventions (e.g., how \`label\`/\`sublabel\` are split, actor placement patterns, etc.). **Do not copy their wording verbatim.** You must author genuine, original labels in Korean.
+- **Exception:** \`sources[]\` file \`path\` values and any code identifiers or technical names quoted verbatim from the codebase must remain as-is (not translated).
+
 ## Step 0: Explore first
 
 Before writing anything, explore the repository using your native Read, Grep, and Glob tools. Understand the macro structure: what runtime units exist (frontend app, backend/API service, database, background workers, external integrations, etc.), who/what interacts with them, and how they are wired together at runtime.
@@ -139,20 +146,18 @@ The document you author for this stage must validate against this exact JSON Sch
 
 ${architectureViewSchemaBlock()}
 
-${audiencePresentationContract()}
-
 ## Architecture authoring rules
 
 - **Curate 6-12 components.** Group by macro responsibility/state/external/actor -- never one component per file or per function. If you are tempted to add a 13th component, reconsider whether two related ones should be one semantic responsibility instead.
-- **Canvas and layout.** Default canvas is 1200x760 (the schema's \`viewBox\` default). Lay components out left-to-right in rough "layers" matching data flow -- this is a suggestion for readability, not a schema requirement. Typical component size is around 170-190 wide by 70-90 tall; leave at least 24px of gap between components so the automatic connection routing has room to route around them.
+- **Canvas and layout.** Default canvas is 1200x760 (the schema's \`viewBox\` default). Lay components out left-to-right in rough "layers" matching data flow -- this is a suggestion for readability, not a schema requirement. Typical component size is around 170-190 wide by 70-90 tall; leave at least 24px of gap between components so the automatic connection routing has room to route around them. Connection lines may cross at one point, but two lines must not share a collinear horizontal/vertical segment. Keep relationship labels concise and leave enough open route space for every connection label to occupy a separate position.
 - **Non-runtime boundaries** (\`kind: "region"\`/\`"security-group"\`) may still be used for a deployment grouping or trust boundary that isn't itself a runtime. Only wrap components that genuinely belong together.
-- **Connections carry only \`from\`, \`to\`, an optional \`label\`, an optional \`semanticRefs\`, an optional \`presentation\`, and an optional \`variant\`.** There is no \`fromSide\`/\`toSide\`/\`route\`/\`via\`/\`waypoints\`/\`labelAt\` field in this schema -- do not invent one. Anchoring and routing around other components is computed automatically by the renderer/validator from geometry alone.
+- **Connections carry only \`from\`, \`to\`, an optional \`label\`, an optional \`semanticRefs\`, and an optional \`variant\`.** There is no \`fromSide\`/\`toSide\`/\`route\`/\`via\`/\`waypoints\`/\`labelAt\` field in this schema -- do not invent one. Anchoring and routing around other components is computed automatically by the renderer/validator from geometry alone.
   - \`variant: "emphasis"\` for the one primary/main path through the system (use sparingly -- ideally exactly one path, or one per runtime for a local primary story).
   - \`variant: "security"\` for connections that cross an authentication or secret boundary.
   - \`variant: "dashed"\` for asynchronous or inferred (not directly observed) connections.
   - Omit \`variant\` (or use \`"default"\`) for ordinary synchronous calls.
 - **Citations (\`sources[]\`) must be real.** Stage 1 evidence is inherited automatically onto matching visual components through \`semanticRefs\`. You may omit duplicate component \`sources\`; if you add any, only cite a real \`path\` (and optionally \`line\`/\`endLine\`) you actually saw. Never guess a line number.
-- **Cards.** Up to 4 \`cards\` entries, each a short Korean-titled list of Korean plain-language bullet points, for a non-technical reader. Cards default off -- only add them when a group of connections genuinely needs this extra explanation.
+- **Cards.** Up to 4 \`cards\` entries, each a short titled list of plain-language bullet points, for a non-technical reader. Cards default off -- only add them when a group of connections genuinely needs this extra explanation.
 
 ${correctionContract({ semanticAttempts: MAX_RUNTIME_SEMANTIC_ATTEMPTS, architectureAttempts: MAX_SYSTEM_MAP_ATTEMPTS })}`;
 }

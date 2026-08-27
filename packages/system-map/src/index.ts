@@ -5,5 +5,4 @@ export * from "./render.js";
 export * from "./validator.js";
 export * from "./runtime-semantic-validator.js";
 export * from "./semantic-mapping.js";
-export * from "./presentation.js";
 export * from "./examples.js";
