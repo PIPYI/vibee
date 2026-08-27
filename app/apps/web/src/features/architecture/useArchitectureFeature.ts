@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
+import { getEnvironment, getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
 import type { ArchitectureDebtReport } from "@vci/protocol";
 
 export function useArchitectureFeature() {
@@ -10,6 +10,7 @@ export function useArchitectureFeature() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [pathExample, setPathExample] = useState("/path/to/your/project");
   const [tasks, setTasks] = useState<TaskState[]>([]);
   const [report, setReport] = useState<ArchitectureDebtReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,7 @@ export function useArchitectureFeature() {
 
   useEffect(() => {
     getHealth().then((health) => setAgents(health.agents)).catch(() => undefined);
+    getEnvironment().then((environment) => setPathExample(environment.pathExample)).catch(() => undefined);
     getState().then((state) => setTasks(state.tasks)).catch(() => undefined);
     const unsubscribe = subscribeEvents((envelope) => {
       const { event } = envelope;
@@ -92,6 +94,7 @@ export function useArchitectureFeature() {
     setEffort,
     projectPath,
     setProjectPath,
+    pathExample,
     tasks,
     report,
     error,

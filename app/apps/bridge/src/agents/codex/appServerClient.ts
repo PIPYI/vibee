@@ -74,7 +74,7 @@ export class CodexAppServerClient {
     this.reader.on("line", (line) => this.handleLine(line));
 
     const initialize = (await this.request("initialize", {
-      clientInfo: { name: "vci-app-bridge", title: "Vibe Coding Project Intelligence Bridge", version: "0.1.0" },
+      clientInfo: { name: "vci-app-bridge", title: "Vibee Bridge", version: "0.1.0" },
       // thread/*, turn/* 는 experimental API 뒤에 있다.
       capabilities: { experimentalApi: true, requestAttestation: false },
     })) as { userAgent: string; codexHome: string };

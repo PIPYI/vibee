@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Vibe Coding Project Intelligence MCP server (stdio).
+ * Vibee MCP server (stdio).
  *
  * Agent가 MCP를 통해 앱에 도달할 수 있게 하는 tool을 노출한다.
  *
@@ -69,7 +69,7 @@ async function bridgeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (cause) {
     throw new Error(
-      `Cannot reach the Vibe Coding Project Intelligence bridge at ${bridge.baseUrl}. Is it running (npm run bridge)? ${String(cause)}`,
+      `Cannot reach the Vibee bridge at ${bridge.baseUrl}. Is it running (npm run bridge)? ${String(cause)}`,
     );
   }
   if (!response.ok) {
@@ -305,7 +305,7 @@ const server = new McpServer(
   { name: "vci-app", version: "0.1.0" },
   {
     instructions:
-      "Tools for the Vibe Coding Project Intelligence app. Call get_app_context before starting work " +
+      "Tools for the Vibee app. Call get_app_context before starting work " +
       "to learn which project and UI selection the user is looking at, and call show_result " +
       "exactly once when finished to render a structured summary in the app. During a " +
       "requirements interview, ask one question at a time with ask_user and save the draft " +
@@ -318,7 +318,7 @@ server.registerTool(
   {
     title: "Get app context",
     description:
-      "Return the context currently set in the Vibe Coding Project Intelligence browser UI: the selected project " +
+      "Return the context currently set in the Vibee browser UI: the selected project " +
       "path, the prompt the user submitted, the selected mock app item, and the interview so " +
       "far. The saved design draft is summarised in `designDigest`; the full document is only " +
       "included when you ask for it with includeDesign.",
@@ -349,7 +349,7 @@ server.registerTool(
   {
     title: "Show structured result",
     description:
-      "Push a structured result to the Vibe Coding Project Intelligence browser UI. It is rendered in a dedicated " +
+      "Push a structured result to the Vibee browser UI. It is rendered in a dedicated " +
       "Result Panel, separate from the agent transcript. Call this exactly once per task.",
     inputSchema: {
       title: z.string().describe("Short headline for the result"),
@@ -370,7 +370,7 @@ server.registerTool(
       content: [
         {
           type: "text",
-          text: `Result delivered to the Vibe Coding Project Intelligence app UI${ack.taskId ? ` for task ${ack.taskId}` : ""}.`,
+          text: `Result delivered to the Vibee app UI${ack.taskId ? ` for task ${ack.taskId}` : ""}.`,
         },
       ],
     };
@@ -627,7 +627,7 @@ server.registerTool(
         {
           type: "text",
           text:
-            `Drift report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
+            `Drift report delivered to the Vibee UI (${report.findings.length} finding(s)).` +
             (ack.warnings.length ? `\n\nProblems with the report:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],
@@ -684,7 +684,7 @@ server.registerTool(
       content: [
         {
           type: "text",
-          text: `Verdict delivered to the Vibe Coding Project Intelligence UI (${result.resolved ? "resolved" : "still violated"}).`,
+          text: `Verdict delivered to the Vibee UI (${result.resolved ? "resolved" : "still violated"}).`,
         },
       ],
     };
@@ -755,7 +755,7 @@ server.registerTool(
         {
           type: "text",
           text:
-            `Architecture report delivered to the Vibe Coding Project Intelligence UI (${report.findings.length} finding(s)).` +
+            `Architecture report delivered to the Vibee UI (${report.findings.length} finding(s)).` +
             (ack.warnings.length ? `\n\nEvidence warnings:\n- ${ack.warnings.join("\n- ")}` : ""),
         },
       ],

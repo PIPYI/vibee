@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
+import { getEnvironment, getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
 import type { WikiKeyword, WikiPage } from "@vci/protocol";
 
 export function useWikiFeature() {
@@ -10,6 +10,7 @@ export function useWikiFeature() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [pathExample, setPathExample] = useState("/path/to/your/project");
   const [tasks, setTasks] = useState<TaskState[]>([]);
   const [existingTerms, setExistingTerms] = useState<string[]>([]);
   const [keywords, setKeywords] = useState<WikiKeyword[] | null>(null);
@@ -46,6 +47,7 @@ export function useWikiFeature() {
 
   useEffect(() => {
     getHealth().then((health) => setAgents(health.agents)).catch(() => undefined);
+    getEnvironment().then((environment) => setPathExample(environment.pathExample)).catch(() => undefined);
     getState().then((state) => setTasks(state.tasks)).catch(() => undefined);
     const unsubscribe = subscribeEvents((envelope) => {
       const { event } = envelope;
@@ -161,6 +163,7 @@ export function useWikiFeature() {
     setEffort,
     projectPath,
     setProjectPath,
+    pathExample,
     tasks,
     existingTerms,
     keywords,

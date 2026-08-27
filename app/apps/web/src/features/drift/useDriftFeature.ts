@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
+import { getEnvironment, getHealth, getModels, getState, subscribeEvents, type AgentId, type AgentReadiness, type ModelOption, type TaskState } from "../../api.js";
 import type { DriftFinding, ReportDriftInput, ReviewStart, VerifyDriftFixInput } from "@vci/protocol";
 
 /** finding 하나에 대한 "피드백 받기" 결과. `${originalCommit}:${criterionId}`로 finding과 잇는다. */
@@ -22,6 +22,7 @@ export function useDriftFeature() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [pathExample, setPathExample] = useState("/path/to/your/project");
   const [tasks, setTasks] = useState<TaskState[]>([]);
   const [reviewInfo, setReviewInfo] = useState<{ start: ReviewStart; skipped: number; criteriaCount: number; commitCount: number } | null>(null);
   const [report, setReport] = useState<ReportDriftInput | null>(null);
@@ -59,6 +60,7 @@ export function useDriftFeature() {
 
   useEffect(() => {
     getHealth().then((health) => setAgents(health.agents)).catch(() => undefined);
+    getEnvironment().then((environment) => setPathExample(environment.pathExample)).catch(() => undefined);
     getState().then((state) => setTasks(state.tasks)).catch(() => undefined);
     const unsubscribe = subscribeEvents((envelope) => {
       const { event } = envelope;
@@ -168,6 +170,7 @@ export function useDriftFeature() {
     setEffort,
     projectPath,
     setProjectPath,
+    pathExample,
     tasks,
     reviewInfo,
     report,
