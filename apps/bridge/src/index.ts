@@ -15,7 +15,7 @@ import {
 } from "@vibee/architecture-view";
 import { generateBridgeToken, resolveBridgeUrl, resolvePort } from "./bridge-config.js";
 import { createClaudeAdapter } from "./agents/claude/adapter.js";
-import { codexAdapter } from "./agents/codex/adapter.js";
+import { createCodexAdapter } from "./agents/codex/adapter.js";
 import type { AgentAdapter } from "./agents/types.js";
 import { buildArchitectureViewPrompt } from "./prompt.js";
 import {
@@ -42,6 +42,7 @@ const bridgeUrl = resolveBridgeUrl(port);
 const bridgeToken = generateBridgeToken();
 
 const claudeAdapter = createClaudeAdapter({ bridgeUrl, bridgeToken });
+const codexAdapter = createCodexAdapter({ bridgeUrl, bridgeToken });
 
 function adapterFor(agent: AgentId): AgentAdapter {
   return agent === "claude" ? claudeAdapter : codexAdapter;

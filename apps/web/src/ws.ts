@@ -9,6 +9,10 @@ const RECONNECT_DELAY_MS = 2000;
  * task is (see docs/v1_plan.md 4.5 / apps/bridge/src/index.ts) -- there is
  * no per-task filtering to do here.
  *
+ * In development, events are proxied through the page's own Vite origin.
+ * That keeps a Windows browser + WSL bridge on the same reliable path as
+ * the API proxy rather than making the browser reach the bridge directly.
+ *
  * Reconnects on close with a fixed delay. Per the plan this is explicitly
  * MVP-scoped: no exponential backoff and no resync-on-reconnect (a missed
  * event during a drop is simply lost -- acceptable since the bridge only
@@ -23,7 +27,7 @@ export function connectEvents(onEvent: (event: AgentEvent) => void): () => void 
   let socket: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const url = `${wsUrlFrom(BRIDGE_URL)}/ws`;
+  const url = import.meta.env.DEV ? `${wsUrlFrom(window.location.origin)}/ws` : `${wsUrlFrom(BRIDGE_URL)}/ws`;
 
   function connect(): void {
     if (stopped) return;

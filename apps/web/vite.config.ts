@@ -13,10 +13,9 @@ import react from "@vitejs/plugin-react";
 // src/api.ts calls same-origin relative paths ("/api/...") while running
 // under `vite dev`, and Vite forwards them server-side (server-to-server
 // requests are not subject to browser CORS at all) to the real bridge URL
-// configured via VITE_BRIDGE_URL. WebSocket connections are unaffected by
-// CORS (browsers don't apply the same-origin check to the WebSocket
-// handshake), so src/ws.ts connects directly to the bridge's ws:// URL
-// without going through this proxy.
+// configured via VITE_BRIDGE_URL. The same proxy also handles /ws: WebSocket
+// handshakes are not blocked by CORS, but proxying still avoids cross-host
+// loopback problems in WSL and other split browser/server environments.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const bridgeUrl = env["VITE_BRIDGE_URL"] || "http://127.0.0.1:4310";
@@ -28,6 +27,14 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: bridgeUrl,
           changeOrigin: true,
+        },
+        // Keep browser-to-bridge traffic on Vite's origin in development.
+        // This avoids a separate browser -> WSL loopback hop for WebSocket
+        // events while Vite can already reach the bridge from inside WSL.
+        "/ws": {
+          target: bridgeUrl,
+          changeOrigin: true,
+          ws: true,
         },
       },
     },

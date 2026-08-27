@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ModelOption } from "@vibee/protocol";
+import type { AgentId, ModelOption } from "@vibee/protocol";
 import { getModels, startArchitectureView } from "../api.ts";
 
 type Props = {
@@ -8,6 +8,7 @@ type Props = {
 
 export function ProjectPicker({ onStarted }: Props) {
   const [projectPath, setProjectPath] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState<AgentId>("claude");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -18,7 +19,8 @@ export function ProjectPicker({ onStarted }: Props) {
   useEffect(() => {
     let cancelled = false;
     setModelsLoading(true);
-    getModels("claude").then((result) => {
+    setSelectedModel("");
+    getModels(selectedAgent).then((result) => {
       if (cancelled) return;
       setModelsLoading(false);
       if (result.ok) {
@@ -31,7 +33,7 @@ export function ProjectPicker({ onStarted }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selectedAgent]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,7 +47,7 @@ export function ProjectPicker({ onStarted }: Props) {
 
     setSubmitting(true);
     const modelInput = selectedModel.length > 0 ? { model: selectedModel } : {};
-    const result = await startArchitectureView({ agent: "claude", projectPath: trimmed, ...modelInput });
+    const result = await startArchitectureView({ agent: selectedAgent, projectPath: trimmed, ...modelInput });
     setSubmitting(false);
 
     if (result.ok) {
@@ -73,11 +75,9 @@ export function ProjectPicker({ onStarted }: Props) {
       <p className="helper-text">절대 경로를 입력해주세요 (예: &quot;/&quot;로 시작하는 전체 경로). 상대 경로는 인식되지 않습니다.</p>
 
       <label htmlFor="agent-select">AI 에이전트</label>
-      <select id="agent-select" defaultValue="claude" disabled>
+      <select id="agent-select" value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value as AgentId)}>
         <option value="claude">Claude</option>
-        <option value="codex" disabled title="Codex 지원은 아직 준비 중입니다">
-          Codex (준비 중)
-        </option>
+        <option value="codex">Codex</option>
       </select>
 
       <label htmlFor="model-select">모델</label>

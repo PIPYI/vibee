@@ -21,11 +21,3 @@ export interface AgentAdapter {
   stopTask(taskId: string): Promise<void>;
   resetSession(projectPath: string): void;
 }
-
-/** Thrown by the codex stub adapter for any method that has no real implementation yet. */
-export class NotImplementedError extends Error {
-  constructor(message = "Codex support is not implemented yet.") {
-    super(message);
-    this.name = "NotImplementedError";
-  }
-}
