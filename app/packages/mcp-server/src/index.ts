@@ -78,6 +78,229 @@ async function bridgeFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+// ---------------------------------------------------------------------------
+// 시스템 맵 tool 3개의 입력 스키마 (vibee의 packages/mcp-server/src/index.ts 포팅).
+//
+// 형태는 갖추되 값은 느슨하게 둔다 — pos/size가 숫자 배열이라는 "모양"은 선언해야
+// Claude Agent SDK의 tool-argument 직렬화가 구조를 안다고 신호를 주지만, 실제 엄격한
+// 검증(min/max/enum 등)은 서버 쪽 ajv 스키마(@vci/system-map의 validateSystemMap/
+// validateRuntimeSemantics)가 한다. 여기서 거부하지 않고 항상 bridge까지 보내서
+// subject/evidence/supportedFixes가 붙은 진짜 diagnostic으로 돌려받게 한다.
+const sourceInputSchema = z
+  .object({
+    path: z.string().optional(),
+    line: z.number().optional(),
+    endLine: z.number().optional(),
+    label: z.string().optional(),
+  })
+  .passthrough();
+
+const presentationOverrideInputSchema = z
+  .object({
+    label: z.string().optional(),
+    sublabel: z.string().optional(),
+    visibility: z.string().optional(),
+  })
+  .passthrough();
+
+const audiencePresentationInputSchema = z
+  .object({
+    simple: presentationOverrideInputSchema.optional(),
+    technical: presentationOverrideInputSchema.optional(),
+  })
+  .passthrough();
+
+const componentInputSchema = z
+  .object({
+    id: z.string().optional(),
+    type: z.string().optional(),
+    semanticRole: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
+    label: z.string().optional(),
+    sublabel: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
+    pos: z.array(z.number()).optional(),
+    size: z.array(z.number()).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const boundaryInputSchema = z
+  .object({
+    id: z.string().optional(),
+    kind: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
+    label: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
+    wraps: z.array(z.string()).optional(),
+    pad: z.number().optional(),
+  })
+  .passthrough();
+
+const connectionInputSchema = z
+  .object({
+    id: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    semanticRefs: z.array(z.string()).optional(),
+    label: z.string().optional(),
+    presentation: audiencePresentationInputSchema.optional(),
+    variant: z.string().optional(),
+  })
+  .passthrough();
+
+const cardInputSchema = z
+  .object({
+    dot: z.string().optional(),
+    title: z.string().optional(),
+    items: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
+/**
+ * validate_system_map/submit_system_map의 입력. semanticRevision(submit_runtime_semantics가
+ * 돌려준 번호)을 문서 필드와 한 평면(flat) 객체로 같이 받는다 — 다른 두 tool과 입력 모양
+ * 컨벤션을 하나로 맞추기 위해서다. 여기서는 optional로만 두고, 실제로 있어야 한다는 것과
+ * 커밋된 리비전을 가리켜야 한다는 것은 bridge 라우트가 강제한다.
+ */
+const documentInputSchema = z
+  .object({
+    semanticRevision: z.number().optional(),
+    schemaVersion: z.number().optional(),
+    title: z.string().optional(),
+    viewBox: z.array(z.number()).optional(),
+    repository: z
+      .object({ url: z.string().optional(), revision: z.string().optional() })
+      .passthrough()
+      .optional(),
+    presentation: z
+      .object({
+        defaultAudience: z.string().optional(),
+        availableAudiences: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
+    components: z.array(componentInputSchema).optional(),
+    boundaries: z.array(boundaryInputSchema).optional(),
+    connections: z.array(connectionInputSchema).optional(),
+    cards: z.array(cardInputSchema).optional(),
+  })
+  .passthrough();
+
+// ---------------------------------------------------------------------------
+// RuntimeSemanticDocument 입력 스키마. packages/protocol/src/index.ts의
+// RuntimeSemanticDocument와 필드 단위로 대응한다.
+// ---------------------------------------------------------------------------
+
+const implementationHintInputSchema = z
+  .object({
+    label: z.string().optional(),
+    kind: z.string().optional(),
+  })
+  .passthrough();
+
+const actorInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const runtimeUnitInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const responsibilityInputSchema = z
+  .object({
+    id: z.string().optional(),
+    runtimeId: z.string().optional(),
+    label: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const stateInputSchema = z
+  .object({
+    id: z.string().optional(),
+    runtimeId: z.string().optional(),
+    label: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const externalInputSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const interactionInputSchema = z
+  .object({
+    id: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    implementationHints: z.array(implementationHintInputSchema).optional(),
+    sources: z.array(sourceInputSchema).optional(),
+  })
+  .passthrough();
+
+const runtimeSemanticDocumentInputSchema = z
+  .object({
+    schemaVersion: z.number().optional(),
+    title: z.string().optional(),
+    repository: z
+      .object({ url: z.string().optional(), revision: z.string().optional() })
+      .passthrough()
+      .optional(),
+    actors: z.array(actorInputSchema).optional(),
+    runtimes: z.array(runtimeUnitInputSchema).optional(),
+    responsibilities: z.array(responsibilityInputSchema).optional(),
+    states: z.array(stateInputSchema).optional(),
+    externals: z.array(externalInputSchema).optional(),
+    interactions: z.array(interactionInputSchema).optional(),
+  })
+  .passthrough();
+
+/**
+ * 방어적 정규화: JSON 객체/배열이어야 할 값이 JSON으로 인코딩된 문자열로 오면(실측된
+ * 실패 패턴 — Claude Agent SDK의 tool-argument 직렬화가 구조를 문자열로 납작하게 만드는
+ * 경우가 있었다) 파싱한다. 알려진 문서 모양 안으로만 재귀하므로 label 같은 진짜 문자열
+ * 필드를 건드리지 않는다.
+ */
+function coerceJsonStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return coerceJsonStrings(JSON.parse(trimmed));
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(coerceJsonStrings);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceJsonStrings(v)]));
+  }
+  return value;
+}
+
 const server = new McpServer(
   { name: "vci-app", version: "0.1.0" },
   {
@@ -670,6 +893,66 @@ server.registerTool(
         },
       ],
     };
+  },
+);
+
+/**
+ * 시스템 맵 tool 3개 (vibee의 submit_runtime_semantics/validate_architecture_view/
+ * submit_architecture_view 포팅, 뒤 둘은 이름 충돌을 피하려 validate_system_map/
+ * submit_system_map으로 바꿨다). 한 turn 안에서 순서대로 호출된다:
+ * submit_runtime_semantics → validate_system_map(반복 가능) → submit_system_map.
+ */
+server.registerTool(
+  "submit_runtime_semantics",
+  {
+    title: "Submit runtime semantics",
+    description:
+      "Author a RuntimeSemanticDocument (actors/runtimes/responsibilities/states/externals/interactions, each backed by real source citations) and submit it for server-side validation: schema -> referential integrity -> citations. On success, commits it as an immutable semantic revision and returns { diagnostics: [], semanticRevision } -- you must pass that semanticRevision when you later call validate_system_map/submit_system_map. On failure, returns { diagnostics } describing exactly what to fix; fix and call this tool again (do not guess at a fix without reading subject/evidence/supportedFixes).",
+    inputSchema: runtimeSemanticDocumentInputSchema,
+  },
+  async (input) => {
+    const result = await bridgeFetch<Record<string, unknown>>("/internal/submit-runtime-semantics", {
+      method: "POST",
+      body: JSON.stringify(coerceJsonStrings(input)),
+    });
+    log("submit_runtime_semantics ->", JSON.stringify(result).slice(0, 200));
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  },
+);
+
+server.registerTool(
+  "validate_system_map",
+  {
+    title: "Validate the system map",
+    description:
+      "Validate a candidate SystemMapDocument WITHOUT committing it. Input is the document's own fields plus a top-level `semanticRevision` (the number returned by submit_runtime_semantics) -- omit it or reference an unknown revision and validation fails with a diagnostic telling you to call submit_runtime_semantics first. Runs schema -> semantic mapping -> geometry -> citation checks in order; schema errors short-circuit the later stages. Returns { diagnostics, layout? } -- layout (computed component rects, routes, label rects) is included only when there are zero schema-level diagnostics, so you can see the actual rendered coordinates before submitting.",
+    inputSchema: documentInputSchema,
+  },
+  async (input) => {
+    const result = await bridgeFetch<Record<string, unknown>>("/internal/validate-system-map", {
+      method: "POST",
+      body: JSON.stringify(coerceJsonStrings(input)),
+    });
+    log("validate_system_map ->", JSON.stringify(result).slice(0, 200));
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  },
+);
+
+server.registerTool(
+  "submit_system_map",
+  {
+    title: "Submit the system map",
+    description:
+      "Re-validates the candidate SystemMapDocument server-side (same document fields plus the top-level `semanticRevision` used with validate_system_map) and, if it has no severity:\"error\" diagnostics, commits it as the project's system map. If any error diagnostic remains, the submission is rejected and the diagnostics are returned instead -- fix them and call validate_system_map again before retrying submit.",
+    inputSchema: documentInputSchema,
+  },
+  async (input) => {
+    const result = await bridgeFetch<Record<string, unknown>>("/internal/submit-system-map", {
+      method: "POST",
+      body: JSON.stringify(coerceJsonStrings(input)),
+    });
+    log("submit_system_map ->", JSON.stringify(result).slice(0, 200));
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
   },
 );
 

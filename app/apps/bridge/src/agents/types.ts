@@ -22,7 +22,7 @@ export type StartTaskInput = {
  * - `analyze`      — 코드베이스 의미 분석(Semantic). AnalysisBundle의 재료를 만든다
  * - `assembly`     — Semantic 결과를 Architecture/Workflow/UserMap/Sequence로 조립한다
  */
-export type TaskMode = "interview" | "review" | "wiki" | "architecture" | "analyze" | "assembly";
+export type TaskMode = "interview" | "review" | "wiki" | "architecture" | "analyze" | "assembly" | "system-map";
 
 /**
  * 코드를 읽어야 하는 mode인가.
@@ -31,7 +31,13 @@ export type TaskMode = "interview" | "review" | "wiki" | "architecture" | "analy
  * assembly는 다르다 — 코드를 직접 봐야 판단할 수 있는 것들이라 읽기 도구만 열어 준다.
  */
 export function needsReadTools(mode: TaskMode): boolean {
-  return mode === "wiki" || mode === "architecture" || mode === "analyze" || mode === "assembly";
+  return (
+    mode === "wiki" ||
+    mode === "architecture" ||
+    mode === "analyze" ||
+    mode === "assembly" ||
+    mode === "system-map"
+  );
 }
 
 /** 모든 mode에 허용하는 Claude 내장 도구. 쓰기 도구는 하나도 없다 — 이 앱에 쓰는 mode가 없다. */

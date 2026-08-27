@@ -40,11 +40,11 @@ const ICONS: Record<FeatureId, ReactNode> = {
 };
 
 const FEATURES: Array<{ id: FeatureId; label: string; available: boolean }> = [
-  { id: "design", label: "Design", available: true },
-  { id: "drift", label: "Drift", available: true },
-  { id: "architecture", label: "구조", available: true },
-  { id: "wiki", label: "Wiki", available: true },
-  { id: "analysis", label: "Analysis", available: false },
+  { id: "design", label: "설계하기", available: true },
+  { id: "drift", label: "설계이탈관리", available: true },
+  { id: "architecture", label: "구조개선", available: true },
+  { id: "wiki", label: "위키", available: true },
+  { id: "analysis", label: "구조파악", available: true },
 ];
 
 export function Sidebar({

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "title": "Generic Web App",
+  "viewBox": [1200, 760],
+  "components": [
+    { "id": "web", "type": "frontend", "semanticRole": "responsibility", "semanticRefs": ["resp-web-app"], "label": "Web App", "pos": [40, 340], "size": [170, 70] },
+    { "id": "api", "type": "backend", "semanticRole": "responsibility", "semanticRefs": ["resp-api-server"], "label": "API Server", "pos": [330, 330], "size": [190, 90] },
+    { "id": "auth", "type": "security", "semanticRole": "responsibility", "semanticRefs": ["resp-auth-service"], "label": "Auth Service", "pos": [680, 60], "size": [170, 80] },
+    { "id": "db", "type": "database", "semanticRole": "state", "semanticRefs": ["state-primary-database"], "label": "Primary Database", "pos": [680, 340], "size": [170, 90] },
+    { "id": "queue", "type": "messagebus", "semanticRole": "state", "semanticRefs": ["state-job-queue"], "label": "Job Queue", "pos": [680, 560], "size": [170, 80] },
+    { "id": "storage", "type": "cloud", "semanticRole": "external", "semanticRefs": ["ext-object-storage"], "label": "Object Storage", "pos": [960, 460], "size": [180, 80] },
+    { "id": "payments", "type": "external", "semanticRole": "external", "semanticRefs": ["ext-payment-provider"], "label": "Payment Provider", "pos": [960, 570], "size": [180, 90] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Client", "wraps": ["web"], "pad": 20 },
+    { "kind": "security-group", "label": "Trusted Services", "wraps": ["api", "auth", "db", "queue"], "pad": 24 }
+  ],
+  "connections": [
+    { "id": "web-to-api", "from": "web", "to": "api", "label": "HTTPS request", "variant": "default" },
+    { "id": "api-to-auth", "from": "api", "to": "auth", "label": "verify session", "variant": "security" },
+    { "id": "api-to-db", "from": "api", "to": "db", "label": "read / write", "variant": "default" },
+    { "id": "api-to-queue", "from": "api", "to": "queue", "label": "enqueue job", "variant": "default" },
+    { "id": "queue-to-storage", "from": "queue", "to": "storage", "label": "store artifact", "variant": "default" },
+    { "id": "queue-to-payments", "from": "queue", "to": "payments", "label": "charge card", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Request flow",
+      "items": [
+        "Web App calls API Server over HTTPS",
+        "API Server verifies the session with Auth Service",
+        "API Server reads and writes Primary Database"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Background jobs",
+      "items": [
+        "API Server enqueues work on Job Queue",
+        "Job Queue writes results to Object Storage",
+        "Job Queue settles charges with Payment Provider"
+      ]
+    }
+  ]
+}

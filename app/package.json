@@ -7,10 +7,10 @@
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "prebuild": "node scripts/check-runtime.mjs",
-    "build": "npm run build -w @vci/protocol && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge && npm run build -w @vci/web",
-    "build:server": "npm run build -w @vci/protocol && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge",
+    "build": "npm run build -w @vci/protocol && npm run build -w @vci/system-map && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge && npm run build -w @vci/web",
+    "build:server": "npm run build -w @vci/protocol && npm run build -w @vci/system-map && npm run build -w @vci/mcp-server && npm run build -w @vci/bridge",
     "pretypecheck": "node scripts/check-runtime.mjs",
-    "typecheck": "npm run typecheck -w @vci/protocol && npm run typecheck -w @vci/mcp-server && npm run typecheck -w @vci/bridge && npm run typecheck -w @vci/web",
+    "typecheck": "npm run typecheck -w @vci/protocol && npm run typecheck -w @vci/system-map && npm run typecheck -w @vci/mcp-server && npm run typecheck -w @vci/bridge && npm run typecheck -w @vci/web",
     "prebridge": "node scripts/check-runtime.mjs",
     "bridge": "npm run start -w @vci/bridge",
     "preweb": "node scripts/check-runtime.mjs",
