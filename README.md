@@ -1,5 +1,8 @@
 # Vibee 🐝
 
+<img width="200" height="200" alt="vibee-logo" src="https://github.com/user-attachments/assets/220ffd02-fccf-4a1f-a0a8-1fd4c819c105" />
+
+
 > 비전공자가 AI에게 코드를 맡기는 데서 그치지 않고, **무엇을 만들지 먼저 설계하고 자신이 만든 결과물을 이해하며 AI를 주도적으로 활용하도록 돕는 바이브코딩 보조 도구**
 
 Vibee는 Codex 또는 Claude Code 같은 로컬 Coding Agent를 프로젝트 지식 계층과 연결하는 연동 앱입니다. 새로운 코딩 AI를 만드는 대신, 사용자가 이미 쓰고 있는 Coding Agent가 더 명확한 설계와 프로젝트 맥락을 바탕으로 작업하도록 돕고, 구현 후에는 설계 이탈·코드 구조·개발 과정의 개념을 사용자가 이해할 수 있는 형태로 보여줍니다.
