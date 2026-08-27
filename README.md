@@ -23,7 +23,6 @@ Vibee는 Codex 또는 Claude Code 같은 로컬 Coding Agent를 프로젝트 지
 설치부터 실행까지 자세한 안내는 [`startup.md`](./startup.md)를 참고하세요. 요약하면:
 
 ```bash
-cd app
 npm install
 npm run build
 npm run bridge   # 터미널 1
@@ -35,11 +34,11 @@ Claude Code는 별도 등록이 필요 없습니다.
 
 ## 구조
 
-- `app/apps/bridge` — HTTP API + WebSocket + Coding Agent adapter를 갖는 로컬 서버
-- `app/apps/web` — 브라우저 화면 (React)
-- `app/packages/mcp-server` — Coding Agent가 앱에 도달하는 MCP tool을 노출하는 stdio 서버
-- `app/packages/protocol` — 위 세 층이 공유하는 타입
-- `app/packages/system-map` — "구조파악" 기능의 검증·레이아웃·SVG 렌더링 로직
+- `apps/bridge` — HTTP API + WebSocket + Coding Agent adapter를 갖는 로컬 서버
+- `apps/web` — 브라우저 화면 (React)
+- `packages/mcp-server` — Coding Agent가 앱에 도달하는 MCP tool을 노출하는 stdio 서버
+- `packages/protocol` — 위 세 층이 공유하는 타입
+- `packages/system-map` — "구조파악" 기능의 검증·레이아웃·SVG 렌더링 로직
 
 ## 라이선스
 

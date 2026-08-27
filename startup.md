@@ -48,7 +48,7 @@ xcode-select --install
 nvm을 이미 사용한다면 다음 명령으로 프로젝트 권장 버전을 설치할 수 있습니다.
 
 ```bash
-cd vibee-app/app
+cd vibee-app
 nvm install
 nvm use
 ```
@@ -218,7 +218,7 @@ claude
 
 ```bash
 git clone https://github.com/PIPYI/vibee-app.git
-cd vibee-app/app
+cd vibee-app
 npm ci
 npm run build
 ```
@@ -229,7 +229,7 @@ npm run build
 
 ## 7. 앱 실행
 
-터미널 두 개를 열고 두 터미널 모두 `vibee-app/app` 디렉터리로 이동합니다.
+터미널 두 개를 열고 두 터미널 모두 `vibee-app` 디렉터리로 이동합니다.
 
 ### 터미널 1 — 브릿지
 
@@ -270,7 +270,6 @@ WSL에서도 먼저 Windows 브라우저에서 위 주소를 사용하세요. �
 ```bash
 cd vibee-app
 git pull
-cd app
 npm ci
 npm run build
 ```
@@ -348,7 +347,7 @@ node --version
 nvm 사용자라면 다음 명령으로 해결할 수 있습니다.
 
 ```bash
-cd vibee-app/app
+cd vibee-app
 nvm install
 nvm use
 ```
@@ -358,7 +357,7 @@ nvm use
 최초 빌드가 빠졌거나 코드를 갱신한 뒤 다시 빌드하지 않은 상태입니다.
 
 ```bash
-cd vibee-app/app
+cd vibee-app
 npm ci
 npm run build
 ```
