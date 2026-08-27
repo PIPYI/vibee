@@ -307,6 +307,42 @@ function segmentIntersectsRect(p0: Point, p1: Point, rect: Rect): boolean {
   return t0 <= t1;
 }
 
+function routeIntersectsRect(points: Point[], rect: Rect): boolean {
+  for (let i = 0; i < points.length - 1; i++) {
+    if (segmentIntersectsRect(points[i]!, points[i + 1]!, rect)) return true;
+  }
+  return false;
+}
+
+function segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
+  const cross = (p: Point, q: Point, r: Point) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const onSegment = (p: Point, q: Point, r: Point) =>
+    q.x >= Math.min(p.x, r.x) - 0.01 && q.x <= Math.max(p.x, r.x) + 0.01 &&
+    q.y >= Math.min(p.y, r.y) - 0.01 && q.y <= Math.max(p.y, r.y) + 0.01;
+  const abC = cross(a, b, c);
+  const abD = cross(a, b, d);
+  const cdA = cross(c, d, a);
+  const cdB = cross(c, d, b);
+  if (((abC > 0 && abD < 0) || (abC < 0 && abD > 0)) && ((cdA > 0 && cdB < 0) || (cdA < 0 && cdB > 0))) return true;
+  return (Math.abs(abC) < 0.01 && onSegment(a, c, b)) ||
+    (Math.abs(abD) < 0.01 && onSegment(a, d, b)) ||
+    (Math.abs(cdA) < 0.01 && onSegment(c, a, d)) ||
+    (Math.abs(cdB) < 0.01 && onSegment(c, b, d));
+}
+
+function routesIntersect(a: Point[], b: Point[]): boolean {
+  for (let i = 0; i < a.length - 1; i++) {
+    for (let j = 0; j < b.length - 1; j++) {
+      if (segmentsIntersect(a[i]!, a[i + 1]!, b[j]!, b[j + 1]!)) return true;
+    }
+  }
+  return false;
+}
+
+function routeCrossesAny(points: Point[], routes: Point[][]): boolean {
+  return routes.some((route) => routesIntersect(points, route));
+}
+
 /**
  * Which obstacle ids (if any) a polyline's segments pass through. Obstacles
  * are shrunk by half a pixel on each side so a route that merely runs flush
@@ -355,11 +391,12 @@ export function routeConnection(
   toRect: Rect,
   toPort: Point,
   obstacles: Obstacle[],
+  avoidRoutes: Point[][] = [],
 ): Route {
   const axisAligned = Math.abs(fromPort.x - toPort.x) < 0.01 || Math.abs(fromPort.y - toPort.y) < 0.01;
   if (axisAligned) {
     const straightPoints = [fromPort, toPort];
-    if (routeClearsComponents(straightPoints, obstacles).length === 0) {
+    if (routeClearsComponents(straightPoints, obstacles).length === 0 && !routeCrossesAny(straightPoints, avoidRoutes)) {
       return { points: straightPoints, strategy: "straight", crossedComponentIds: [] };
     }
   }
@@ -387,54 +424,49 @@ export function routeConnection(
   ]);
 
   const hCrossed = routeClearsComponents(hFirst, obstacles);
-  if (hCrossed.length === 0) {
+  if (hCrossed.length === 0 && !routeCrossesAny(hFirst, avoidRoutes)) {
     return { points: hFirst, strategy: "h-first", crossedComponentIds: [] };
   }
   const vCrossed = routeClearsComponents(vFirst, obstacles);
-  if (vCrossed.length === 0) {
+  if (vCrossed.length === 0 && !routeCrossesAny(vFirst, avoidRoutes)) {
     return { points: vFirst, strategy: "v-first", crossedComponentIds: [] };
   }
 
   if (obstacles.length > 0) {
     const bbox = boundingBoxOf(obstacles);
+    const horizontalChannels = new Set([
+      bbox.y - ROUTE_CHANNEL,
+      bbox.y + bbox.h + ROUTE_CHANNEL,
+      ...obstacles.flatMap((obstacle) => [obstacle.y - ROUTE_CHANNEL, obstacle.y + obstacle.h + ROUTE_CHANNEL]),
+    ]);
+    const verticalChannels = new Set([
+      bbox.x - ROUTE_CHANNEL,
+      bbox.x + bbox.w + ROUTE_CHANNEL,
+      ...obstacles.flatMap((obstacle) => [obstacle.x - ROUTE_CHANNEL, obstacle.x + obstacle.w + ROUTE_CHANNEL]),
+    ]);
     const channelCandidates: Point[][] = [
-      dedupePoints([
+      ...[...horizontalChannels].map((channelY) => dedupePoints([
         fromPort,
         stubFrom,
-        { x: stubFrom.x, y: bbox.y - ROUTE_CHANNEL },
-        { x: stubTo.x, y: bbox.y - ROUTE_CHANNEL },
+        { x: stubFrom.x, y: channelY },
+        { x: stubTo.x, y: channelY },
         stubTo,
         toPort,
-      ]),
-      dedupePoints([
+      ])),
+      ...[...verticalChannels].map((channelX) => dedupePoints([
         fromPort,
         stubFrom,
-        { x: stubFrom.x, y: bbox.y + bbox.h + ROUTE_CHANNEL },
-        { x: stubTo.x, y: bbox.y + bbox.h + ROUTE_CHANNEL },
+        { x: channelX, y: stubFrom.y },
+        { x: channelX, y: stubTo.y },
         stubTo,
         toPort,
-      ]),
-      dedupePoints([
-        fromPort,
-        stubFrom,
-        { x: bbox.x - ROUTE_CHANNEL, y: stubFrom.y },
-        { x: bbox.x - ROUTE_CHANNEL, y: stubTo.y },
-        stubTo,
-        toPort,
-      ]),
-      dedupePoints([
-        fromPort,
-        stubFrom,
-        { x: bbox.x + bbox.w + ROUTE_CHANNEL, y: stubFrom.y },
-        { x: bbox.x + bbox.w + ROUTE_CHANNEL, y: stubTo.y },
-        stubTo,
-        toPort,
-      ]),
-    ];
-    for (const candidate of channelCandidates) {
-      if (routeClearsComponents(candidate, obstacles).length === 0) {
-        return { points: candidate, strategy: "outer-channel", crossedComponentIds: [] };
-      }
+      ])),
+    ].filter((candidate) => routeClearsComponents(candidate, obstacles).length === 0 && !routeCrossesAny(candidate, avoidRoutes));
+    if (channelCandidates.length > 0) {
+      const shortest = channelCandidates.reduce((best, candidate) =>
+        polylineLength(candidate) < polylineLength(best) ? candidate : best,
+      );
+      return { points: shortest, strategy: "outer-channel", crossedComponentIds: [] };
     }
   }
 
@@ -498,7 +530,13 @@ function pointAt(from: Point, to: Point, distance: number): Point {
   return { x: to.x + dx * t, y: to.y + dy * t };
 }
 
-function midpointOfPolyline(points: Point[]): Point {
+function polylineLength(points: Point[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += dist(points[i - 1]!, points[i]!);
+  return total;
+}
+
+function pointAlongPolyline(points: Point[], fraction: number): Point {
   if (points.length === 0) return { x: 0, y: 0 };
   if (points.length === 1) return points[0]!;
   const lengths: number[] = [];
@@ -508,7 +546,7 @@ function midpointOfPolyline(points: Point[]): Point {
     lengths.push(d);
     total += d;
   }
-  let target = total / 2;
+  let target = total * fraction;
   for (let i = 0; i < lengths.length; i++) {
     const segLen = lengths[i]!;
     if (target <= segLen || i === lengths.length - 1) {
@@ -593,7 +631,7 @@ export function calculateArchitectureLayout(doc: ArchitectureViewDocument): Arch
     const obstacles: Obstacle[] = doc.components
       .filter((c) => c.id !== conn.from && c.id !== conn.to)
       .map((c) => ({ id: c.id, ...componentRect(c) }));
-    const routed = routeConnection(fromRect, fromPort, toRect, toPort, obstacles);
+    const routed = routeConnection(fromRect, fromPort, toRect, toPort, obstacles, [...routes.values()].map((route) => route.points));
     const points = shortenRouteEnd(routed.points, ARROW_SHORTEN_DISTANCE);
     routes.set(edgeKey, { points, strategy: routed.strategy, crossedComponentIds: routed.crossedComponentIds });
   });
@@ -613,14 +651,19 @@ export function calculateArchitectureLayout(doc: ArchitectureViewDocument): Arch
     const edgeKey = edgeKeyFor(conn, i);
     const route = routes.get(edgeKey);
     if (!route || route.points.length === 0) return;
-    const mid = midpointOfPolyline(route.points);
     const width = labelMaskWidth(conn.label);
-    labelRects.set(`connection-label:${edgeKey}`, {
-      x: mid.x - width / 2,
-      y: mid.y - LABEL_HEIGHT / 2,
-      w: width,
-      h: LABEL_HEIGHT,
+    const otherRoutes = [...routes.entries()].filter(([key]) => key !== edgeKey).map(([, value]) => value.points);
+    const occupiedLabels = [...labelRects.values()];
+    const candidates = [0.5, 0.4, 0.6, 0.3, 0.7].map((fraction) => {
+      const point = pointAlongPolyline(route.points, fraction);
+      return { x: point.x - width / 2, y: point.y - LABEL_HEIGHT / 2, w: width, h: LABEL_HEIGHT };
     });
+    const chosen = candidates.find((candidate) =>
+      ![...componentRects.values()].some((rect) => rectsIntersect(candidate, rect)) &&
+      !occupiedLabels.some((rect) => rectsIntersect(candidate, rect)) &&
+      !otherRoutes.some((points) => routeIntersectsRect(points, candidate)),
+    ) ?? candidates[0]!;
+    labelRects.set(`connection-label:${edgeKey}`, chosen);
   });
 
   return { componentRects, routes, labelRects };
@@ -769,6 +812,54 @@ export function checkGeometry(doc: ArchitectureViewDocument): Diagnostic[] {
         evidence: { crossedComponentIds: route.crossedComponentIds, strategy: route.strategy },
         supportedFixes: [`reposition "${edgeKey}"'s endpoints or the crossed component(s) so the route can go around them`],
       });
+    }
+    if (route.points.length >= 2) {
+      const routeLength = polylineLength(route.points);
+      const directLength = dist(route.points[0]!, route.points[route.points.length - 1]!);
+      const detourRatio = directLength > 0 ? routeLength / directLength : 1;
+      if (routeLength > 300 && detourRatio > 2) {
+        diagnostics.push({
+          code: "architecture-view/edge-excessive-detour",
+          severity: "error",
+          message: `Connection "${edgeKey}" takes an excessive detour (${detourRatio.toFixed(2)}x its direct distance).`,
+          subject: edgeKey,
+          evidence: { routeLength, directLength, detourRatio, strategy: route.strategy },
+          supportedFixes: ["reposition its endpoints or intervening components so the connection has a shorter clear channel"],
+        });
+      }
+    }
+  }
+
+  const routeEntries = [...routes.entries()];
+  for (let i = 0; i < routeEntries.length; i++) {
+    for (let j = i + 1; j < routeEntries.length; j++) {
+      const [keyA, routeA] = routeEntries[i]!;
+      const [keyB, routeB] = routeEntries[j]!;
+      if (routesIntersect(routeA.points, routeB.points)) {
+        diagnostics.push({
+          code: "architecture-view/edge-collision",
+          severity: "error",
+          message: `Connections "${keyA}" and "${keyB}" overlap or cross.`,
+          subject: `${keyA},${keyB}`,
+          supportedFixes: ["reposition the connected components so the two routes no longer overlap or cross"],
+        });
+      }
+    }
+  }
+
+  for (const [labelKey, labelRect] of labelRects) {
+    if (!labelKey.startsWith("connection-label:")) continue;
+    const ownEdgeKey = labelKey.slice("connection-label:".length);
+    for (const [edgeKey, route] of routes) {
+      if (edgeKey !== ownEdgeKey && routeIntersectsRect(route.points, labelRect)) {
+        diagnostics.push({
+          code: "architecture-view/edge-label-collision",
+          severity: "error",
+          message: `Connection "${edgeKey}" crosses label "${labelKey}".`,
+          subject: `${edgeKey},${labelKey}`,
+          supportedFixes: ["move the connected components or shorten the label so the route clears it"],
+        });
+      }
     }
   }
 

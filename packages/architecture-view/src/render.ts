@@ -81,7 +81,7 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
 
   const [vbW, vbH] = projected.viewBox ?? DEFAULT_ARCHITECTURE_VIEW_BOX;
   const layout = calculateArchitectureLayout(projected);
-  const { componentRects, routes } = layout;
+  const { componentRects, routes, labelRects } = layout;
 
   const visibleComponents = projected.components.filter((c) => resolveVisibility(c, audience) === "show");
   const usedTypes = [...new Set(visibleComponents.map((c) => c.type))];
@@ -92,7 +92,9 @@ export function renderArchitectureViewSvg(doc: ArchitectureViewDocument, options
     .map((b) => (resolveVisibility(b, audience) === "hide" ? "" : renderBoundary(b, componentRects, selectedSemanticRef)))
     .join("\n");
   const connections = projected.connections
-    .map((conn, i) => (resolveVisibility(conn, audience) === "hide" ? "" : renderConnection(conn, i, routes, selectedSemanticRef)))
+    .map((conn, i) =>
+      resolveVisibility(conn, audience) === "hide" ? "" : renderConnection(conn, i, routes, labelRects, selectedSemanticRef),
+    )
     .join("\n");
   const components = visibleComponents
     .map((c) => renderComponent(c, componentRects.get(c.id)!, selectedSemanticRef))
@@ -258,6 +260,7 @@ function renderConnection(
   conn: ArchitectureViewDocument["connections"][number],
   index: number,
   routes: Map<string, { points: { x: number; y: number }[]; strategy: string; crossedComponentIds: string[] }>,
+  labelRects: Map<string, Rect>,
   selectedSemanticRef?: string,
 ): string {
   const edgeKey = conn.id ?? `connection-${index}`;
@@ -272,8 +275,10 @@ function renderConnection(
   const pathEl = `<path d="${d}" marker-end="url(#av-arrow-${variant})"/>`;
   let labelEl = "";
   if (conn.label) {
-    const mid = route.points[Math.floor(route.points.length / 2)]!;
-    labelEl = `<text x="${mid.x}" y="${mid.y - 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+    const labelRect = labelRects.get(`connection-label:${edgeKey}`);
+    if (labelRect) {
+      labelEl = `<rect class="av-connection-label-bg" x="${labelRect.x}" y="${labelRect.y}" width="${labelRect.w}" height="${labelRect.h}" rx="3" ry="3"/><text x="${labelRect.x + labelRect.w / 2}" y="${labelRect.y + labelRect.h / 2 + 4}" text-anchor="middle">${escapeXml(conn.label)}</text>`;
+    }
   }
   return `<g class="av-connection variant-${variant}${selectedClass}"${idAttr} data-edge-from="${fromAttr}" data-edge-to="${toAttr}"${semanticRefsAttr(conn.semanticRefs)}>${pathEl}${labelEl}</g>`;
 }

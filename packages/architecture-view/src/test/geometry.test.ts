@@ -53,6 +53,25 @@ test("routeConnection routes around an obstacle directly on the line between two
   assert.ok(!route.crossedComponentIds.includes("b"), "route should have gone around the obstacle, not through it");
 });
 
+test("routeConnection prefers a short channel between obstacles over the outer canvas edge", () => {
+  const fromRect: Rect = { x: 700, y: 480, w: 190, h: 82 };
+  const toRect: Rect = { x: 960, y: 160, w: 180, h: 76 };
+  const route = routeConnection(
+    fromRect,
+    { x: 795, y: 480 },
+    toRect,
+    { x: 1050, y: 236 },
+    [
+      { id: "upper", x: 700, y: 180, w: 190, h: 82 },
+      { id: "middle", x: 960, y: 330, w: 180, h: 76 },
+    ],
+  );
+
+  assert.equal(route.strategy, "outer-channel");
+  assert.deepEqual(route.crossedComponentIds, []);
+  assert.ok(route.points.some((point) => point.y > 262 && point.y < 330), "route should use the short channel between rows");
+});
+
 test("labelDisplayWidth weighs CJK text wider per-character than latin text", () => {
   const korean = "데이터베이스"; // 6 codepoints
   const english = "database"; // 8 codepoints

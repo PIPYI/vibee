@@ -126,7 +126,7 @@ test("edge-crosses-component: a connection whose target is fully walled in is an
   assert.equal(hit?.severity, "error");
 });
 
-test("label-collision: two connection labels that land on top of each other is a warning", () => {
+test("connection labels try alternate positions before reporting a collision", () => {
   const d = doc({
     components: [comp({ id: "a", pos: [0, 0], size: [80, 200] }), comp({ id: "b", pos: [300, 0], size: [80, 200] })],
     connections: [
@@ -135,9 +135,24 @@ test("label-collision: two connection labels that land on top of each other is a
     ],
   });
   const diagnostics = checkGeometry(d);
-  const hit = diagnostics.find((x) => x.code === "architecture-view/label-collision");
-  assert.ok(hit, `expected a label-collision diagnostic, got codes: ${codesOf(diagnostics).join(", ")}`);
-  assert.equal(hit?.severity, "warning");
+  assert.ok(!diagnostics.some((x) => x.code === "architecture-view/label-collision"));
+});
+
+test("connection routing avoids routes that were already placed", () => {
+  const d = doc({
+    components: [
+      comp({ id: "left", pos: [0, 160], size: [80, 80] }),
+      comp({ id: "right", pos: [320, 160], size: [80, 80] }),
+      comp({ id: "top", pos: [160, 0], size: [80, 80] }),
+      comp({ id: "bottom", pos: [160, 320], size: [80, 80] }),
+    ],
+    connections: [
+      { id: "horizontal", from: "left", to: "right", label: "across" },
+      { id: "vertical", from: "top", to: "bottom", label: "down" },
+    ],
+  });
+  const diagnostics = checkGeometry(d);
+  assert.ok(!diagnostics.some((x) => x.code === "architecture-view/edge-collision"));
 });
 
 test("viewbox-balance: an extremely flat single-row layout is a warning", () => {

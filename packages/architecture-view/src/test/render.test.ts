@@ -30,6 +30,15 @@ test("rendered SVG contains exactly one <defs> block", () => {
   assert.equal(countOccurrences(svg, "<defs>"), 1);
 });
 
+test("connection labels include an opaque background mask over their own route", () => {
+  const doc: ArchitectureViewDocument = {
+    ...convergingDoc,
+    connections: [{ id: "a-hub", from: "a", to: "hub", label: "request" }],
+  };
+  const svg = renderArchitectureViewSvg(doc);
+  assert.ok(svg.includes('class="av-connection-label-bg"'));
+});
+
 test("component groups are drawn after connection groups (z-order)", () => {
   const svg = renderArchitectureViewSvg(convergingDoc);
   const lastComponentGroup = svg.lastIndexOf('<g class="av-component');
